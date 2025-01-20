@@ -175,6 +175,29 @@ static unsigned int uct_sci_close(){
     return 1;    
 }
 
+static int
+uct_sisci_ipc_iface_is_reachable_v2(const uct_iface_h tl_iface,
+                                   const uct_iface_is_reachable_params_t *params)
+{
+    return 0;
+}
+
+int uct_cuda_ipc_ep_is_connected(const uct_ep_h tl_ep,
+                                 const uct_ep_is_connected_params_t *params)
+{
+    return 1;
+}
+
+static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
+    .iface_estimate_perf   = ucs_empty_function_return_unsupported,
+    .iface_vfs_refresh     = (uct_iface_vfs_refresh_func_t)ucs_empty_function,
+    .ep_query              = (uct_ep_query_func_t)ucs_empty_function_return_unsupported,
+    .ep_invalidate         = (uct_ep_invalidate_func_t)ucs_empty_function_return_unsupported,
+    .ep_connect_to_ep_v2   = ucs_empty_function_return_unsupported,
+    .iface_is_reachable_v2 = uct_sisci_ipc_iface_is_reachable_v2,
+    .ep_is_connected       = uct_cuda_ipc_ep_is_connected
+};
+
 //also known as "macro hell"
 /**
  * @brief Construct a new ucs class init func object
@@ -518,7 +541,7 @@ static ucs_status_t uct_sci_query_devices(uct_md_h md,
 
 
 
-static ucs_status_t uct_sci_md_query(uct_md_h md, uct_md_attr_t *attr)
+static ucs_status_t uct_sci_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
 {
     /* Dummy memory registration provided. No real memory handling exists */
     attr->cap.flags               = UCT_MD_FLAG_NEED_RKEY; /* TODO ignore rkey in rma/amo ops */
@@ -535,7 +558,7 @@ static ucs_status_t uct_sci_md_query(uct_md_h md, uct_md_attr_t *attr)
 }
 
 static ucs_status_t uct_sci_mem_reg(uct_md_h md, void *address, size_t length,
-                                     unsigned flags, uct_mem_h *memh_p)
+                                     const uct_md_mem_reg_params_t *params, uct_mem_h *memh_p)
 {
 
     DEBUG_PRINT("Empty func\n");

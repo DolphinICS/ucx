@@ -146,10 +146,7 @@ noinst_HEADERS = \
 	async/eventfd.h \
 	async/signal.h \
 	async/thread.h \
-	async/async_int.h \
-	sisci/sisci.h \
-	sisci/sisci_ep.h \
-	sisci/sisci_iface.h
+	async/async_int.h
 
 libucs_la_SOURCES = \
 	algorithm/crc.c \
@@ -222,11 +219,7 @@ libucs_la_SOURCES = \
 	type/spinlock.c \
 	type/thread_mode.c \
 	vfs/base/vfs_obj.c \
-	vfs/base/vfs_cb.c \
-	sisci/sisci_ep.c \
-	sisci/sisci_iface.c \
-	sisci/sisci_md.c \
-	sisci/sisci.c
+	vfs/base/vfs_cb.c
 
 if HAVE_AARCH64_THUNDERX2
 libucs_la_SOURCES += \
