@@ -598,6 +598,106 @@ static void uct_sci_md_close(uct_md_h md) {
     uct_sci_close();
 }
 
+typedef struct uct_sci_alloc_handle {
+    void *ptr;
+    size_t length;
+} uct_sci_alloc_handle_t;
+
+
+// static sci_desc_t              sd;
+// static sci_local_segment_t     localSegment;
+// static sci_map_t               localMap;
+// // static unsigned int            localNodeId;
+// // static unsigned int            localSegmentId;
+// static sci_map_t               localMap;
+
+static ucs_status_t
+uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
+                        ucs_memory_type_t mem_type, unsigned flags,
+                        const char *alloc_name, uct_mem_h *memh_p)
+{
+    // sci_error_t sci_error;
+
+    // ucs_status_t status;
+    // ucs_log_level_t log_level;
+    uct_sci_alloc_handle_t *alloc_handle;
+
+
+    // printf("uct_sci_mem_alloc running!\n");
+    alloc_handle = ucs_malloc(sizeof(*alloc_handle),
+                              "uct_sci_mem_alloc");
+    if (NULL == alloc_handle) {
+        printf("failed to allocate memory for uct_sci_mem_alloc\n");
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    alloc_handle->ptr = malloc(*length_p);
+    if (alloc_handle->ptr == NULL) {
+        printf("uct_sci_mem_alloc, malloc failed\n");
+        ucs_free(alloc_handle);
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    // SCIOpen(&sd, 0, &sci_error);
+    // if (sci_error != SCI_ERR_OK) {
+    //     printf("uct_sci_mem_alloc, SCIOpen: %s\n", SCIGetErrorString(sci_error));
+    //     return UCS_ERR_NO_MEMORY;
+    // }
+
+    // SCICreateSegment(sd, &localSegment, 0x123, *length_p, NULL, NULL, 0, &sci_error);
+    // if (sci_error != SCI_ERR_OK) { 
+    //     printf("uct_sci_mem_alloc, SCICreateSegment: %s\n", SCIGetErrorString(sci_error));
+    //     return UCS_ERR_NO_MEMORY;
+    // }
+
+    // SCIPrepareSegment(localSegment, 0, 0, &sci_error);
+    // if (sci_error != SCI_ERR_OK) { 
+    //     printf("uct_sci_mem_alloc, SCIPrepareSegment: %s\n", SCIGetErrorString(sci_error));
+    //     return UCS_ERR_NO_MEMORY;
+
+    // }
+
+    // SCISetSegmentAvailable(localSegment, 0, 0, &sci_error);
+    // if (sci_error != SCI_ERR_OK) { 
+    //     printf("uct_sci_mem_alloc, SCISetSegmentAvailable: %s\n", SCIGetErrorString(sci_error));
+    //     return UCS_ERR_NO_MEMORY;
+    // }
+
+    // alloc_handle->ptr = SCIMapLocalSegment(localSegment, &localMap, 0, *length_p, NULL, SCI_NO_FLAGS, &sci_error);
+    // if(sci_error != SCI_ERR_OK) {
+    //     printf("uct_sci_mem_alloc, SCIMapLocalSegment: %s\n", SCIGetErrorString(sci_error));
+    //     return UCS_ERR_NO_MEMORY;
+    // } 
+
+
+    alloc_handle->length = *length_p;
+
+    *memh_p    = alloc_handle;
+    *address_p = (void*)alloc_handle->ptr;
+    return UCS_OK;
+}
+
+static ucs_status_t uct_sci_mem_free(uct_md_h md, uct_mem_h memh)
+{
+    // sci_error_t sci_error;
+
+    uct_sci_alloc_handle_t *alloc_handle = (uct_sci_alloc_handle_t*) memh;
+
+    // printf("uct_sci_mem_free running!\n");
+
+    free(alloc_handle->ptr);
+
+    ucs_free(alloc_handle);
+
+    // SCISetSegmentUnavailable(localSegment, 0, SCI_NO_FLAGS, &sci_error);
+    // SCIUnmapSegment(localMap,SCI_NO_FLAGS,&sci_error);
+    // SCIRemoveSegment(localSegment,SCI_NO_FLAGS,&sci_error);
+    // SCIClose(sd,SCI_NO_FLAGS,&sci_error);
+    // ucs_free(alloc_handle);
+
+    return UCS_OK;
+}
+
 static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_name,
                                      const uct_md_config_t *config, uct_md_h *md_p)
 {
@@ -607,6 +707,8 @@ static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_n
     static uct_md_ops_t md_ops = {
         .close              = uct_sci_md_close, 
         .query              = uct_sci_md_query,
+        .mem_alloc          = uct_sci_mem_alloc,
+        .mem_free           = uct_sci_mem_free,
         .mkey_pack          = ucs_empty_function_return_success,
         .mem_reg            = uct_sci_mem_reg,
         .mem_dereg          = uct_sci_mem_dereg,
