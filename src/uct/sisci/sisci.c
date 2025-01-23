@@ -71,6 +71,7 @@ sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interru
     //printf("%d expected %zd ret_int %d  ret_node %d \n", length, sizeof(conn_req_t), request->node_id, request->interrupt);
     //printf("%d callback started \n", getpid());
 
+    printf("in --- sci_callback_action_t conn_handler(...)\n");
 
     do {
         SCIConnectDataInterrupt(md->sci_virtual_device, &ans_interrupt, request->node_id, 0, request->interrupt, 1000, 0, &sci_error);
@@ -179,12 +180,14 @@ static int
 uct_sisci_ipc_iface_is_reachable_v2(const uct_iface_h tl_iface,
                                    const uct_iface_is_reachable_params_t *params)
 {
+    printf("in --- uct_sisci_ipc_iface_is_reachable_v2\n");
     return 0;
 }
 
 int uct_cuda_ipc_ep_is_connected(const uct_ep_h tl_ep,
                                  const uct_ep_is_connected_params_t *params)
 {
+    printf("in --- uct_cuda_ipc_ep_is_connected\n");
     return 1;
 }
 
@@ -226,6 +229,8 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     UCT_CHECK_PARAM(params->field_mask & UCT_IFACE_PARAM_FIELD_OPEN_MODE,
                     "UCT_IFACE_PARAM_FIELD_OPEN_MODE is not defined");
+
+    printf("in --- UCS_CLASS_INIT_FUNC(uct_sci_iface_t, ...)\n");
     
     if (!(params->open_mode & UCT_IFACE_OPEN_MODE_DEVICE)) {
         ucs_error("only UCT_IFACE_OPEN_MODE_DEVICE is supported");
@@ -437,6 +442,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
     */
     sci_error_t sci_error;
     
+    printf("in --- UCS_CLASS_CLEANUP_FUNC\n(uct_sci_iface_t, ...)");
     DEBUG_PRINT("closed iface\n");
 
     uct_base_iface_progress_disable(&self->super.super,
@@ -529,6 +535,8 @@ static ucs_status_t uct_sci_query_devices(uct_md_h md,
                                    unsigned *num_devices_p)
 {
     ucs_status_t status = -1;
+
+    printf("in --- uct_sci_query_devices(uct_sci_iface_t, ...)\n");
        
     status = uct_single_device_resource(md, UCT_SCI_NAME,
                                       UCT_DEVICE_TYPE_NET,
@@ -616,12 +624,14 @@ uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
                         ucs_memory_type_t mem_type, unsigned flags,
                         const char *alloc_name, uct_mem_h *memh_p)
 {
+
     // sci_error_t sci_error;
 
     // ucs_status_t status;
     // ucs_log_level_t log_level;
     uct_sci_alloc_handle_t *alloc_handle;
 
+    printf("in --- uct_sci_mem_alloc\n");
 
     // printf("uct_sci_mem_alloc running!\n");
     alloc_handle = ucs_malloc(sizeof(*alloc_handle),
@@ -685,6 +695,8 @@ static ucs_status_t uct_sci_mem_free(uct_md_h md, uct_mem_h memh)
 
     // printf("uct_sci_mem_free running!\n");
 
+    printf("in --- uct_sci_mem_free\n");
+
     free(alloc_handle->ptr);
 
     ucs_free(alloc_handle);
@@ -718,6 +730,10 @@ static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_n
     //create sci memory domain struct
     static uct_sci_md_t md;
     sci_error_t errors;
+
+    printf("in --- uct_sci_md_open\n");
+
+
     uct_sci_open();
     SCIOpen(&md.sci_virtual_device, 0, &errors);
 
@@ -750,6 +766,8 @@ int uct_sci_iface_is_reachable(const uct_iface_h tl_iface,
 {
    /*NOTE We have no good way to actually check if given address is reachable, so we just return 1*/
     
+    printf("in --- uct_sci_iface_is_reachable\n");
+
     #if DEBUG > 0
         uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
         uct_sci_device_addr_t* sci_dev_addr = (uct_sci_device_addr_t *) dev_addr;
@@ -767,6 +785,7 @@ ucs_status_t uct_sci_get_device_address(uct_iface_h iface, uct_device_addr_t *ad
     //uct_sci_md_t* md =  ucs_derived_of(sci_iface->super.md, uct_sci_md_t);  UNUSED
     uct_sci_device_addr_t* sci_addr = (uct_sci_device_addr_t *) addr;
     sci_addr->node_id = sci_iface->device_addr;
+    printf("in --- uct_sci_get_device_address\n");
     DEBUG_PRINT("segment_id %d node_id %d\n", sci_iface->segment_id, sci_iface->device_addr);
     return UCS_OK;
 }
@@ -783,6 +802,8 @@ ucs_status_t uct_sci_iface_get_address(uct_iface_h tl_iface,
     uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
     
     uct_sci_iface_addr_t* iface_addr = (uct_sci_iface_addr_t *) addr;
+
+    printf("in --- uct_sci_iface_get_address\n");
     
     iface_addr->segment_id = iface->interruptNO;
     
@@ -793,6 +814,7 @@ ucs_status_t uct_sci_iface_get_address(uct_iface_h tl_iface,
 
 void uct_sci_iface_progress_enable(uct_iface_h iface, unsigned flags) {
     uct_base_iface_progress_enable(iface, flags);
+    printf("in --- uct_sci_iface_progress_enable\n");
     DEBUG_PRINT("Progress Enabled\n");
 }
 
@@ -803,6 +825,13 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
     uint32_t  offset = 0;
     ucs_status_t status;
     sci_packet_t* packet;
+
+    static int first = 1;
+
+    if (first) {
+        printf("in --- uct_sci_iface_progress (only printed once)\n");
+        first = 0;
+    }
 
     retry:
 
@@ -856,6 +885,8 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
     
 
     uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
+
+    printf("in --- uct_sci_iface_query\n");
 
     if (!iface_query_printed) {
         DEBUG_PRINT("iface querried\n");
@@ -914,7 +945,6 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
     return UCS_OK;
     //return UCS_ERR_NOT_IMPLEMENTED;
 }
-
 
 static ucs_status_t uct_sci_md_rkey_unpack(uct_component_t *component,
                                             const void *rkey_buffer, uct_rkey_t *rkey_p,

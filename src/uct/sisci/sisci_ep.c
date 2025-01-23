@@ -8,7 +8,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
     sci_error_t sci_error;
     //printf("UCS_SICSCI_EP_CLEANUP_FUNC() %d \n", self->remote_segment_id);
     
-    
+    printf("in --- static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)\n");
+
     SCIUnmapSegment(self->remote_map, 0, &sci_error);
     
     self->buf = NULL;
@@ -56,6 +57,9 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
 
 
     UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS(params);
+
+    printf("in --- UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)\n");
+
 
     segment_id = (unsigned int) iface_addr->segment_id;
     node_id = (unsigned int) dev_addr->node_id;
@@ -275,6 +279,12 @@ ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
     uct_sci_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_sci_iface_t);
     sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
     uint32_t offset = 0; 
+
+    static int first = 1;
+    if (first) {
+        printf("in --- uct_sci_ep_am_short (only printed once)\n");
+        first = 0;
+    }
     
     if (ep->seq - ctl->ack >= iface->queue_size) {
         return UCS_ERR_NO_RESOURCE;
@@ -314,6 +324,8 @@ ssize_t uct_sci_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
     ssize_t length         = 0;
     uint32_t offset        = 0;
 
+    printf("in --- uct_sci_ep_am_bcopy\n");
+
     if(ep->seq - ctl->ack >= iface->queue_size) {
         return UCS_ERR_NO_RESOURCE;
     }
@@ -352,6 +364,8 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
     ucs_iov_iter_t uct_iov_iter;
     sci_error_t sci_error;
     uint32_t offset;
+
+    printf("in --- uct_sci_ep_am_zcopy\n");
 
 
     if(ep->seq - ctl->ack >= iface->queue_size) {
