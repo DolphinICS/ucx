@@ -3,6 +3,8 @@
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
 
 #include <unistd.h>
 
@@ -28,9 +30,19 @@ int main(int argc, char **argv)
 
     ucs_status_t status;
 
+    /* ----------------- Config Stuff ----------------- */
     ucp_config_t *config;
     status = ucp_config_read(NULL, NULL, &config);
+    // // Prints a whole lot of environment variables, various default settings
+    // // Small example snippet:
+    // //    UCX_NET_DEVICES=all
+    // //    UCX_SHM_DEVICES=all
+    // //    UCX_ACC_DEVICES=all
+    // //    UCX_SELF_DEVICES=all
+    // ucp_config_print(config, stdout, NULL, UCS_CONFIG_PRINT_CONFIG);
+    ucp_config_release(config);
 
+    /* ----------------- ucp_init ----------------- */
 
     // ucp_params -> ucp_init() -> ucp_context
     ucp_context_h ucp_context;
@@ -52,11 +64,54 @@ int main(int argc, char **argv)
     // in --- uct_sci_md_open
     // in --- uct_sci_query_devices(uct_sci_iface_t, ...)
     status = ucp_init(&ucp_params, NULL, &ucp_context);
-    assert(status == UCS_OK);
-
+    if (status != UCS_OK) {
+        fprintf(stderr, "FAIL! ucp_init failed.\n");
+        return EXIT_FAILURE;
+    }
     // sleep(1);
 
-    ucp_cleanup(ucp_context);
+    /* ----------------- ucp_worker ----------------- */
+
+    // worker_params -> ucp_worker_create -> ucp_worker_h
+    ucp_worker_h ucp_worker;
+    ucp_worker_params_t worker_params = {};
+    worker_params.field_mask  = UCP_WORKER_PARAM_FIELD_THREAD_MODE;
+    worker_params.thread_mode = UCS_THREAD_MODE_SINGLE;
+    // in --- uct_sci_query_devices(uct_sci_iface_t, ...)
+    // in --- UCS_CLASS_INIT_FUNC(uct_sci_iface_t, ...)
+    // in --- uct_sci_iface_query  * REPEATEDLY ...
+    // in --- uct_sci_iface_progress_enable
+    status = ucp_worker_create(ucp_context, &worker_params, &ucp_worker);
+    if (status != UCS_OK) {
+        fprintf(stderr, "FAIL! ucp_worker_create failed.\n");
+        return EXIT_FAILURE;
+    }
+
+    /* -- query attributes (may be some extra, non-essential stuff) -- */
+
+    /* OOB connection vars (out of band connection),
+     * apparently meaning control information outside of the primary data path
+     * for setup etc. Used if you are implementing a higher level
+     * communication API (like MPI), then you might use this for setup */
+    uint64_t local_addr_len   = 0;
+    ucp_address_t *local_addr = NULL;
+
+    ucp_worker_attr_t worker_attr = {};
+    worker_attr.field_mask = UCP_WORKER_ATTR_FIELD_ADDRESS;
+    status = ucp_worker_query(ucp_worker, &worker_attr);
+    if (status != UCS_OK) {
+        fprintf(stderr, "FAIL! ucp_worker_query failed.\n");
+        return EXIT_FAILURE;
+    }
+    local_addr_len = worker_attr.address_length;
+    local_addr     = worker_attr.address;
+
+    printf("[0x%x] local address length: %lu Bytes, name=%s\n",
+           (unsigned int)pthread_self(), local_addr_len, worker_attr.name);
+
+
+    ucp_worker_destroy(ucp_worker); // ucp_worker_create cleanup
+    ucp_cleanup(ucp_context); // ucp_init cleanup
 
     printf("Goodbye! Exiting program! experiment_ucp end!\n");
 
