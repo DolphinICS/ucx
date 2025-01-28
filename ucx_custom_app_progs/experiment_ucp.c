@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -116,11 +117,35 @@ int main(int argc, char **argv)
 
     int ret;
 
-    if (argc > 1) {
-        printf("Look at me. I am the server now\n");
+    bool is_server = false;
 
+    if (argc < 2) {
+        printf("Hey. ------------------------------------------- Look at me. I am the server now\n");
+        is_server = true;
+    } else {
+        printf("Hey. ------------------------------------------- The client is always right\n");
+    }
+
+    // // How to get host endpoint from hostname, not really needed though,
+    // // the hostname should be passed to getaddrinfo by the client as the first parameter
+    // struct hostent *hp;
+    // if (!is_server) {
+    //     char *host = argv[1];
+    //     hp = gethostbyname(host);
+    //     if(!hp){
+    //         fprintf(stderr, "unkown host: %s\n", host);
+    //         exit(1);
+    //     }
+    //     printf("gethostbyname successful for host = %s\n", host);
+    // }
+
+    /* Important variable over here */
+    int socket_fd;
+    struct addrinfo *res;
+
+    /* --------------------- Set up socket connection --------------------- */
+    if (is_server) {
         struct addrinfo hints = { 0 };
-        struct addrinfo *res;
 
         hints.ai_flags    = AI_PASSIVE;
         hints.ai_family   = ai_family;
@@ -140,7 +165,7 @@ int main(int argc, char **argv)
 
             printf("* iteration %d\n", cnt);
 
-            int socket_fd = socket(ai_cur->ai_family, ai_cur->ai_socktype, ai_cur->ai_protocol);
+            socket_fd = socket(ai_cur->ai_family, ai_cur->ai_socktype, ai_cur->ai_protocol);
             if (socket_fd < 0) {
                 printf("socket failed here, moving on!\n");
                 continue;
@@ -167,27 +192,55 @@ int main(int argc, char **argv)
                 return EXIT_FAILURE;
             }
 
-            fprintf(stdout, "Waiting for connection...\n");
+            fprintf(stdout, "Waiting for connection... Port is %s\n", server_port_str);
             int listen_fd = socket_fd;
             socket_fd = accept(listen_fd, NULL, NULL);
             close(listen_fd);
 
             // So socket_fd should now be open right? Do stuff before closing it
-
-
-            // Close socket_fd I suppose
-            close(socket_fd);
-            freeaddrinfo(res);
         }
 
-
     } else {
-        printf("The client is always right\n");
-
         struct addrinfo hints = { 0 };
-        struct addrinfo *res;
-        struct addrinfo *ai_cur;
+
+        hints.ai_family   = ai_family;
+        hints.ai_socktype = SOCK_STREAM;
+
+        char *server_name = argv[1]; // which host to connect to, if left as NULL it defaults to the same computer apparently
+        ret = getaddrinfo(server_name, server_port_str, &hints, &res);
+        if (ret < 0) {
+            fprintf(stderr, "PROGRAM ERROR! getaddrinfo: %s\n", gai_strerror(ret));
+            return EXIT_FAILURE;
+        }
+        printf("getaddrinfo successful\n");
+
+        int cnt = 0; // just for printouts
+
+        printf("Iterating through addrinfo structs\n");
+        for (struct addrinfo *ai_cur = res; ai_cur != NULL; ai_cur = ai_cur->ai_next) {
+
+            printf("* iteration %d\n", cnt);
+
+            socket_fd = socket(ai_cur->ai_family, ai_cur->ai_socktype, ai_cur->ai_protocol);
+            if (socket_fd < 0) {
+                printf("socket failed here, moving on!\n");
+                continue;
+            }
+            
+            fprintf(stdout, "Trying to connect to server on port %s\n", server_port_str);
+            ret = connect(socket_fd, ai_cur->ai_addr, ai_cur->ai_addrlen);
+            if (ret != 0) {
+                perror("PROGRAM ERROR! connect failed\n");
+                return EXIT_FAILURE;
+            }
+
+        }
     }
+
+
+    /* --------------------- Tear down socket connection --------------------- */
+    close(socket_fd);
+    freeaddrinfo(res);
 
 
     ucp_worker_destroy(ucp_worker); // ucp_worker_create cleanup
