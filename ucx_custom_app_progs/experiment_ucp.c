@@ -5,9 +5,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
-
 #include <unistd.h>
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+
+const char server_port_str[] = "59152";
+sa_family_t ai_family    = AF_INET; // IPv4, AF_INET6 is IPv6, doesn't matter but good to know
 
 struct my_ucx_context {
     int completed;
@@ -65,7 +70,7 @@ int main(int argc, char **argv)
     // in --- uct_sci_query_devices(uct_sci_iface_t, ...)
     status = ucp_init(&ucp_params, NULL, &ucp_context);
     if (status != UCS_OK) {
-        fprintf(stderr, "FAIL! ucp_init failed.\n");
+        fprintf(stderr, "PROGRAM ERROR! ucp_init failed.\n");
         return EXIT_FAILURE;
     }
     // sleep(1);
@@ -83,7 +88,7 @@ int main(int argc, char **argv)
     // in --- uct_sci_iface_progress_enable
     status = ucp_worker_create(ucp_context, &worker_params, &ucp_worker);
     if (status != UCS_OK) {
-        fprintf(stderr, "FAIL! ucp_worker_create failed.\n");
+        fprintf(stderr, "PROGRAM ERROR! ucp_worker_create failed.\n");
         return EXIT_FAILURE;
     }
 
@@ -100,7 +105,7 @@ int main(int argc, char **argv)
     worker_attr.field_mask = UCP_WORKER_ATTR_FIELD_ADDRESS;
     status = ucp_worker_query(ucp_worker, &worker_attr);
     if (status != UCS_OK) {
-        fprintf(stderr, "FAIL! ucp_worker_query failed.\n");
+        fprintf(stderr, "PROGRAM ERROR! ucp_worker_query failed.\n");
         return EXIT_FAILURE;
     }
     local_addr_len = worker_attr.address_length;
@@ -108,6 +113,35 @@ int main(int argc, char **argv)
 
     printf("[0x%x] local address length: %lu Bytes, name=%s\n",
            (unsigned int)pthread_self(), local_addr_len, worker_attr.name);
+
+    int ret;
+
+    if (argc > 1) {
+        printf("Look at me. I am the server now\n");
+
+        struct addrinfo hints = { 0 };
+        struct addrinfo *res;
+        struct addrinfo *ai_cur;
+
+        hints.ai_flags    = AI_PASSIVE;
+        hints.ai_family   = ai_family;
+        hints.ai_socktype = SOCK_STREAM;
+
+        ret = getaddrinfo(NULL, server_port_str, &hints, &res);
+        if (ret < 0) {
+            fprintf(stderr, "PROGRAM ERROR! getaddrinfo: %s\n", gai_strerror(ret));
+            return EXIT_FAILURE;
+        }
+        printf("getaddrinfo successful\n");
+
+
+    } else {
+        printf("The client is always right\n");
+
+        struct addrinfo hints = { 0 };
+        struct addrinfo *res;
+        struct addrinfo *ai_cur;
+    }
 
 
     ucp_worker_destroy(ucp_worker); // ucp_worker_create cleanup
