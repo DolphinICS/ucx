@@ -109,6 +109,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "PROGRAM ERROR! ucp_worker_query failed.\n");
         return EXIT_FAILURE;
     }
+
+    // Ok, so I guesss these are sent from server to client for some purpose or other
     local_addr_len = worker_attr.address_length;
     local_addr     = worker_attr.address;
 
@@ -236,6 +238,60 @@ int main(int argc, char **argv)
 
         }
     }
+
+    // Gentlemen, we have the socket.
+    // Server, send local_addr_len and local_addr (these are ucx worker attributes by the way!)
+    // Client, get ready to receive!
+    // I do not yet know the purpose of this, but it must be important, otherwise why do it?
+
+    // Okay, apparently socket_fd is used to send OOB, i.e. out of band info.
+    // You know, extra info that uses like a separate communication channel.
+
+    uint64_t peer_addr_len    = 0;
+    ucp_address_t *peer_addr  = NULL;
+
+    if (is_server) {
+
+        ret = send(socket_fd, &local_addr_len, sizeof(local_addr_len), 0);
+        if (ret != (int)sizeof(local_addr_len)) {
+            fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
+            return EXIT_FAILURE;
+        }
+        printf("Sent local_addr_len with sockets, that's %d bytes btw!\n", ret);
+
+        ret = send(socket_fd, local_addr, local_addr_len, 0);
+        if (ret != (int)local_addr_len) {
+            fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
+            return EXIT_FAILURE;
+        }
+        printf("Sent local_addr with sockets, that's %d bytes btw!\n", ret);
+
+    } else {
+
+        ret = recv(socket_fd, &peer_addr_len, sizeof(peer_addr_len), MSG_WAITALL);
+        if (ret != (int)sizeof(peer_addr_len)) {
+            fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
+            return EXIT_FAILURE;
+        }
+        printf("Received peer_addr_len with sockets, that's %d bytes btw!\n", ret);
+
+        // You know... Ideally this would be cleaned up later in the program,
+        // but this is just an example program. Don't be such a nerd.
+        peer_addr = malloc(2*peer_addr_len);
+        if (peer_addr == NULL) {
+            fprintf(stderr, "malloc failed.\n");
+            return EXIT_FAILURE;
+        }
+
+        ret = recv(socket_fd, peer_addr, peer_addr_len, MSG_WAITALL);
+        if (ret != (int)peer_addr_len) {
+            // perror("recv");
+            fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
+            return EXIT_FAILURE;
+        }
+        printf("Received peer_addr with sockets, that's %d bytes btw!\n", ret);
+    }
+
 
 
     /* --------------------- Tear down socket connection --------------------- */
