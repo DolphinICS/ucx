@@ -3,7 +3,9 @@
 #include <ucs/type/status.h>
 #include <ucs/sys/string.h>
 
-#include "stdio.h"
+#include <execinfo.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "sisci.h"
 #include "sisci_ep.h"
@@ -14,6 +16,33 @@
 /* Forward declarations */
 static uct_iface_ops_t uct_sci_iface_ops;
 static uct_component_t uct_sci_component;
+
+// // Commented out for now, can't have functions without using them, sad.
+// static void
+// print_trace (void)
+// {
+//   void *array[30];
+//   char **strings;
+//   int size, i;
+
+//   printf("\n\n------- Printing stacktrace --------\n");
+
+//   size = backtrace (array, 30);
+//   strings = backtrace_symbols (array, size);
+//   if (strings != NULL)
+//   {
+
+//     printf ("Obtained %d stack frames.\n", size);
+//     for (i = 0; i < size; i++)
+//       printf ("%s\n", strings[i]);
+//   } else {
+//     printf("No stack trace?? Wut?\n");
+//   }
+
+//   printf("\n------- DonePrinting stacktrace --------\n\n");
+
+//   free (strings);
+// }
 
 
 
@@ -231,6 +260,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
                     "UCT_IFACE_PARAM_FIELD_OPEN_MODE is not defined");
 
     printf("in --- UCS_CLASS_INIT_FUNC(uct_sci_iface_t, ...)\n");
+    // print_trace();
     
     if (!(params->open_mode & UCT_IFACE_OPEN_MODE_DEVICE)) {
         ucs_error("only UCT_IFACE_OPEN_MODE_DEVICE is supported");
@@ -252,7 +282,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         printf("\n mutex init failed\n");
         return UCS_ERR_NO_RESOURCE;
     }
-
 
 
     UCS_CLASS_CALL_SUPER_INIT(
@@ -442,7 +471,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
     */
     sci_error_t sci_error;
     
-    printf("in --- UCS_CLASS_CLEANUP_FUNC\n(uct_sci_iface_t, ...)");
+    printf("in --- UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t, ...)\n");
+    // print_trace();
     DEBUG_PRINT("closed iface\n");
 
     uct_base_iface_progress_disable(&self->super.super,
@@ -732,6 +762,7 @@ static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_n
     sci_error_t errors;
 
     printf("in --- uct_sci_md_open\n");
+    // print_trace();
 
 
     uct_sci_open();
@@ -827,11 +858,11 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
     sci_packet_t* packet;
 
     static int first = 1;
-
     if (first) {
         printf("in --- uct_sci_iface_progress (only printed once)\n");
         first = 0;
     }
+    // printf("in --- uct_sci_iface_progress\n");
 
     retry:
 
@@ -955,7 +986,7 @@ static ucs_status_t uct_sci_md_rkey_unpack(uct_component_t *component,
      * Need rkey == 0 due to work with same process to reuse uct_base_[put|get|atomic]*
      */
     DEBUG_PRINT("uct_sci_md_rkey_unpack()");
-    printf("uct_sci_md_rkey_unpack\n");
+    printf("in --- uct_sci_md_rkey_unpack\n");
     *rkey_p   = 0;
     *handle_p = NULL;
     return UCS_OK;
