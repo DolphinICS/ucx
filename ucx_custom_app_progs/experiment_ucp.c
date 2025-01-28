@@ -121,7 +121,6 @@ int main(int argc, char **argv)
 
         struct addrinfo hints = { 0 };
         struct addrinfo *res;
-        struct addrinfo *ai_cur;
 
         hints.ai_flags    = AI_PASSIVE;
         hints.ai_family   = ai_family;
@@ -133,6 +132,53 @@ int main(int argc, char **argv)
             return EXIT_FAILURE;
         }
         printf("getaddrinfo successful\n");
+
+        int cnt = 0; // just for printouts
+
+        printf("Iterating through addrinfo structs\n");
+        for (struct addrinfo *ai_cur = res; ai_cur != NULL; ai_cur = ai_cur->ai_next) {
+
+            printf("* iteration %d\n", cnt);
+
+            int socket_fd = socket(ai_cur->ai_family, ai_cur->ai_socktype, ai_cur->ai_protocol);
+            if (socket_fd < 0) {
+                printf("socket failed here, moving on!\n");
+                continue;
+            }
+            
+            // Set up server port or whatever and wait for connections
+            int optval;
+            ret = setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &optval,
+                             sizeof(optval));
+            if (ret < 0) {
+                perror("PROGRAM ERROR! setsockopt failed\n");
+                return EXIT_FAILURE;
+            }
+
+            ret = bind(socket_fd, ai_cur->ai_addr, ai_cur->ai_addrlen);
+            if (ret != 0) {
+                perror("PROGRAM ERROR! bind failed\n");
+                return EXIT_FAILURE;
+            }
+
+            ret = listen(socket_fd, 0);
+            if (ret != 0) {
+                perror("PROGRAM ERROR! listen failed\n");
+                return EXIT_FAILURE;
+            }
+
+            fprintf(stdout, "Waiting for connection...\n");
+            int listen_fd = socket_fd;
+            socket_fd = accept(listen_fd, NULL, NULL);
+            close(listen_fd);
+
+            // So socket_fd should now be open right? Do stuff before closing it
+
+
+            // Close socket_fd I suppose
+            close(socket_fd);
+            freeaddrinfo(res);
+        }
 
 
     } else {
