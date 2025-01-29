@@ -22,6 +22,9 @@ static const char *addr_msg_str = "UCX address message";
 
 static ucs_status_t ep_status   = UCS_OK;
 
+// Surely this can just be an int right? It looks like pointers to it should actually be a 
+// typedef void* ucs_status_ptr_t, so it could maybe be of type uct_status, but an int could work.
+// Still, this works for now, it just seems a bit overengineered for an example maybe.
 struct my_ucx_context {
     int completed;
 };
@@ -82,7 +85,10 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
     ucp_tag_recv_info_t info_tag;
     ucp_tag_message_h msg_tag;
 
-    /* ---------------- Receive initial message? The info tag... yes the info tag ---------------- */
+    /* ---------------- Receive the info tag... yes the info tag ---------------- */
+    // Not sure what the info tag is used for, but apparently if you just probe the worker for it you will receive such an info tag.
+    // I assume this happens when the client creates an endpoint, but let me see later.
+    // Probably this can be used to set up some specific length of data, but the purpose is unclear right now.
 
     // Continuously update state and then probe for message.
     /* Receive client UCX address */
@@ -101,13 +107,26 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
         msg_tag = ucp_tag_probe_nb(ucp_worker, tag, tag_mask, 1, &info_tag);
     } while (msg_tag == NULL);
 
-    // Allocate space for info_tag, I suppose that is the message.
-    // The message is the info? So the info_tag contains the length of the message? Sure, why not
-    struct msg *msg = malloc(info_tag.length);
-    if (msg == NULL) {
-        fprintf(stderr, "malloc failed.\n");
-        exit(EXIT_FAILURE);
-    }
+    /* ---------------- Receive a message from client ---------------- */
+    // As the rant below illustrates this seems unrelated to the info tag (to some degree)
+    // At this point we can apparently just send messages as we like, no need to think of any info tags and such.
+    // Don't know why it was used in the first place. I can experiment with some sizes to see if it has some purpose perhaps, that's todo
+
+    // Okay, so this is really strange, there's this info_tag above, basically it contains the sender tag and a length which is the size of the received data
+    // But what does this have anything to do with the message I am now receiving? That's kind of weird, seems unrelated why one would allocate space accomodating that
+    // but then not receiving an info tag but instead just some random message that was sent using a message struct which is really just an int. Why all the layers.
+    // Apparently I can just receive an int though without any fuss.
+    // I don't need a struct to hold an int like the example does surely
+    // // Allocate space for info_tag, I suppose that is the message.
+    // // The message is the info? So the info_tag contains the length of the message? Sure, why not
+    // struct msg *msg = malloc(info_tag.length);
+    // if (msg == NULL) {
+    //     fprintf(stderr, "malloc failed.\n");
+    //     exit(EXIT_FAILURE);
+    // }
+
+    // This will be the message, I don't use the info tag right now, why use it?
+    uint64_t message;
 
     // This is just some extra parameters to ucp_tag_msg_recv_nbx.
     // After all it's annoying to have too many parameters, so this is a struct to group them together that's all.
@@ -118,16 +137,34 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
     recv_param.datatype     = ucp_dt_make_contig(1); // Contiguous datatype of size 1
     recv_param.cb.recv      = recv_handler;
 
-    // // Non blocking receive into msg buffer. Returns immediately, but! It's not really done! no no no, not before a message is in the buffer.
-    // // How do we know when a message is in the buffer? Oh well, for that we use a callback of course! Yes!
-    // // So in order to notify us about when the message is actually received and ready to be used,
-    // // ucx will call the callback function specified in recv_param. That way we can do some other stuff in the meantime. Right?
-    // struct ucx_context *request = ucp_tag_msg_recv_nbx(
-    //     ucp_worker,
-    //     msg, // void* buffer
-    //     info_tag.length, // count
-    //     msg_tag, // ucp_tag_message_h message (message handler) !!!  This was obrained by ucp_tag_probe_nb() above!
-    //     &recv_param); // const ucp_request_param_t ∗ param, a pointer to a struct, but is an input parameter clearly
+    // Non blocking receive into msg buffer. Returns immediately, but! It's not really done! no no no, not before a message is in the buffer.
+    // How do we know when a message is in the buffer? Oh well, for that we use a callback of course! Yes!
+    // So in order to notify us about when the message is actually received and ready to be used,
+    // ucx will call the callback function specified in recv_param. That way we can do some other stuff in the meantime. Right?
+    struct my_ucx_context *request = ucp_tag_msg_recv_nbx(
+        ucp_worker,
+        &message, // void* buffer
+        sizeof(uint64_t), // count, this used to be info_tag.length, but why? Why? That has nothing to do with sending a message it seems
+        msg_tag, // ucp_tag_message_h message (message handler) !!!  This was obtained by ucp_tag_probe_nb() above!
+        &recv_param); // const ucp_request_param_t ∗ param, a pointer to a struct, but is an input parameter clearly
+
+    // Progress until completed, basically wait for ucp_worker's ucp_tag_msg_recv_nbx function
+    while (!request->completed) {
+        ucp_worker_progress(ucp_worker);
+    }
+
+    // Checks that it returns successfully, I mean it always does right? Nothing ever goes wrong
+    ucs_status_t status = ucp_request_check_status(request);
+    ucp_request_free(request);
+    if (status != UCS_OK) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Why all this mess? Well the example does lots of boilerplate and I tried to remove it, but you know, hacks, weird code, such is life
+    printf("-**--**--** Server received message == %lu\n", message);
+
+    /* ---------------- Next step, receive bigger message ---------------- */
     
 
 }
@@ -168,6 +205,10 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
         exit(EXIT_FAILURE);
     }
 
+    // Right, so we got the peer_addr and peer_addr_len data from the server using what is called OOB (out of band) communication
+    // Basically we just didn't use ucx, but used sockets instead for setup, cheating? I don't know, everyone does it man!
+    // But now it looks like we are using ucx to send the same kind of information to the server, which is our endpoint.
+    // That's basically what is going on in this first stage.
     uint64_t message = local_addr_len;
     size_t message_len = sizeof(message);
 
@@ -185,10 +226,14 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
         tag, // Message tag, global variable, shared between client and server at start
         &send_param);
 
+    printf("-**--**--** Client sends message == %lu\n", message);
+
+    // Progress until completed, basically wait for ucp_worker's ucp_tag_send_nbx function
     while (!request->completed) {
         ucp_worker_progress(ucp_worker);
     }
 
+    // Checks that it returns successfully, I mean it always does right? Nothing ever goes wrong
     status = ucp_request_check_status(request);
     ucp_request_free(request);
     if (status != UCS_OK) {
@@ -196,9 +241,12 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
         exit(EXIT_FAILURE);
     }
 
+    printf("-**--**--** Message sent successfully!\n");
 
     // status = ucx_wait(ucp_worker, request, "send",
     //                                    addr_msg_str);
+
+    /* ---------------- Next step, send bigger message ---------------- */
 
 }
 
