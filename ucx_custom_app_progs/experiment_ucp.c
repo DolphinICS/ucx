@@ -111,6 +111,7 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
     // As the rant below illustrates this seems unrelated to the info tag (to some degree)
     // At this point we can apparently just send messages as we like, no need to think of any info tags and such.
     // Don't know why it was used in the first place. I can experiment with some sizes to see if it has some purpose perhaps, that's todo
+    // Okay, so I suppose the tag does have some function here, I was wrong. very wrong. I should investigate more
 
     // Okay, so this is really strange, there's this info_tag above, basically it contains the sender tag and a length which is the size of the received data
     // But what does this have anything to do with the message I am now receiving? That's kind of weird, seems unrelated why one would allocate space accomodating that
@@ -165,7 +166,27 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
     printf("-**--**--** Server received message == %lu\n", message);
 
     /* ---------------- Next step, receive bigger message ---------------- */
-    
+
+    // message to receive
+    uint64_t big_message[10];
+    size_t big_message_size = 10 * sizeof(uint64_t);
+
+    for (uint64_t i = 0; i < 10; i++) {
+        big_message[i] = 0;
+    }
+
+    // // Start receiving
+    // request = ucp_tag_msg_recv_nbx(ucp_worker, &big_message, big_message_size, msg_tag, &recv_param);
+    // // Wait until it completes
+    // while (!request->completed) {
+    //     ucp_worker_progress(ucp_worker);
+    // }
+
+    // printf("big_message = ");
+    // for (int i = 0; i < 10; i++) {
+    //     printf("%lu ", big_message[i]);
+    // }
+    // printf("\n");
 
 }
 
@@ -247,6 +268,20 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
     //                                    addr_msg_str);
 
     /* ---------------- Next step, send bigger message ---------------- */
+    // message to receive
+    uint64_t big_message[10];
+    size_t big_message_size = 10 * sizeof(uint64_t);
+
+    for (uint64_t i = 0; i < 10; i++) {
+        big_message[i] = i;
+    }
+
+    // // Start receiving
+    // request = ucp_tag_send_nbx(server_ep, &big_message, big_message_size, tag, &send_param);
+    // // Wait until it completes
+    // while (!request->completed) {
+    //     ucp_worker_progress(ucp_worker);
+    // }
 
 }
 
