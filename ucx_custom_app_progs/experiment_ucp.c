@@ -22,6 +22,9 @@ static const char *addr_msg_str = "UCX address message";
 
 static ucs_status_t ep_status   = UCS_OK;
 
+ucp_err_handling_mode_t ucp_err_mode;
+
+
 // Surely this can just be an int right? It looks like pointers to it should actually be a 
 // typedef void* ucs_status_ptr_t, so it could maybe be of type uct_status, but an int could work.
 // Still, this works for now, it just seems a bit overengineered for an example maybe.
@@ -107,6 +110,9 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
         msg_tag = ucp_tag_probe_nb(ucp_worker, tag, tag_mask, 1, &info_tag);
     } while (msg_tag == NULL);
 
+    // Hold on! maybe that is not true... I'm running in circles here. Hopefully I'll figure it out in the end
+    // info_tag.length is basically the max size that can be sent or received with usp_tag_msg_****_nbx functions
+
     /* ---------------- Receive a message from client ---------------- */
     // As the rant below illustrates this seems unrelated to the info tag (to some degree)
     // At this point we can apparently just send messages as we like, no need to think of any info tags and such.
@@ -165,21 +171,70 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
     // Why all this mess? Well the example does lots of boilerplate and I tried to remove it, but you know, hacks, weird code, such is life
     printf("-**--**--** Server received message == %lu\n", message);
 
-    /* ---------------- Next step, receive bigger message ---------------- */
+    // /* ---------------- Next step, receive bigger message ---------------- */
 
-    // message to receive
-    uint64_t big_message[10];
-    size_t big_message_size = 10 * sizeof(uint64_t);
+    /* again? */
 
-    for (uint64_t i = 0; i < 10; i++) {
-        big_message[i] = 0;
+    // sleep(3); // with vs without sleep
+
+    recv_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                              UCP_OP_ATTR_FIELD_DATATYPE |
+                              UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
+    recv_param.datatype     = ucp_dt_make_contig(1); // Contiguous datatype of size 1
+    recv_param.cb.recv      = recv_handler;
+
+    request = ucp_tag_msg_recv_nbx(
+        ucp_worker,
+        &message,
+        sizeof(uint64_t),
+        msg_tag,
+        &recv_param);
+
+    while (!request->completed) {
+        ucp_worker_progress(ucp_worker);
     }
 
-    // // Start receiving
-    // request = ucp_tag_msg_recv_nbx(ucp_worker, &big_message, big_message_size, msg_tag, &recv_param);
+    status = ucp_request_check_status(request);
+    ucp_request_free(request);
+    if (status != UCS_OK) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Why all this mess? Well the example does lots of boilerplate and I tried to remove it, but you know, hacks, weird code, such is life
+    printf("-**--**--** Server received message == %lu\n", message);
+
+
+
+    // // message to receive
+    // uint64_t big_message[10];
+    // size_t big_message_size = 10 * sizeof(uint64_t);
+
+    // for (uint64_t i = 0; i < 10; i++) {
+    //     big_message[i] = 0;
+    // }
+
+    // request = ucp_tag_msg_recv_nbx(ucp_worker, big_message, 1, msg_tag, &recv_param);
     // // Wait until it completes
     // while (!request->completed) {
     //     ucp_worker_progress(ucp_worker);
+    // }
+
+    // // Checks that it returns successfully, I mean it always does right? Nothing ever goes wrong
+    // status = ucp_request_check_status(request);
+    // ucp_request_free(request);
+    // if (status != UCS_OK) {
+    //     fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
+    //     exit(EXIT_FAILURE);
+    // }
+
+    // // receive things the dumb way
+    // for (uint64_t i = 0; i < 10; i++) {
+    //     request = ucp_tag_msg_recv_nbx(ucp_worker, big_message, big_message_size, msg_tag, &recv_param);
+    //     // Wait until it completes
+    //     while (!request->completed) {
+    //         ucp_worker_progress(ucp_worker);
+    //     }
     // }
 
     // printf("big_message = ");
@@ -203,6 +258,9 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
                                 UCP_EP_PARAM_FIELD_USER_DATA;
     ep_params.address         = peer_addr;
     ep_params.user_data       = &ep_status;
+    ep_params.err_handler.cb  = failure_handler;
+    ep_params.err_handler.arg = NULL;
+    ep_params.err_mode        = ucp_err_mode; 
 
 
     // Handle errors? That's planning for failure!
@@ -211,9 +269,6 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
     //                             UCP_EP_PARAM_FIELD_ERR_HANDLER |
     //                             UCP_EP_PARAM_FIELD_USER_DATA;
     // Desired error handling mode, optional parameter. Default value is UCP_ERR_HANDLING_MODE_NONE
-    // ep_params.err_mode        = err_handling_opt.ucp_err_mode; 
-    // ep_params.err_handler.cb  = failure_handler;
-    // ep_params.err_handler.arg = NULL;
     
 
     // Right, so the client treats the server as an endpoint
@@ -264,24 +319,96 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
 
     printf("-**--**--** Message sent successfully!\n");
 
+    /* ------------------------- again ? -------------------------*/
+
+    // Okay!!! You need to flush the nbx before doing anymore transfers! Right!
+    // Still there are some problems with segfaults if I forget to do this, but that's fine.
+    // Maybe... That's the conclusion then. Always flush!
+    ucp_request_param_t param;
+    void *request2;
+
+    param.op_attr_mask = 0;
+    request2            = ucp_ep_flush_nbx(server_ep, &param);
+    if (request2 == NULL) {
+        return UCS_OK;
+    } else if (UCS_PTR_IS_ERR(request2)) {
+        return UCS_PTR_STATUS(request2);
+    } else {
+        ucs_status_t status;
+        do {
+            ucp_worker_progress(ucp_worker);
+            status = ucp_request_check_status(request2);
+        } while (status == UCS_INPROGRESS);
+        ucp_request_free(request2);
+        return status;
+    }
+
+    /* Sending twice seems to break things. No idea why. */
+
+    // sleep(1); // with vs without sleep
+
+    send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                              UCP_OP_ATTR_FIELD_USER_DATA;
+    send_param.cb.send = send_handler;
+    send_param.user_data = (void*)addr_msg_str;
+
+    request = ucp_tag_send_nbx(
+        server_ep,
+        &message,
+        message_len,
+        tag,
+        &send_param);
+
+    printf("-**--**--** Client sends message == %lu\n", message);
+
+    // Progress until completed, basically wait for ucp_worker's ucp_tag_send_nbx function
+    while (!request->completed) {
+        ucp_worker_progress(ucp_worker);
+    }
+
+    printf("-**--**--** Message sent successfully!\n");
+
+
+
     // status = ucx_wait(ucp_worker, request, "send",
     //                                    addr_msg_str);
 
-    /* ---------------- Next step, send bigger message ---------------- */
-    // message to receive
-    uint64_t big_message[10];
-    size_t big_message_size = 10 * sizeof(uint64_t);
+    // /* ---------------- Next step, send bigger message ---------------- */
+    // // not able to send a large message this way. Need a tag or something that allows more than uint64_t
+    // // Probably need to use a whole other paradigm
 
-    for (uint64_t i = 0; i < 10; i++) {
-        big_message[i] = i;
-    }
+    // // message to receive
+    // uint64_t big_message[1000];
+    // size_t big_message_size = 1000 * sizeof(uint64_t);
+
+    // for (uint64_t i = 0; i < 1000; i++) {
+    //     big_message[i] = i;
+    // }
 
     // // Start receiving
-    // request = ucp_tag_send_nbx(server_ep, &big_message, big_message_size, tag, &send_param);
+    // request = ucp_tag_send_nbx(server_ep, big_message, 1, tag, &send_param);
     // // Wait until it completes
     // while (!request->completed) {
     //     ucp_worker_progress(ucp_worker);
     // }
+
+    // // Checks that it returns successfully, I mean it always does right? Nothing ever goes wrong
+    // status = ucp_request_check_status(request);
+    // ucp_request_free(request);
+    // if (status != UCS_OK) {
+    //     fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
+    //     exit(EXIT_FAILURE);
+    // }
+
+    // // for (uint64_t i = 0; i < 10; i++) {
+    // //     // Start receiving
+    // //     request = ucp_tag_send_nbx(server_ep, &big_message, big_message_size, tag, &send_param);
+    // //     // Wait until it completes
+    // //     while (!request->completed) {
+    // //         ucp_worker_progress(ucp_worker);
+    // //     }
+    // //     big_message[i] = i;
+    // // }
 
 }
 
