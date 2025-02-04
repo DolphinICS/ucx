@@ -32,7 +32,7 @@ struct my_ucx_context {
     int completed;
 };
 
-// Callback, not sure how to trigger it yet.  
+// Callback, not sure how to trigger it yet. (Hmm, seems to be triggered all the time apparently)
 static void request_init_callback(void *request)
 {
     struct my_ucx_context *context = (struct my_ucx_context *)request;
@@ -268,7 +268,7 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
 
 }
 
-static int blocking_flush(ucp_ep_h *server_ep, ucp_worker_h *ucp_worker) {
+static int blocking_flush(ucp_ep_h *server_ep, ucp_worker_h ucp_worker) {
     ucp_request_param_t param;
     void *request;
 
@@ -281,7 +281,7 @@ static int blocking_flush(ucp_ep_h *server_ep, ucp_worker_h *ucp_worker) {
     } else {
         ucs_status_t status;
         do {
-            ucp_worker_progress(*ucp_worker);
+            ucp_worker_progress(ucp_worker);
             status = ucp_request_check_status(request);
         } while (status == UCS_INPROGRESS);
         ucp_request_free(request);
@@ -371,7 +371,7 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
     // Okay!!! You need to flush the nbx before doing anymore transfers! Right!
     // Still there are some problems with segfaults if I forget to do this, but that's fine.
     // Maybe... That's the conclusion then. Always flush! Oh no... It returns... but I wasn't supposed to do that!
-    blocking_flush(&server_ep, &ucp_worker);
+    blocking_flush(&server_ep, ucp_worker);
 
     /* Sending twice seems to break things. No idea why. */
 
@@ -392,13 +392,13 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
 
     printf("-**--**--** Client sends message == %lu\n", message);
 
-    // //
-    // // Progress until completed, basically wait for ucp_worker's ucp_tag_send_nbx function
-    // while (!request->completed) {
-    //     ucp_worker_progress(ucp_worker);
-    // }
+    //
+    // Progress until completed, basically wait for ucp_worker's ucp_tag_send_nbx function
+    while (!request->completed) {
+        ucp_worker_progress(ucp_worker);
+    }
 
-    printf("-**--**--** Message sent successfully!\n");
+    printf("-**--**--** Message sent successfully! ...\n");
 
 
 
