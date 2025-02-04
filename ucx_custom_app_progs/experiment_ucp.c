@@ -275,10 +275,13 @@ static int blocking_flush(ucp_ep_h server_ep, ucp_worker_h ucp_worker) {
     param.op_attr_mask = 0;
     request            = ucp_ep_flush_nbx(server_ep, &param);
     if (request == NULL) {
+        printf("blocking_flush - request == NULL\n");
         return UCS_OK;
     } else if (UCS_PTR_IS_ERR(request)) {
+        printf("blocking_flush - UCS_PTR_IS_ERR(request) != 0\n");
         return UCS_PTR_STATUS(request);
     } else {
+        printf("blocking_flush - else\n");
         ucs_status_t status;
         do {
             ucp_worker_progress(ucp_worker);
@@ -399,6 +402,12 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
     // while (!request->completed) {
     //     ucp_worker_progress(ucp_worker);
     // }
+
+    // try this instead?
+    // Huh hmm. This seemed to work. So I suppose don't go directly to ucp_worker_progress in this case, but rather try to flush it first?
+    // Yep. This function basically does ucp_ep_flush_nbx then ucp_worker_progress and ucp_request_check_status in a loop
+    // So if you flush before in this case it does not segfault. But we didn't flush before earlier?
+    blocking_flush(server_ep, ucp_worker);
 
     printf("-**--**--** Message sent successfully! ...\n");
 
