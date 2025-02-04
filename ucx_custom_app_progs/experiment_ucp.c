@@ -268,12 +268,12 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
 
 }
 
-static int blocking_flush(ucp_ep_h *server_ep, ucp_worker_h ucp_worker) {
+static int blocking_flush(ucp_ep_h server_ep, ucp_worker_h ucp_worker) {
     ucp_request_param_t param;
     void *request;
 
     param.op_attr_mask = 0;
-    request            = ucp_ep_flush_nbx(*server_ep, &param);
+    request            = ucp_ep_flush_nbx(server_ep, &param);
     if (request == NULL) {
         return UCS_OK;
     } else if (UCS_PTR_IS_ERR(request)) {
@@ -371,7 +371,7 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
     // Okay!!! You need to flush the nbx before doing anymore transfers! Right!
     // Still there are some problems with segfaults if I forget to do this, but that's fine.
     // Maybe... That's the conclusion then. Always flush! Oh no... It returns... but I wasn't supposed to do that!
-    blocking_flush(&server_ep, ucp_worker);
+    blocking_flush(server_ep, ucp_worker);
 
     /* Sending twice seems to break things. No idea why. */
 
@@ -392,11 +392,13 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
 
     printf("-**--**--** Client sends message == %lu\n", message);
 
-    //
-    // Progress until completed, basically wait for ucp_worker's ucp_tag_send_nbx function
-    while (!request->completed) {
-        ucp_worker_progress(ucp_worker);
-    }
+    // // Progressing after sending the second message causes the program to segfault
+    // // I am probably doing something incorrectly,
+    // // but come on! Using the API wrong should result in an error message. Not a segfault way later.
+    // // Progress until completed, basically wait for ucp_worker's ucp_tag_send_nbx function
+    // while (!request->completed) {
+    //     ucp_worker_progress(ucp_worker);
+    // }
 
     printf("-**--**--** Message sent successfully! ...\n");
 
