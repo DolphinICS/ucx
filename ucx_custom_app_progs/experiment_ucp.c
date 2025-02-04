@@ -171,7 +171,9 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
     // Why all this mess? Well the example does lots of boilerplate and I tried to remove it, but you know, hacks, weird code, such is life
     printf("-**--**--** Server received message == %lu\n", message);
 
-    // /* ---------------- Next step, receive bigger message ---------------- */
+    // /* ---------------- again? ---------------- */
+
+    // sleep(2);
 
     /* again? */
 
@@ -183,14 +185,34 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
     recv_param.datatype     = ucp_dt_make_contig(1); // Contiguous datatype of size 1
     recv_param.cb.recv      = recv_handler;
 
-    request = ucp_tag_msg_recv_nbx(
+    // const ucp_tag_t tag2      = 0x1337a880u;
+
+    ucp_tag_message_h msg_tag2;
+
+    do {
+        /* Progressing before probe to update the state */
+
+        // This routine explicitly progresses all communication operations on a worker.
+        // Typically, request wait and test routines call this routine to progress any outstanding operations.
+        // Done automatically for blocking routines? But not unblocking routines? Seems like it
+        ucp_worker_progress(ucp_worker);
+
+        /* Probing incoming events in non-block mode */
+
+        // Checks if messages described by tag and tag_mask was received on worker.
+        // tag is the message tag to probe for, tag_mask indicates relevant bits
+        msg_tag2 = ucp_tag_probe_nb(ucp_worker, tag, tag_mask, 1, &info_tag);
+    } while (msg_tag2 == NULL);
+
+
+    struct my_ucx_context *request2 = ucp_tag_msg_recv_nbx(
         ucp_worker,
         &message,
         sizeof(uint64_t),
-        msg_tag,
+        msg_tag2,
         &recv_param);
 
-    while (!request->completed) {
+    while (!request2->completed) {
         ucp_worker_progress(ucp_worker);
     }
 
@@ -205,6 +227,7 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
     printf("-**--**--** Server received message == %lu\n", message);
 
 
+    /* ---------------- Next step, receive bigger message ---------------- */
 
     // // message to receive
     // uint64_t big_message[10];
@@ -243,6 +266,27 @@ static int run_ucx_server(ucp_worker_h ucp_worker) {
     // }
     // printf("\n");
 
+}
+
+static int blocking_flush(ucp_ep_h *server_ep, ucp_worker_h *ucp_worker) {
+    ucp_request_param_t param;
+    void *request;
+
+    param.op_attr_mask = 0;
+    request            = ucp_ep_flush_nbx(*server_ep, &param);
+    if (request == NULL) {
+        return UCS_OK;
+    } else if (UCS_PTR_IS_ERR(request)) {
+        return UCS_PTR_STATUS(request);
+    } else {
+        ucs_status_t status;
+        do {
+            ucp_worker_progress(*ucp_worker);
+            status = ucp_request_check_status(request);
+        } while (status == UCS_INPROGRESS);
+        ucp_request_free(request);
+        return status;
+    }
 }
 
 static int run_ucx_client(ucp_worker_h ucp_worker,
@@ -285,7 +329,8 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
     // Basically we just didn't use ucx, but used sockets instead for setup, cheating? I don't know, everyone does it man!
     // But now it looks like we are using ucx to send the same kind of information to the server, which is our endpoint.
     // That's basically what is going on in this first stage.
-    uint64_t message = local_addr_len;
+    // uint64_t message = local_addr_len;
+    uint64_t message = 1234;
     size_t message_len = sizeof(message);
 
     // Some extra parameters, same type for send and receive
@@ -299,7 +344,7 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
         server_ep, // Destination endpoint handle
         &message, // buffer, pointer to message buffer (payload), what to send
         message_len, // Number of elements to send... bytes surely? Right? Must be bytes right?
-        tag, // Message tag, global variable, shared between client and server at start
+        tag, // Tag, global variable, shared between client and server at start
         &send_param);
 
     printf("-**--**--** Client sends message == %lu\n", message);
@@ -321,31 +366,17 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
 
     /* ------------------------- again ? -------------------------*/
 
+    message = 22;
+
     // Okay!!! You need to flush the nbx before doing anymore transfers! Right!
     // Still there are some problems with segfaults if I forget to do this, but that's fine.
-    // Maybe... That's the conclusion then. Always flush!
-    ucp_request_param_t param;
-    void *request2;
-
-    param.op_attr_mask = 0;
-    request2            = ucp_ep_flush_nbx(server_ep, &param);
-    if (request2 == NULL) {
-        return UCS_OK;
-    } else if (UCS_PTR_IS_ERR(request2)) {
-        return UCS_PTR_STATUS(request2);
-    } else {
-        ucs_status_t status;
-        do {
-            ucp_worker_progress(ucp_worker);
-            status = ucp_request_check_status(request2);
-        } while (status == UCS_INPROGRESS);
-        ucp_request_free(request2);
-        return status;
-    }
+    // Maybe... That's the conclusion then. Always flush! Oh no... It returns... but I wasn't supposed to do that!
+    blocking_flush(&server_ep, &ucp_worker);
 
     /* Sending twice seems to break things. No idea why. */
 
     // sleep(1); // with vs without sleep
+
 
     send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
                               UCP_OP_ATTR_FIELD_USER_DATA;
@@ -361,10 +392,11 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
 
     printf("-**--**--** Client sends message == %lu\n", message);
 
-    // Progress until completed, basically wait for ucp_worker's ucp_tag_send_nbx function
-    while (!request->completed) {
-        ucp_worker_progress(ucp_worker);
-    }
+    // //
+    // // Progress until completed, basically wait for ucp_worker's ucp_tag_send_nbx function
+    // while (!request->completed) {
+    //     ucp_worker_progress(ucp_worker);
+    // }
 
     printf("-**--**--** Message sent successfully!\n");
 
@@ -414,6 +446,8 @@ static int run_ucx_client(ucp_worker_h ucp_worker,
 
 int main(int argc, char **argv)
 {
+    // For client arg[1] is server host name
+
     printf("Hello! Starting program! experiment_ucp start!\n");
 
     ucs_status_t status;
