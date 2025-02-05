@@ -16,6 +16,10 @@ struct my_ucx_context {
     int completed;
 };
 
+// Callback. Kind of initial state before our callback. This one seems to be tied to our ucp_context
+// instead of being given to the ucp_tag_msg_recv_nbx function.
+// Still the idea is clearly interaction between request_init_callback and recv_handler
+// I believe this one is called by default in every call to request_init_callback?
 static void request_init_callback(void *request)
 {
     struct my_ucx_context *context = (struct my_ucx_context *)request;
@@ -25,6 +29,8 @@ static void request_init_callback(void *request)
     printf("Hello request_init_callback()\n");
 }
 
+// callback, called some time after ucp_tag_msg_recv_nbx when the message has successfully been received.
+// Meaning the message should now be in the buffer that was sent to ucp_tag_msg_recv_nbx
 static void recv_handler(void *request, ucs_status_t status,
                          const ucp_tag_recv_info_t *info, void *user_data)
 {
@@ -234,6 +240,25 @@ static void send_server_ucp_address(ucp_address_t *local_addr, size_t local_addr
 
 /* ---------------------  Done with other comm system to send peer address ---------------------  */
 
+static ucp_tag_message_h get_msg_tag(
+    ucp_worker_h ucp_worker,
+    ucp_tag_t tag,
+    ucp_tag_t tag_mask,
+    ucp_tag_recv_info_t *msg_tag_info)
+{
+    ucp_tag_message_h msg_tag;
+    /* Continuously update state and then probe for message. */
+    do {
+        ucp_worker_progress(ucp_worker);
+        msg_tag = ucp_tag_probe_nb(ucp_worker, tag, tag_mask, 1, msg_tag_info);
+    } while (msg_tag == NULL);
+
+    return msg_tag;
+}
+
+static const ucp_tag_t my_tag      = 0x1337a880u;
+static const ucp_tag_t my_tag_mask = UINT64_MAX;
+
 static void run_ucx_server(ucp_worker_h ucp_worker) {
     /* Get local ucp address (server ucp address) */
     ucp_address_t *local_addr;
@@ -241,6 +266,75 @@ static void run_ucx_server(ucp_worker_h ucp_worker) {
     get_ucp_addr(ucp_worker, &local_addr, &local_addr_len);
     /* Get send server ucp address to client */
     send_server_ucp_address(local_addr, local_addr_len);
+
+    /* -- Server done with addresses -- */
+    printf("Successfully sent ucp address to client\n");
+    
+    /* Get "message handle" of message described by my_tag and my_tag_mask */
+    // After this we will have consumed the tag receive info, so basically we have commited ourself
+    // to also receive the message (Because we set the delete flag for ucp_tag_probe_nb)
+    ucp_tag_message_h msg_tag;
+    ucp_tag_recv_info_t msg_tag_info;
+    msg_tag = get_msg_tag(ucp_worker, my_tag, my_tag_mask, &msg_tag_info);
+    printf("Successfully probed for message handle\n");
+
+    /* If you don't already know the size of the message, you can use the ucp_tag_recv_info_t to get it */
+    // struct msg *msg = malloc(info_tag.length);
+    // Then you could incorporate some metainfo or something to interpret the struct correctly.
+    // But it is overkill for this program. Because we need to make assumptions about the message anyway.
+    // And for such a small program then, why not make an assumption also about the size?
+    // If we got a message of arbitrary size, what would we even do with that anyway? There would need to be
+    // an identifier in the message perhaps then, and we would need to know what to do from there.
+    
+    /* So instead we'll assume the size to be eight bytes */
+    uint64_t message;
+
+    ucp_request_param_t recv_param;
+    recv_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                              UCP_OP_ATTR_FIELD_DATATYPE |
+                              UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
+    recv_param.datatype     = ucp_dt_make_contig(1); // Contiguous datatype of size 1
+    recv_param.cb.recv      = recv_handler;
+
+    struct my_ucx_context *request = ucp_tag_msg_recv_nbx(
+        ucp_worker,
+        &message, // void* buffer
+        sizeof(uint64_t), // Length of message
+        msg_tag, // The message tag which we received by our helper function get_msg_tag which probed for it using ucp_tag_probe_nb 
+        &recv_param);
+
+    // Wait until message is received. Our callback sets the completed variable to 1
+    while (!request->completed) {
+        ucp_worker_progress(ucp_worker);
+    }
+
+    printf("Received message: %lu\n", message);
+
+
+}
+
+static int blocking_flush(ucp_ep_h server_ep, ucp_worker_h ucp_worker) {
+    ucp_request_param_t param;
+    void *request;
+
+    param.op_attr_mask = 0;
+    request            = ucp_ep_flush_nbx(server_ep, &param);
+    if (request == NULL) {
+        printf("blocking_flush - request == NULL\n");
+        return UCS_OK;
+    } else if (UCS_PTR_IS_ERR(request)) {
+        printf("blocking_flush - UCS_PTR_IS_ERR(request) != 0\n");
+        return UCS_PTR_STATUS(request);
+    } else {
+        printf("blocking_flush - else\n");
+        ucs_status_t status;
+        do {
+            ucp_worker_progress(ucp_worker);
+            status = ucp_request_check_status(request);
+        } while (status == UCS_INPROGRESS);
+        ucp_request_free(request);
+        return status;
+    }
 }
 
 static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
@@ -255,7 +349,70 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
     /* Get peer ucp address */
     receive_server_ucp_address(server_hostname, &peer_addr, &peer_addr_len);
 
+    /* -- Client done with addresses -- */
+    printf("Successfully received ucp address from server\n");
 
+    // UCP_ERR_HANDLING_MODE_NONE saves resources.
+    // UCP_ERR_HANDLING_MODE_PEER means more error handling. I assume without this program having to do any extra setup.
+    // c                          comes at the coost of some performance etc. But this is an example.
+    ucp_err_handling_mode_t ucp_err_mode = UCP_ERR_HANDLING_MODE_PEER;
+
+    static ucs_status_t ep_status = UCS_OK;
+    ucp_ep_params_t ep_params;
+    ep_params.field_mask      = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS |
+                                UCP_EP_PARAM_FIELD_ERR_HANDLING_MODE |
+                                UCP_EP_PARAM_FIELD_ERR_HANDLER |
+                                UCP_EP_PARAM_FIELD_USER_DATA;
+    ep_params.address         = peer_addr;
+    ep_params.err_mode        = ucp_err_mode;
+    ep_params.err_handler.cb  = failure_handler;
+    ep_params.err_handler.arg = NULL;
+    ep_params.user_data       = &ep_status;
+
+    ucp_ep_h server_ep;
+    ucs_status_t status = ucp_ep_create(ucp_worker, &ep_params, &server_ep);
+    if (status != UCS_OK) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_ep_create failed.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    uint64_t message = 1234;
+    size_t message_len = sizeof(message);
+    
+
+    // --- what to do to send ---
+
+    // Some extra parameters, same type for send and receive
+    ucp_request_param_t send_param;
+    send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                              UCP_OP_ATTR_FIELD_USER_DATA;
+    send_param.cb.send = send_handler;
+    static const char *addr_msg_str = "UCX address message";
+    send_param.user_data = (void*)addr_msg_str;
+    // Sends a message, non-blocking
+    struct my_ucx_context *request = ucp_tag_send_nbx(
+        server_ep, // Destination endpoint handle
+        &message, // buffer, pointer to message buffer (payload), what to send
+        message_len, // Number of elements to send... bytes surely? Right? Must be bytes right?
+        my_tag, // Tag, global variable, shared between client and server at start
+        &send_param);
+    
+    while (!request->completed) {
+        ucp_worker_progress(ucp_worker);
+    }
+
+    status = ucp_request_check_status(request);
+    ucp_request_free(request);
+    if (status != UCS_OK) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    blocking_flush(server_ep, ucp_worker);
+
+    printf("Sent message %lu, (%lu bytes)\n", message, message_len);
+    // --------------------
+    
 }
 
 
