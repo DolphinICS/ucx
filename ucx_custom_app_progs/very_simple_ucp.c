@@ -313,19 +313,9 @@ static void my_blocking_tag_send(ucp_worker_h ucp_worker, ucp_ep_h server_ep, vo
     blocking_flush(server_ep, ucp_worker);
 }
 
-
-static void run_ucx_server(ucp_worker_h ucp_worker) {
-    /* Get local ucp address (server ucp address) */
-    ucp_address_t *local_addr;
-    uint64_t local_addr_len;
-    get_ucp_addr(ucp_worker, &local_addr, &local_addr_len);
-    /* Get send server ucp address to client */
-    send_server_ucp_address(local_addr, local_addr_len);
-
-    /* -- Server done with addresses -- */
-    printf("Successfully sent ucp address to client\n");
+static void my_blocking_tag_recv(ucp_worker_h ucp_worker, void *message, size_t message_size) {
     
-    /* Get "message handle" of message described by my_tag and my_tag_mask */
+     /* Get "message handle" of message described by my_tag and my_tag_mask */
     // After this we will have consumed the tag receive info, so basically we have commited ourself
     // to also receive the message (Because we set the delete flag for ucp_tag_probe_nb)
     ucp_tag_message_h msg_tag;
@@ -341,9 +331,6 @@ static void run_ucx_server(ucp_worker_h ucp_worker) {
     // If we got a message of arbitrary size, what would we even do with that anyway? There would need to be
     // an identifier in the message perhaps then, and we would need to know what to do from there.
     
-    /* So instead we'll assume the size to be eight bytes */
-    uint64_t message;
-
     ucp_request_param_t recv_param;
     recv_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
                               UCP_OP_ATTR_FIELD_DATATYPE |
@@ -353,8 +340,8 @@ static void run_ucx_server(ucp_worker_h ucp_worker) {
 
     struct my_ucx_context *request = ucp_tag_msg_recv_nbx(
         ucp_worker,
-        &message, // void* buffer
-        sizeof(uint64_t), // Length of message
+        message, // void* buffer
+        message_size, // Length of message
         msg_tag, // The message tag which we received by our helper function get_msg_tag which probed for it using ucp_tag_probe_nb 
         &recv_param);
 
@@ -362,6 +349,23 @@ static void run_ucx_server(ucp_worker_h ucp_worker) {
     while (!request->completed) {
         ucp_worker_progress(ucp_worker);
     }
+
+}
+
+static void run_ucx_server(ucp_worker_h ucp_worker) {
+    /* Get local ucp address (server ucp address) */
+    ucp_address_t *local_addr;
+    uint64_t local_addr_len;
+    get_ucp_addr(ucp_worker, &local_addr, &local_addr_len);
+    /* Get send server ucp address to client */
+    send_server_ucp_address(local_addr, local_addr_len);
+
+    /* -- Server done with addresses -- */
+    printf("Successfully sent ucp address to client\n");
+
+    /* So instead we'll assume the size to be eight bytes */
+    uint64_t message;
+    my_blocking_tag_recv(ucp_worker, &message, sizeof(message));
 
     printf("Received message: %lu\n", message);
 
