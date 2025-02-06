@@ -259,6 +259,61 @@ static ucp_tag_message_h get_msg_tag(
 static const ucp_tag_t my_tag      = 0x1337a880u;
 static const ucp_tag_t my_tag_mask = UINT64_MAX;
 
+static int blocking_flush(ucp_ep_h server_ep, ucp_worker_h ucp_worker) {
+    ucp_request_param_t param;
+    void *request;
+
+    param.op_attr_mask = 0;
+    request            = ucp_ep_flush_nbx(server_ep, &param);
+    if (request == NULL) {
+        printf("blocking_flush - request == NULL\n");
+        return UCS_OK;
+    } else if (UCS_PTR_IS_ERR(request)) {
+        printf("blocking_flush - UCS_PTR_IS_ERR(request) != 0\n");
+        return UCS_PTR_STATUS(request);
+    } else {
+        printf("blocking_flush - else\n");
+        ucs_status_t status;
+        do {
+            ucp_worker_progress(ucp_worker);
+            status = ucp_request_check_status(request);
+        } while (status == UCS_INPROGRESS);
+        ucp_request_free(request);
+        return status;
+    }
+}
+
+static void my_blocking_tag_send(ucp_worker_h ucp_worker, ucp_ep_h server_ep, void *message, size_t message_size) {
+    
+    ucp_request_param_t send_param;
+    send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                              UCP_OP_ATTR_FIELD_USER_DATA;
+    send_param.cb.send = send_handler;
+    static const char *addr_msg_str = "UCX address message";
+    send_param.user_data = (void*)addr_msg_str;
+    // Sends a message, non-blocking
+    struct my_ucx_context *request = ucp_tag_send_nbx(
+        server_ep, // Destination endpoint handle
+        message, // buffer, pointer to message buffer (payload), what to send
+        message_size, // Number of elements to send... bytes surely? Right? Must be bytes right?
+        my_tag, // Tag, global variable, shared between client and server at start
+        &send_param);
+    
+    while (!request->completed) {
+        ucp_worker_progress(ucp_worker);
+    }
+
+    ucs_status_t status = ucp_request_check_status(request);
+    ucp_request_free(request);
+    if (status != UCS_OK) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    blocking_flush(server_ep, ucp_worker);
+}
+
+
 static void run_ucx_server(ucp_worker_h ucp_worker) {
     /* Get local ucp address (server ucp address) */
     ucp_address_t *local_addr;
@@ -313,30 +368,6 @@ static void run_ucx_server(ucp_worker_h ucp_worker) {
 
 }
 
-static int blocking_flush(ucp_ep_h server_ep, ucp_worker_h ucp_worker) {
-    ucp_request_param_t param;
-    void *request;
-
-    param.op_attr_mask = 0;
-    request            = ucp_ep_flush_nbx(server_ep, &param);
-    if (request == NULL) {
-        printf("blocking_flush - request == NULL\n");
-        return UCS_OK;
-    } else if (UCS_PTR_IS_ERR(request)) {
-        printf("blocking_flush - UCS_PTR_IS_ERR(request) != 0\n");
-        return UCS_PTR_STATUS(request);
-    } else {
-        printf("blocking_flush - else\n");
-        ucs_status_t status;
-        do {
-            ucp_worker_progress(ucp_worker);
-            status = ucp_request_check_status(request);
-        } while (status == UCS_INPROGRESS);
-        ucp_request_free(request);
-        return status;
-    }
-}
-
 static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
 
     /* Get local ucp address (client ucp address) */
@@ -377,41 +408,41 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
     }
 
     uint64_t message = 1234;
-    size_t message_len = sizeof(message);
+    my_blocking_tag_send(ucp_worker, server_ep, &message, sizeof(message));
+    printf("Sent message %lu, (%lu bytes)\n", message, sizeof(message));
+
+    // // --- what to do to send ---
+
+    // // Some extra parameters, same type for send and receive
+    // ucp_request_param_t send_param;
+    // send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+    //                           UCP_OP_ATTR_FIELD_USER_DATA;
+    // send_param.cb.send = send_handler;
+    // static const char *addr_msg_str = "UCX address message";
+    // send_param.user_data = (void*)addr_msg_str;
+    // // Sends a message, non-blocking
+    // struct my_ucx_context *request = ucp_tag_send_nbx(
+    //     server_ep, // Destination endpoint handle
+    //     &message, // buffer, pointer to message buffer (payload), what to send
+    //     message_len, // Number of elements to send... bytes surely? Right? Must be bytes right?
+    //     my_tag, // Tag, global variable, shared between client and server at start
+    //     &send_param);
     
+    // while (!request->completed) {
+    //     ucp_worker_progress(ucp_worker);
+    // }
 
-    // --- what to do to send ---
+    // status = ucp_request_check_status(request);
+    // ucp_request_free(request);
+    // if (status != UCS_OK) {
+    //     fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
+    //     exit(EXIT_FAILURE);
+    // }
 
-    // Some extra parameters, same type for send and receive
-    ucp_request_param_t send_param;
-    send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
-                              UCP_OP_ATTR_FIELD_USER_DATA;
-    send_param.cb.send = send_handler;
-    static const char *addr_msg_str = "UCX address message";
-    send_param.user_data = (void*)addr_msg_str;
-    // Sends a message, non-blocking
-    struct my_ucx_context *request = ucp_tag_send_nbx(
-        server_ep, // Destination endpoint handle
-        &message, // buffer, pointer to message buffer (payload), what to send
-        message_len, // Number of elements to send... bytes surely? Right? Must be bytes right?
-        my_tag, // Tag, global variable, shared between client and server at start
-        &send_param);
-    
-    while (!request->completed) {
-        ucp_worker_progress(ucp_worker);
-    }
+    // blocking_flush(server_ep, ucp_worker);
 
-    status = ucp_request_check_status(request);
-    ucp_request_free(request);
-    if (status != UCS_OK) {
-        fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    blocking_flush(server_ep, ucp_worker);
-
-    printf("Sent message %lu, (%lu bytes)\n", message, message_len);
-    // --------------------
+    // printf("Sent message %lu, (%lu bytes)\n", message, message_len);
+    // // --------------------
     
 }
 
