@@ -387,6 +387,17 @@ static void run_ucx_server(ucp_worker_h ucp_worker) {
     printf("Received message: %lu\n", message);
     my_blocking_tag_recv(ucp_worker, &message, sizeof(message));
     printf("Received message: %lu\n", message);
+    my_blocking_tag_recv(ucp_worker, &message, sizeof(message));
+    printf("Received message: %lu\n", message);
+
+    uint32_t msg2[10] = { 0 };
+
+    my_blocking_tag_recv(ucp_worker, msg2, sizeof(msg2[0]) * 10);
+    printf("Received message: ");
+    for (int i = 0; i < 10; i++) {
+        printf("%u ", msg2[i]);
+    }
+    printf("\n");
 
 
 }
@@ -438,6 +449,16 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
     my_blocking_tag_send(ucp_worker, server_ep, &message, sizeof(message));
     printf("Sent message %lu, (%lu bytes)\n", message, sizeof(message));
     
+    message = 4444477777;
+    my_blocking_tag_send(ucp_worker, server_ep, &message, sizeof(message));
+    printf("Sent message %lu, (%lu bytes)\n", message, sizeof(message));
+
+    uint32_t msg2[10];
+    for (uint32_t i = 0; i < 10; i++) {
+        msg2[i] = i;
+    }
+    my_blocking_tag_send(ucp_worker, server_ep, msg2, sizeof(msg2[0]) * 10);
+
 }
 
 
