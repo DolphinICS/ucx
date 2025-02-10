@@ -292,16 +292,33 @@ static void my_blocking_tag_send(ucp_worker_h ucp_worker, ucp_ep_h server_ep, vo
     static const char *addr_msg_str = "UCX address message";
     send_param.user_data = (void*)addr_msg_str;
     // Sends a message, non-blocking
-    struct my_ucx_context *request = ucp_tag_send_nbx(
+    void *request = ucp_tag_send_nbx(
         server_ep, // Destination endpoint handle
         message, // buffer, pointer to message buffer (payload), what to send
         message_size, // Number of elements to send... bytes surely? Right? Must be bytes right?
         my_tag, // Tag, global variable, shared between client and server at start
         &send_param);
+
+
+    // Check if request is NULL (completed immediately)
+    if (request == NULL) {
+        printf("Send completed immediately\n");
+        return;
+    }
+
+    // Check for error status
+    if (UCS_PTR_IS_ERR(request)) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_tag_send_nbx failed: %s\n", ucs_status_string(UCS_PTR_STATUS(request)));
+        exit(EXIT_FAILURE);
+    }
     
-    while (!request->completed) {
+    struct my_ucx_context *ctx = (struct my_ucx_context *)request;
+    while (!ctx->completed) {
         ucp_worker_progress(ucp_worker);
     }
+
+    // ucs_status_t ep_status = ucp_request_check_status(server_ep);
+    // printf("Endpoint status before second send: %s\n", ucs_status_string(ep_status));
 
     ucs_status_t status = ucp_request_check_status(request);
     ucp_request_free(request);
@@ -322,6 +339,7 @@ static void my_blocking_tag_recv(ucp_worker_h ucp_worker, void *message, size_t 
     ucp_tag_recv_info_t msg_tag_info;
     msg_tag = get_msg_tag(ucp_worker, my_tag, my_tag_mask, &msg_tag_info);
     printf("Successfully probed for message handle\n");
+
 
     /* If you don't already know the size of the message, you can use the ucp_tag_recv_info_t to get it */
     // struct msg *msg = malloc(info_tag.length);
@@ -366,7 +384,8 @@ static void run_ucx_server(ucp_worker_h ucp_worker) {
     /* So instead we'll assume the size to be eight bytes */
     uint64_t message;
     my_blocking_tag_recv(ucp_worker, &message, sizeof(message));
-
+    printf("Received message: %lu\n", message);
+    my_blocking_tag_recv(ucp_worker, &message, sizeof(message));
     printf("Received message: %lu\n", message);
 
 
@@ -415,38 +434,9 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
     my_blocking_tag_send(ucp_worker, server_ep, &message, sizeof(message));
     printf("Sent message %lu, (%lu bytes)\n", message, sizeof(message));
 
-    // // --- what to do to send ---
-
-    // // Some extra parameters, same type for send and receive
-    // ucp_request_param_t send_param;
-    // send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
-    //                           UCP_OP_ATTR_FIELD_USER_DATA;
-    // send_param.cb.send = send_handler;
-    // static const char *addr_msg_str = "UCX address message";
-    // send_param.user_data = (void*)addr_msg_str;
-    // // Sends a message, non-blocking
-    // struct my_ucx_context *request = ucp_tag_send_nbx(
-    //     server_ep, // Destination endpoint handle
-    //     &message, // buffer, pointer to message buffer (payload), what to send
-    //     message_len, // Number of elements to send... bytes surely? Right? Must be bytes right?
-    //     my_tag, // Tag, global variable, shared between client and server at start
-    //     &send_param);
-    
-    // while (!request->completed) {
-    //     ucp_worker_progress(ucp_worker);
-    // }
-
-    // status = ucp_request_check_status(request);
-    // ucp_request_free(request);
-    // if (status != UCS_OK) {
-    //     fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
-    //     exit(EXIT_FAILURE);
-    // }
-
-    // blocking_flush(server_ep, ucp_worker);
-
-    // printf("Sent message %lu, (%lu bytes)\n", message, message_len);
-    // // --------------------
+    message = 5500550055;
+    my_blocking_tag_send(ucp_worker, server_ep, &message, sizeof(message));
+    printf("Sent message %lu, (%lu bytes)\n", message, sizeof(message));
     
 }
 
