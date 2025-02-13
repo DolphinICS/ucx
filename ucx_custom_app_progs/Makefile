@@ -4,9 +4,9 @@ INCLUDES = -I/hilmar_install/ucx_install/include
 
 LFLAGS= -Wl,-L/hilmar_install/ucx_install/lib,-rpath,/hilmar_install/ucx_install/lib,-lucp,-lucs,-lucs_signal,-luct,-lucm
 
-FILES = test_ucp test_uct experiment_ucp very_simple_ucp very_simple_ucp_am
+FILES = test_ucp test_uct experiment_ucp very_simple_ucp very_simple_ucp_am ucp_client_server
 
-default: very_simple_ucp_am
+default: ucp_client_server
 
 all: $(FILES)
 

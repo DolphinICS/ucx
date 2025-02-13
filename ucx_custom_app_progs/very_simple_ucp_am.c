@@ -280,11 +280,14 @@ static void my_blocking_am_recv(ucp_worker_h ucp_worker, void *message, size_t m
     
 }
 
+bool message_received = false;
+
 static ucs_status_t my_am_recv_handler(void *arg, const void *header,
                                        size_t header_length, void *data,
                                        size_t length,
                                        const ucp_am_recv_param_t *param) {
     printf("Received Active Message: %zu bytes\n", length);
+    message_received = true;
     return UCS_OK; // Tell UCX we're done
 }
 
@@ -307,6 +310,12 @@ static void run_ucx_server(ucp_worker_h ucp_worker) {
         fprintf(stderr, "Failed to set AM handler: %s\n", ucs_status_string(status));
         exit(EXIT_FAILURE);
     }
+
+    while (!message_received) {
+        ucp_worker_progress(ucp_worker);  // Wait for incoming messages.
+    }
+
+    sleep(1);
 }
 
 static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
@@ -323,6 +332,18 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
 
     /* -- Client done with addresses -- */
     printf("Successfully received ucp address from server\n");
+    ucp_ep_h server_ep;
+
+    ucp_request_param_t send_param = {0};
+    send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK;
+    send_param.cb.send = send_handler; // Callback when send completes
+
+    // static uint64_t message = 1234;
+    uint64_t *message = malloc(sizeof(uint64_t) * 100);
+    *message = 1234;
+    // void *unused_header = malloc(10000);
+    void *request = ucp_am_send_nbx(server_ep, AM_MSG_ID, NULL, 0, &message, sizeof(uint64_t), &send_param);
+    blocking_flush(server_ep, ucp_worker);
 
 
 }
@@ -344,16 +365,15 @@ int main(int argc, char **argv)
 
     ucp_context_h ucp_context;
     ucp_params_t ucp_params = {};
+    memset(&ucp_params, 0, sizeof(ucp_params));
     // ucp_params.field_mask = UCP_PARAM_FIELD_FEATURES;
     ucp_params.field_mask   = UCP_PARAM_FIELD_FEATURES |
                               UCP_PARAM_FIELD_REQUEST_SIZE |
-                              UCP_PARAM_FIELD_REQUEST_INIT |
-                              UCP_PARAM_FIELD_NAME;
+                              UCP_PARAM_FIELD_REQUEST_INIT;
 
     // handle callback, function and it's parameter (request) size
     ucp_params.request_size = sizeof(struct my_ucx_context);
     ucp_params.request_init = request_init_callback;
-    ucp_params.name = "hello_there";
     ucp_params.features = UCP_FEATURE_AM | UCP_FEATURE_TAG;
 
     status = ucp_init(&ucp_params, NULL, &ucp_context);
@@ -361,6 +381,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "PROGRAM ERROR! ucp_init failed.\n");
         return EXIT_FAILURE;
     }
+    printf("Requested UCP features: 0x%lx\n", ucp_params.features);
 
     ucp_worker_h ucp_worker;
     ucp_worker_params_t worker_params = {};
