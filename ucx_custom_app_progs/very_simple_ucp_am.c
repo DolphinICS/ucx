@@ -335,7 +335,7 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
     ucp_ep_h server_ep;
 
     ucp_request_param_t send_param = {0};
-    send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK;
+    send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE | UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
     send_param.cb.send = send_handler; // Callback when send completes
 
     // static uint64_t message = 1234;
@@ -348,6 +348,26 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
 
 }
 
+
+/**
+ * Check if at least one feature flag from @a _flags is initialized.
+ */
+// #define UCP_CONTEXT_CHECK_FEATURE_FLAGS(_context, _flags, _action) \
+//     do { \
+//         if (ENABLE_PARAMS_CHECK && \
+//             ucs_unlikely(!((_context)->config.features & (_flags)))) {  \
+//             size_t feature_list_str_max = 512; \
+//             char *feature_list_str = ucs_alloca(feature_list_str_max);  \
+//             ucs_error("feature flags %s were not set for ucp_init()", \
+//                       ucs_flags_str(feature_list_str, feature_list_str_max,  \
+//                                     (_flags) & ~(_context)->config.features, \
+//                                     ucp_feature_str)); \
+//             _action; \
+//         } \
+//     } while (0)
+
+
+// #include <ucp_context.h>
 
 int main(int argc, char **argv)
 {
@@ -362,21 +382,31 @@ int main(int argc, char **argv)
     }
 
     ucs_status_t status;
+    ucp_config_t *config;
+
+    // Okay... Config field shouldn't be NULL in ucp_init I think. Need to read config then. That fixes one error at least.
+    status = ucp_config_read(NULL, NULL, &config);
+    if (status != UCS_OK) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_config_read failed\n");
+        return EXIT_FAILURE;
+    }
 
     ucp_context_h ucp_context;
     ucp_params_t ucp_params = {};
     memset(&ucp_params, 0, sizeof(ucp_params));
-    // ucp_params.field_mask = UCP_PARAM_FIELD_FEATURES;
-    ucp_params.field_mask   = UCP_PARAM_FIELD_FEATURES |
-                              UCP_PARAM_FIELD_REQUEST_SIZE |
-                              UCP_PARAM_FIELD_REQUEST_INIT;
+    // ucp_params.field_mask = UCP_PARAM_FIELD_FEATURES | UCP_FEATURE_EXPORTED_MEMH;  // UCP_FEATURE_EXPORTED_MEMH is used in perftest
+    ucp_params.field_mask = UCP_PARAM_FIELD_FEATURES;
+
+    // ucp_params.field_mask   = UCP_PARAM_FIELD_FEATURES |
+    //                           UCP_PARAM_FIELD_REQUEST_SIZE |
+    //                           UCP_PARAM_FIELD_REQUEST_INIT;
 
     // handle callback, function and it's parameter (request) size
-    ucp_params.request_size = sizeof(struct my_ucx_context);
-    ucp_params.request_init = request_init_callback;
-    ucp_params.features = UCP_FEATURE_AM | UCP_FEATURE_TAG;
+    // ucp_params.request_size = sizeof(struct my_ucx_context);
+    // ucp_params.request_init = request_init_callback;
+    ucp_params.features = UCP_FEATURE_AM;
 
-    status = ucp_init(&ucp_params, NULL, &ucp_context);
+    status = ucp_init(&ucp_params, config, &ucp_context);
     if (status != UCS_OK) {
         fprintf(stderr, "PROGRAM ERROR! ucp_init failed.\n");
         return EXIT_FAILURE;
@@ -385,6 +415,7 @@ int main(int argc, char **argv)
 
     ucp_worker_h ucp_worker;
     ucp_worker_params_t worker_params = {};
+    memset(&worker_params, 0, sizeof(worker_params));
     worker_params.field_mask  = UCP_WORKER_PARAM_FIELD_THREAD_MODE;
     worker_params.thread_mode = UCS_THREAD_MODE_SINGLE;
     status = ucp_worker_create(ucp_context, &worker_params, &ucp_worker);
@@ -392,6 +423,25 @@ int main(int argc, char **argv)
         fprintf(stderr, "PROGRAM ERROR! ucp_worker_create failed.\n");
         return EXIT_FAILURE;
     }
+
+
+    // struct ucp_context *context_ptr = (struct ucp_context *) ucp_context;
+    // if (!(context_ptr->config.features & UCP_FEATURE_AM)) {
+    //     fprintf(stderr, "ERROR: UCP_FEATURE_AM is NOT set in ucp_context!\n");
+    // } else {
+    //     printf("SUCCESS: UCP_FEATURE_AM is set in ucp_context!\n");
+    // }
+
+    // if (!(ucp_context->config.features & UCP_FEATURE_AM)) {
+    //     fprintf(stderr, "ERROR: UCP_FEATURE_AM is NOT set in ucp_context!\n");
+    // } else {
+    //     printf("SUCCESS: UCP_FEATURE_AM is set in ucp_context!\n");
+    // }
+
+
+    // UCP_CONTEXT_CHECK_FEATURE_FLAGS(worker->context, UCP_FEATURE_AM,
+    //                                 fprintf(stderr, "UCP_CONTEXT_CHECK_FEATURE_FLAGS failed"));
+
 
     if (is_server) {
         run_ucx_server(ucp_worker);
