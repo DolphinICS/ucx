@@ -7,7 +7,6 @@ LFLAGS= -Wl,-L/hilmar_install/ucx_install/lib,-rpath,/hilmar_install/ucx_install
 FILES = test_ucp test_uct experiment_ucp very_simple_ucp very_simple_ucp_am very_simple_ucp_stream
 
 # default: very_simple_ucp_stream
-default: very_simple_ucp_stream
 
 all: $(FILES)
 
