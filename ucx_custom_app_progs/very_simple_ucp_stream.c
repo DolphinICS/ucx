@@ -17,7 +17,7 @@ struct my_ucx_context {
 };
 
 // Callback. Kind of initial state before our callback. This one seems to be tied to our ucp_context
-// instead of being given to the ucp_tag_msg_recv_nbx function.
+// instead of being given to the ucp_stream_msg_recv_nbx function.
 // Still the idea is clearly interaction between request_init_callback and recv_handler
 // I believe this one is called by default in every call to request_init_callback?
 static void request_init_callback(void *request)
@@ -29,26 +29,26 @@ static void request_init_callback(void *request)
     printf("Hello request_init_callback()\n");
 }
 
-// callback, called some time after ucp_tag_msg_recv_nbx when the message has successfully been received.
-// Meaning the message should now be in the buffer that was sent to ucp_tag_msg_recv_nbx
+// callback, called some time after ucp_stream_msg_recv_nbx when the message has successfully been received.
+// Meaning the message should now be in the buffer that was sent to ucp_stream_msg_recv_nbx
 static void recv_handler(void *request, ucs_status_t status, size_t length, void *user_data)
 {
     struct my_ucx_context *context = (struct my_ucx_context *)request;
 
     context->completed = 1;
 
-    // printf("[0x%x] receive handler called with status %d (%s)\n",
-    //        (unsigned int)pthread_self(),
-    //        status,
-    //        ucs_status_string(status));
+    printf("[0x%x] receive handler called with status %d (%s)\n",
+           (unsigned int)pthread_self(),
+           status,
+           ucs_status_string(status));
 }
 
 static void failure_handler(void *arg, ucp_ep_h ep, ucs_status_t status)
 {
     ucs_status_t *arg_status = (ucs_status_t *)arg;
 
-    // printf("[0x%x] failure handler called with status %d (%s)\n",
-    //        (unsigned int)pthread_self(), status, ucs_status_string(status));
+    printf("[0x%x] failure handler called with status %d (%s)\n",
+           (unsigned int)pthread_self(), status, ucs_status_string(status));
 
     *arg_status = status;
 }
@@ -60,9 +60,9 @@ static void send_handler(void *request, ucs_status_t status, void *ctx)
 
     context->completed = 1;
 
-    // printf("[0x%x] send handler called for \"%s\" with status %d (%s)\n",
-    //        (unsigned int)pthread_self(), str, status,
-    //        ucs_status_string(status));
+    printf("[0x%x] send handler called for \"%s\" with status %d (%s)\n",
+           (unsigned int)pthread_self(), str, status,
+           ucs_status_string(status));
 }
 
 static void get_ucp_addr(ucp_worker_h ucp_worker, ucp_address_t **local_addr, uint64_t *local_addr_len) {
@@ -239,9 +239,6 @@ static void send_server_ucp_address(ucp_address_t *local_addr, size_t local_addr
 /* ---------------------  Done with other comm system to send peer address ---------------------  */
 
 
-static const ucp_tag_t my_tag      = 0x1337a880u;
-static const ucp_tag_t my_tag_mask = UINT64_MAX;
-
 static int blocking_flush(ucp_ep_h server_ep, ucp_worker_h ucp_worker) {
     ucp_request_param_t param;
     void *request;
@@ -266,70 +263,140 @@ static int blocking_flush(ucp_ep_h server_ep, ucp_worker_h ucp_worker) {
     }
 }
 
-#define AM_MSG_ID 0
-
-static void my_blocking_am_send(ucp_worker_h ucp_worker, ucp_ep_h server_ep, void *message, size_t message_size) {
+static void my_blocking_stream_send(ucp_worker_h ucp_worker, ucp_ep_h server_ep, void *message, size_t message_size) {
     
+    ucp_request_param_t send_param;
+    send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                              UCP_OP_ATTR_FIELD_USER_DATA;
+    send_param.cb.send = send_handler;
+    static const char *addr_msg_str = "UCX address message";
+    send_param.user_data = (void*)addr_msg_str;
+    // Sends a message, non-blocking
+    void *request = ucp_stream_send_nbx(
+        server_ep, // Destination endpoint handle
+        message, // buffer, pointer to message buffer (payload), what to send
+        message_size, // Number of elements to send... bytes surely? Right? Must be bytes right?
+        &send_param);
+
+
+    // Check if request is NULL (completed immediately)
+    if (request == NULL) {
+        printf("Send completed immediately\n");
+        return;
+    }
+
+    // Check for error status
+    if (UCS_PTR_IS_ERR(request)) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_stream_send_nbx failed: %s\n", ucs_status_string(UCS_PTR_STATUS(request)));
+        exit(EXIT_FAILURE);
+    }
+    
+    struct my_ucx_context *ctx = (struct my_ucx_context *)request;
+    while (!ctx->completed) {
+        ucp_worker_progress(ucp_worker);
+    }
+
+    // ucs_status_t ep_status = ucp_request_check_status(server_ep);
+    // printf("Endpoint status before second send: %s\n", ucs_status_string(ep_status));
+
+    ucs_status_t status = ucp_request_check_status(request);
+    ucp_request_free(request);
+    if (status != UCS_OK) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    blocking_flush(server_ep, ucp_worker);
+}
+
+static void my_blocking_stream_recv(ucp_worker_h ucp_worker, ucp_ep_h end_point, void *message, size_t message_size) {
+    
+    ucp_request_param_t recv_param;
+    recv_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                              UCP_OP_ATTR_FIELD_DATATYPE |
+                              UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
+    recv_param.op_attr_mask  |= UCP_OP_ATTR_FIELD_FLAGS;
+    recv_param.flags          = UCP_STREAM_RECV_FLAG_WAITALL;
+    recv_param.datatype     = ucp_dt_make_contig(1); // Contiguous datatype of size 1
+    recv_param.cb.recv_stream      = recv_handler;
+
+    struct my_ucx_context *request = ucp_stream_recv_nbx(
+        end_point,
+        message, // void* buffer
+        message_size, // Length of message
+        &message_size, // The message stream which we received by our helper function get_msg_stream which probed for it using ucp_stream_probe_nb 
+        &recv_param);
+
+    // Wait until message is received. Our callback sets the completed variable to 1
+    while (!request->completed) {
+        ucp_worker_progress(ucp_worker);
+    }
 
 }
 
-static void my_blocking_am_recv(ucp_worker_h ucp_worker, void *message, size_t message_size) {
-    
-    
-}
-
-bool message_received = false;
-
-static ucs_status_t my_am_recv_handler(void *arg, const void *header,
-                                       size_t header_length, void *data,
-                                       size_t length,
-                                       const ucp_am_recv_param_t *param) {
-    printf("Received Active Message: %zu bytes\n", length);
-    message_received = true;
-    return UCS_OK; // Tell UCX we're done
-}
-
-static void run_ucx_server(ucp_worker_h ucp_worker) {
+static void run_ucx_server(ucp_worker_h ucp_worker, char *client_hostname) {
     /* Get local ucp address (server ucp address) */
     ucp_address_t *local_addr;
     uint64_t local_addr_len;
     get_ucp_addr(ucp_worker, &local_addr, &local_addr_len);
     /* Get send server ucp address to client */
     send_server_ucp_address(local_addr, local_addr_len);
+    printf("Successfully sent ucp address to server\n");
 
-    ucp_am_handler_param_t am_param = {0};
-    am_param.field_mask = UCP_AM_HANDLER_PARAM_FIELD_ID |
-                          UCP_AM_HANDLER_PARAM_FIELD_CB;
-    am_param.id         = AM_MSG_ID; // AM ID (just use 0 for now)
-    am_param.cb         = my_am_recv_handler; // Handler function
+    ucp_address_t *peer_addr;
+    size_t peer_addr_len;
+    /* Get peer ucp address */
+    receive_server_ucp_address(client_hostname, &peer_addr, &peer_addr_len);
+    printf("Successfully received ucp address from client\n");
 
-    ucs_status_t status = ucp_worker_set_am_recv_handler(ucp_worker, &am_param);
+    // ---- Create emnd point. End points are needed rather than workers when receiving streams apparently
+
+    ucp_err_handling_mode_t ucp_err_mode = UCP_ERR_HANDLING_MODE_PEER;
+
+    static ucs_status_t ep_status = UCS_OK;
+    ucp_ep_params_t ep_params;
+    ep_params.field_mask      = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS |
+                                UCP_EP_PARAM_FIELD_ERR_HANDLING_MODE |
+                                UCP_EP_PARAM_FIELD_ERR_HANDLER |
+                                UCP_EP_PARAM_FIELD_USER_DATA;
+    ep_params.address         = peer_addr;
+    ep_params.err_mode        = ucp_err_mode;
+    ep_params.err_handler.cb  = failure_handler;
+    ep_params.err_handler.arg = NULL;
+    ep_params.user_data       = &ep_status;
+
+    ucp_ep_h server_ep;
+    ucs_status_t status = ucp_ep_create(ucp_worker, &ep_params, &server_ep);
     if (status != UCS_OK) {
-        fprintf(stderr, "Failed to set AM handler: %s\n", ucs_status_string(status));
+        fprintf(stderr, "PROGRAM ERROR! ucp_ep_create failed.\n");
         exit(EXIT_FAILURE);
     }
 
-    while (!message_received) {
-        ucp_worker_progress(ucp_worker);  // Wait for incoming messages.
-    }
 
-    // if (am_data_desc.is_rndv) {
-    //         /* Rendezvous request has arrived, need to invoke receive operation
-    //          * to confirm data transfer from the sender to the "recv_message"
-    //          * buffer. */
-    //         params.op_attr_mask |= UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
-    //         params.cb.recv_am    = am_recv_cb;
-    //         request              = ucp_am_recv_data_nbx(ucp_worker,
-    //                                                     am_data_desc.desc,
-    //                                                     msg, msg_length,
-    //                                                     &params);
-    //     } else {
-    //         /* Data has arrived eagerly and is ready for use, no need to
-    //          * initiate receive operation. */
-    //         request = NULL;
-    //     }
+    /* -- Server done with addresses -- */
+    printf("Successfully sent ucp address to client\n");
 
-    sleep(1);
+    /* So instead we'll assume the size to be eight bytes */
+    uint64_t message;
+    my_blocking_stream_recv(ucp_worker, server_ep, &message, sizeof(message));
+    printf("Received message: %lu\n", message);
+
+    // my_blocking_stream_recv(ucp_worker, &message, sizeof(message));
+    // printf("Received message: %lu\n", message);
+    
+    // my_blocking_stream_recv(ucp_worker, &message, sizeof(message));
+    // printf("Received message: %lu\n", message);
+
+    // uint32_t msg2[10] = { 0 };
+
+    // my_blocking_stream_recv(ucp_worker, msg2, sizeof(msg2[0]) * 10);
+    // printf("Received message: ");
+    // for (int i = 0; i < 10; i++) {
+    //     printf("%u ", msg2[i]);
+    // }
+    // printf("\n");
+
+
 }
 
 static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
@@ -343,102 +410,94 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
     size_t peer_addr_len;
     /* Get peer ucp address */
     receive_server_ucp_address(server_hostname, &peer_addr, &peer_addr_len);
+    printf("Successfully received ucp address from server\n");
+
+    send_server_ucp_address(local_addr, local_addr_len);
+    printf("Successfully sent ucp address to server\n");
 
     /* -- Client done with addresses -- */
-    printf("Successfully received ucp address from server\n");
+
+    // UCP_ERR_HANDLING_MODE_NONE saves resources.
+    // UCP_ERR_HANDLING_MODE_PEER means more error handling. I assume without this program having to do any extra setup.
+    // c                          comes at the coost of some performance etc. But this is an example.
+    ucp_err_handling_mode_t ucp_err_mode = UCP_ERR_HANDLING_MODE_PEER;
+
+    static ucs_status_t ep_status = UCS_OK;
+    ucp_ep_params_t ep_params;
+    ep_params.field_mask      = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS |
+                                UCP_EP_PARAM_FIELD_ERR_HANDLING_MODE |
+                                UCP_EP_PARAM_FIELD_ERR_HANDLER |
+                                UCP_EP_PARAM_FIELD_USER_DATA;
+    ep_params.address         = peer_addr;
+    ep_params.err_mode        = ucp_err_mode;
+    ep_params.err_handler.cb  = failure_handler;
+    ep_params.err_handler.arg = NULL;
+    ep_params.user_data       = &ep_status;
+
     ucp_ep_h server_ep;
+    ucs_status_t status = ucp_ep_create(ucp_worker, &ep_params, &server_ep);
+    if (status != UCS_OK) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_ep_create failed.\n");
+        exit(EXIT_FAILURE);
+    }
 
-    ucp_request_param_t send_param = {0};
-    send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE | UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
-    // send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE | UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FLAG_FORCE_IMM_CMPL;
-    send_param.cb.send = send_handler; // Callback when send completes
+    uint64_t message = 1234;
+    my_blocking_stream_send(ucp_worker, server_ep, &message, sizeof(message));
+    printf("Sent message %lu, (%lu bytes)\n", message, sizeof(message));
 
-    // uint64_t *message = malloc(sizeof(uint64_t) * 100); // alloc a lot more than we need, just for testing
-    // *message = 1234;
-    // void *request = ucp_am_send_nbx(server_ep, AM_MSG_ID, NULL, 0, message, sizeof(uint64_t), &send_param);
-    // blocking_flush(server_ep, ucp_worker);
+    // message = 5500550055;
+    // my_blocking_stream_send(ucp_worker, server_ep, &message, sizeof(message));
+    // printf("Sent message %lu, (%lu bytes)\n", message, sizeof(message));
+    
+    // message = 4444477777;
+    // my_blocking_stream_send(ucp_worker, server_ep, &message, sizeof(message));
+    // printf("Sent message %lu, (%lu bytes)\n", message, sizeof(message));
 
-    // static uint64_t message = 1234;
-    // void *request = ucp_am_send_nbx(server_ep, AM_MSG_ID, NULL, 0, &message, sizeof(uint64_t), &send_param);
-    // blocking_flush(server_ep, ucp_worker);
-
-
-    uint64_t *message = malloc(sizeof(uint64_t) * 100); // alloc a lot more than we need, just for testing
-    *message = 1234;
-    void *request = ucp_am_send_nbx(server_ep, AM_MSG_ID, NULL, 0, message, sizeof(uint64_t), &send_param);
-    blocking_flush(server_ep, ucp_worker);
-
+    // uint32_t msg2[10];
+    // for (uint32_t i = 0; i < 10; i++) {
+    //     msg2[i] = i;
+    // }
+    // my_blocking_stream_send(ucp_worker, server_ep, msg2, sizeof(msg2[0]) * 10);
 
 }
 
-
-/**
- * Check if at least one feature flag from @a _flags is initialized.
- */
-// #define UCP_CONTEXT_CHECK_FEATURE_FLAGS(_context, _flags, _action) \
-//     do { \
-//         if (ENABLE_PARAMS_CHECK && \
-//             ucs_unlikely(!((_context)->config.features & (_flags)))) {  \
-//             size_t feature_list_str_max = 512; \
-//             char *feature_list_str = ucs_alloca(feature_list_str_max);  \
-//             ucs_error("feature flags %s were not set for ucp_init()", \
-//                       ucs_flags_str(feature_list_str, feature_list_str_max,  \
-//                                     (_flags) & ~(_context)->config.features, \
-//                                     ucp_feature_str)); \
-//             _action; \
-//         } \
-//     } while (0)
-
-
-// #include <ucp_context.h>
 
 int main(int argc, char **argv)
 {
 
     bool is_server = false;
-    if (argc < 2) {
+    if (argc < 3) {
         printf("This is a server now. In this program, no arguments means server\n");
         is_server = true;
     } else {
-        printf("This is a client. You gave an argument so it's a client\n");
+        printf("This is a client. You gave two arguments so it's a client\n");
         printf("Hopefully the argument is the hostname of the server, because that's what I'm expecting.\n");
     }
 
     ucs_status_t status;
-    ucp_config_t *config;
-
-    // Okay... Config field shouldn't be NULL in ucp_init I think. Need to read config then. That fixes one error at least.
-    status = ucp_config_read(NULL, NULL, &config);
-    if (status != UCS_OK) {
-        fprintf(stderr, "PROGRAM ERROR! ucp_config_read failed\n");
-        return EXIT_FAILURE;
-    }
 
     ucp_context_h ucp_context;
     ucp_params_t ucp_params = {};
-    memset(&ucp_params, 0, sizeof(ucp_params));
-    // ucp_params.field_mask = UCP_PARAM_FIELD_FEATURES | UCP_FEATURE_EXPORTED_MEMH;  // UCP_FEATURE_EXPORTED_MEMH is used in perftest
-    ucp_params.field_mask = UCP_PARAM_FIELD_FEATURES;
-
-    // ucp_params.field_mask   = UCP_PARAM_FIELD_FEATURES |
-    //                           UCP_PARAM_FIELD_REQUEST_SIZE |
-    //                           UCP_PARAM_FIELD_REQUEST_INIT;
+    // ucp_params.field_mask = UCP_PARAM_FIELD_FEATURES;
+    ucp_params.field_mask   = UCP_PARAM_FIELD_FEATURES |
+                              UCP_PARAM_FIELD_REQUEST_SIZE |
+                              UCP_PARAM_FIELD_REQUEST_INIT |
+                              UCP_PARAM_FIELD_NAME;
 
     // handle callback, function and it's parameter (request) size
-    // ucp_params.request_size = sizeof(struct my_ucx_context);
-    // ucp_params.request_init = request_init_callback;
-    ucp_params.features = UCP_FEATURE_AM;
+    ucp_params.request_size = sizeof(struct my_ucx_context);
+    ucp_params.request_init = request_init_callback;
+    ucp_params.name = "hello_there";
+    ucp_params.features = UCP_FEATURE_STREAM;
 
-    status = ucp_init(&ucp_params, config, &ucp_context);
+    status = ucp_init(&ucp_params, NULL, &ucp_context);
     if (status != UCS_OK) {
         fprintf(stderr, "PROGRAM ERROR! ucp_init failed.\n");
         return EXIT_FAILURE;
     }
-    printf("Requested UCP features: 0x%lx\n", ucp_params.features);
 
     ucp_worker_h ucp_worker;
     ucp_worker_params_t worker_params = {};
-    memset(&worker_params, 0, sizeof(worker_params));
     worker_params.field_mask  = UCP_WORKER_PARAM_FIELD_THREAD_MODE;
     worker_params.thread_mode = UCS_THREAD_MODE_SINGLE;
     status = ucp_worker_create(ucp_context, &worker_params, &ucp_worker);
@@ -447,28 +506,10 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-
-    // struct ucp_context *context_ptr = (struct ucp_context *) ucp_context;
-    // if (!(context_ptr->config.features & UCP_FEATURE_AM)) {
-    //     fprintf(stderr, "ERROR: UCP_FEATURE_AM is NOT set in ucp_context!\n");
-    // } else {
-    //     printf("SUCCESS: UCP_FEATURE_AM is set in ucp_context!\n");
-    // }
-
-    // if (!(ucp_context->config.features & UCP_FEATURE_AM)) {
-    //     fprintf(stderr, "ERROR: UCP_FEATURE_AM is NOT set in ucp_context!\n");
-    // } else {
-    //     printf("SUCCESS: UCP_FEATURE_AM is set in ucp_context!\n");
-    // }
-
-
-    // UCP_CONTEXT_CHECK_FEATURE_FLAGS(worker->context, UCP_FEATURE_AM,
-    //                                 fprintf(stderr, "UCP_CONTEXT_CHECK_FEATURE_FLAGS failed"));
-
-
     if (is_server) {
-        run_ucx_server(ucp_worker);
+        run_ucx_server(ucp_worker, argv[1]);
     } else {
         run_ucx_client(ucp_worker, argv[1]);
     }
+
 }
