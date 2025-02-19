@@ -31,6 +31,7 @@ ucs_status_t ucp_am_data_cb(void *arg, const void *header, size_t header_length,
 
     message_is_rendezvous = false;
 
+    return UCS_OK;
 }
 
 

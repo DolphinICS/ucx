@@ -279,6 +279,8 @@ static void my_blocking_am_recv(ucp_worker_h ucp_worker, void *message, size_t m
 }
 
 bool message_received = false;
+bool message_is_rendezvous = false;
+void * message_descriptor = NULL;
 
 static ucs_status_t my_am_recv_handler(void *arg, const void *header,
                                        size_t header_length, void *data,
@@ -286,7 +288,19 @@ static ucs_status_t my_am_recv_handler(void *arg, const void *header,
                                        const ucp_am_recv_param_t *param) {
     printf("Received Active Message: %zu bytes\n", length);
     message_received = true;
-    return UCS_OK; // Tell UCX we're done
+
+    if (param->recv_attr & UCP_AM_RECV_ATTR_FLAG_RNDV) {
+        // For rendezvous protocol the data is not available yet. Needs to be w
+        printf("Rendezvous protocol\n");
+        message_is_rendezvous = true;
+        message_descriptor = data;
+        return UCS_INPROGRESS;
+    } else {
+        // For eager protocol the data is available immediately in `data` parameter
+        printf("Eager protocol\n");
+        message_is_rendezvous = false;
+        return UCS_OK;
+    }
 }
 
 static void run_ucx_server(ucp_worker_h ucp_worker) {
@@ -313,21 +327,47 @@ static void run_ucx_server(ucp_worker_h ucp_worker) {
         ucp_worker_progress(ucp_worker);  // Wait for incoming messages.
     }
 
-    // if (am_data_desc.is_rndv) {
-    //         /* Rendezvous request has arrived, need to invoke receive operation
-    //          * to confirm data transfer from the sender to the "recv_message"
-    //          * buffer. */
-    //         params.op_attr_mask |= UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
-    //         params.cb.recv_am    = am_recv_cb;
-    //         request              = ucp_am_recv_data_nbx(ucp_worker,
-    //                                                     am_data_desc.desc,
-    //                                                     msg, msg_length,
-    //                                                     &params);
-    //     } else {
-    //         /* Data has arrived eagerly and is ready for use, no need to
-    //          * initiate receive operation. */
-    //         request = NULL;
+    // if (message_is_rendezvous) {
+    //     ucp_request_param_t params = {0};
+    //     /* Rendezvous request has arrived, need to invoke receive operation
+    //         * to confirm data transfer from the sender to the "recv_message"
+    //         * buffer. */
+    //     params.op_attr_mask |= UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
+    //     params.cb.recv_am    = am_recv_cb;
+    //     void *request              = ucp_am_recv_data_nbx(ucp_worker,
+    //                                                 am_data_desc.desc,
+    //                                                 msg, msg_length,
+    //                                                 &params);
+        
+    //     if (request == NULL) {
+    //         printf("Send completed immediately\n");
+    //         return;
     //     }
+
+    //     // Check for error status
+    //     if (UCS_PTR_IS_ERR(request)) {
+    //         fprintf(stderr, "PROGRAM ERROR! ucp_tag_send_nbx failed: %s\n", ucs_status_string(UCS_PTR_STATUS(request)));
+    //         exit(EXIT_FAILURE);
+    //     }
+        
+    //     struct my_ucx_context *ctx = (struct my_ucx_context *)request;
+    //     while (!ctx->completed) {
+    //         ucp_worker_progress(ucp_worker);
+    //     }
+
+    //     ucs_status_t status = ucp_request_check_status(request);
+    //     ucp_request_free(request);
+    //     if (status != UCS_OK) {
+    //         fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
+    //         exit(EXIT_FAILURE);
+    //     }
+
+
+    // } else {
+    //     /* Data has arrived eagerly and is ready for use, no need to
+    //         * initiate receive operation. */
+    //     return;
+    // }
 
     sleep(1);
 }
@@ -385,7 +425,7 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
     uint64_t *message = malloc(sizeof(uint64_t) * 100); // alloc a lot more than we need, just for testing
     *message = 1234;
     void *request = ucp_am_send_nbx(server_ep, AM_MSG_ID, NULL, 0, message, sizeof(uint64_t), &send_param);
-    // blocking_flush(server_ep, ucp_worker);
+    blocking_flush(server_ep, ucp_worker);
 
 
 
