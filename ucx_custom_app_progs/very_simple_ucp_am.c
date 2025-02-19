@@ -346,7 +346,6 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
 
     /* -- Client done with addresses -- */
     printf("Successfully received ucp address from server\n");
-    ucp_ep_h server_ep;
 
     ucp_request_param_t send_param = {0};
     send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE | UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
@@ -362,11 +361,32 @@ static void run_ucx_client(ucp_worker_h ucp_worker, char *server_hostname){
     // void *request = ucp_am_send_nbx(server_ep, AM_MSG_ID, NULL, 0, &message, sizeof(uint64_t), &send_param);
     // blocking_flush(server_ep, ucp_worker);
 
+    ucp_err_handling_mode_t ucp_err_mode = UCP_ERR_HANDLING_MODE_PEER;
+
+    static ucs_status_t ep_status = UCS_OK;
+    ucp_ep_params_t ep_params;
+    ep_params.field_mask      = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS |
+                                UCP_EP_PARAM_FIELD_ERR_HANDLING_MODE |
+                                UCP_EP_PARAM_FIELD_ERR_HANDLER |
+                                UCP_EP_PARAM_FIELD_USER_DATA;
+    ep_params.address         = peer_addr;
+    ep_params.err_mode        = ucp_err_mode;
+    ep_params.err_handler.cb  = failure_handler;
+    ep_params.err_handler.arg = NULL;
+    ep_params.user_data       = &ep_status;
+
+    ucp_ep_h server_ep;
+    ucs_status_t status = ucp_ep_create(ucp_worker, &ep_params, &server_ep);
+    if (status != UCS_OK) {
+        fprintf(stderr, "PROGRAM ERROR! ucp_ep_create failed.\n");
+        exit(EXIT_FAILURE);
+    }
 
     uint64_t *message = malloc(sizeof(uint64_t) * 100); // alloc a lot more than we need, just for testing
     *message = 1234;
     void *request = ucp_am_send_nbx(server_ep, AM_MSG_ID, NULL, 0, message, sizeof(uint64_t), &send_param);
-    blocking_flush(server_ep, ucp_worker);
+    // blocking_flush(server_ep, ucp_worker);
+
 
 
 }
