@@ -327,47 +327,47 @@ static void run_ucx_server(ucp_worker_h ucp_worker) {
         ucp_worker_progress(ucp_worker);  // Wait for incoming messages.
     }
 
-    // if (message_is_rendezvous) {
-    //     ucp_request_param_t params = {0};
-    //     /* Rendezvous request has arrived, need to invoke receive operation
-    //         * to confirm data transfer from the sender to the "recv_message"
-    //         * buffer. */
-    //     params.op_attr_mask |= UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
-    //     params.cb.recv_am    = am_recv_cb;
-    //     void *request              = ucp_am_recv_data_nbx(ucp_worker,
-    //                                                 am_data_desc.desc,
-    //                                                 msg, msg_length,
-    //                                                 &params);
+    if (message_is_rendezvous) {
+        ucp_request_param_t params = {0};
+        /* Rendezvous request has arrived, need to invoke receive operation
+            * to confirm data transfer from the sender to the "recv_message"
+            * buffer. */
+        params.op_attr_mask |= UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
+        params.cb.recv_am    = am_recv_cb;
+        void *request              = ucp_am_recv_data_nbx(ucp_worker,
+                                                    am_data_desc.desc,
+                                                    msg, msg_length,
+                                                    &params);
         
-    //     if (request == NULL) {
-    //         printf("Send completed immediately\n");
-    //         return;
-    //     }
+        if (request == NULL) {
+            printf("Send completed immediately\n");
+            return;
+        }
 
-    //     // Check for error status
-    //     if (UCS_PTR_IS_ERR(request)) {
-    //         fprintf(stderr, "PROGRAM ERROR! ucp_tag_send_nbx failed: %s\n", ucs_status_string(UCS_PTR_STATUS(request)));
-    //         exit(EXIT_FAILURE);
-    //     }
+        // Check for error status
+        if (UCS_PTR_IS_ERR(request)) {
+            fprintf(stderr, "PROGRAM ERROR! ucp_tag_send_nbx failed: %s\n", ucs_status_string(UCS_PTR_STATUS(request)));
+            exit(EXIT_FAILURE);
+        }
         
-    //     struct my_ucx_context *ctx = (struct my_ucx_context *)request;
-    //     while (!ctx->completed) {
-    //         ucp_worker_progress(ucp_worker);
-    //     }
+        struct my_ucx_context *ctx = (struct my_ucx_context *)request;
+        while (!ctx->completed) {
+            ucp_worker_progress(ucp_worker);
+        }
 
-    //     ucs_status_t status = ucp_request_check_status(request);
-    //     ucp_request_free(request);
-    //     if (status != UCS_OK) {
-    //         fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
-    //         exit(EXIT_FAILURE);
-    //     }
+        ucs_status_t status = ucp_request_check_status(request);
+        ucp_request_free(request);
+        if (status != UCS_OK) {
+            fprintf(stderr, "PROGRAM ERROR! ucp_request_free failed.\n");
+            exit(EXIT_FAILURE);
+        }
 
 
-    // } else {
-    //     /* Data has arrived eagerly and is ready for use, no need to
-    //         * initiate receive operation. */
-    //     return;
-    // }
+    } else {
+        /* Data has arrived eagerly and is ready for use, no need to
+            * initiate receive operation. */
+        return;
+    }
 
     sleep(1);
 }

@@ -1,0 +1,96 @@
+
+hello_world(data):
+    if rendezvous
+        desc_holder = data
+        return UCS_INPROGRESS
+    else
+        desc_holder = malloc(...)
+        memcpy(desc_holder, data)
+        return UCX_OK
+
+
+init_iface(dev_name, tl_name, md, worker)
+           < iface_attr, iface >
+
+    - uct_md_iface_config_read(md, tl_name) < config > , config freed after uct_iface_open
+
+    // params:
+    // * flags: open, device, stats_root, rx_headroom, cpu_mask.
+    // open_mode=device, device.tl_name=tl_name, device.dev_name=dev_name, stats_root=NULL, rx_headroom=sizeof(recv_desc_t)
+    // UCS_CPU_ZERO(&params.cpu_mask)
+    - uct_iface_open(md, worker, &params, config) < iface >
+
+    - uct_iface_progress_enable(iface, flags)
+
+    - uct_iface_query(iface) <iface_attr>
+
+
+main:
+    - ucs_async_context_create  < async_context >
+    - uct_worker_create (async_context)  < worker >
+
+    - dev_tl_lookup(dev_name, tl_name, worker)  < iface_attr, iface, md_attr, md >
+    
+        - uct_query_components <components, num_components >
+
+        - for each component:
+            - uct_component_query #RES_CNT < component_attr >
+            - alloc resource array of size res_cnt
+            - uct_component_query #MD_RES_ARR < component_attr >
+
+            // Note to self, component_attr.md_resources[md_index].md_name, can probably use this to find relevant component immediately
+
+            - for each md i.e. memory domain
+                - uct_md_config_read < md_config >  , md_config freed after uct_md_open with uct_config_release
+
+                - uct_md_open(components[cmpt_index],
+                              component_attr.md_resources[md_index].md_name,
+                              md_config)
+                              < md >
+                
+                - uct_md_query(md) < md_attr >
+
+                - uct_md_query_tl_resources(md) < tl_resources, num_tl_resources >
+
+                // tl_resources[tl_index].dev_name, tl_resources[tl_index].tl_name  surely this can be used to find our transport
+
+                - for each tl_resource in tl_resources
+                    - init_iface(tl_resources[tl_index].dev_name,
+                                 tl_resources[tl_index].tl_name,
+                                 worker,
+                                 md)
+                                 < iface_attr, iface >
+                
+    - uct_iface_set_am_handler(iface, id) CB->hello_world
+
+    - connect_common(server_name, server_port, ai_family) < socket >
+
+    - uct_iface_get_device_address(iface) < own_dev_addr >
+    - sendrecv(socket, own_dev_addr, iface_attr.device_addr_len) < peer_dev_addr >
+
+    - uct_iface_get_address(iface) < own_iface_addr >
+    - sendrecv(socket, own_iface_addr, iface_attr.iface_addr_len) < peer_iface_addr >
+
+    - assert uct_iface_is_reachable(iface, peer_dev_addr, iface_addr)
+
+    // if else test to see whether some extra steps needs to be taken for that transport or not
+    // Let's just assume that the else-if case is true and that we can connect to iface whatever that means.
+    // It seems to mean that we can just create an endpoint with uct_ep_create without getting an enpoint address and sending it over, then connecting to it
+    // It's a mess
+    //   * if (if_info.iface_attr.cap.flags & UCT_IFACE_FLAG_CONNECT_TO_EP)
+    //   * else if (if_info.iface_attr.cap.flags & UCT_IFACE_FLAG_CONNECT_TO_IFACE)
+
+    ep_params.field_mask = UCT_EP_PARAM_FIELD_IFACE;
+    ep_params.iface      = iface;
+    - uct_ep_create(ep_params) < endpoint >
+
+    assert that test string length is not higher than allowed.
+
+    if (server) 
+        - mem_type_malloc < str >
+        - fill_with_data(str)
+        - do_am_short
+            - am_short_params_pack
+            - do while (status == UCS_ERR_NO_RESOURCE)
+                - uct_ep_am_short
+                - uct_worker_progress
