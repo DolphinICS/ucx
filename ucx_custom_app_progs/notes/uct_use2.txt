@@ -1,10 +1,14 @@
 
+buffer[MAX_SIZE]
+
+desc_holder = NULL;
+
 hello_world(data):
     if rendezvous
         desc_holder = data
         return UCS_INPROGRESS
     else
-        desc_holder = malloc(...)
+        desc_holder = buffer
         memcpy(desc_holder, data)
         return UCX_OK
 
@@ -24,42 +28,53 @@ init_iface(dev_name, tl_name, md, worker)
 
     - uct_iface_query(iface) <iface_attr>
 
+dev_tl_lookup (dev_name, tl_name, worker)  < iface_attr, iface, md_attr, md >
+
+    - uct_query_components <components, num_components >
+
+    - for each component:
+        - uct_component_query #RES_CNT < component_attr >
+        - alloc resource array of size res_cnt
+        - uct_component_query #MD_RES_ARR < component_attr >
+
+        - for each md i.e. memory domain
+            - uct_md_config_read < md_config >  , md_config freed after uct_md_open with uct_config_release
+
+            - uct_md_open(components[cmpt_index],
+                            component_attr.md_resources[md_index].md_name,
+                            md_config)
+                            < md >
+            
+            - uct_md_query(md) < md_attr >
+
+            - uct_md_query_tl_resources(md) < tl_resources, num_tl_resources >
+
+            - for each tl_resource in tl_resources
+                - init_iface(tl_resources[tl_index].dev_name,
+                                tl_resources[tl_index].tl_name,
+                                worker,
+                                md)
+                                < iface_attr, iface >
+
+
+create_endpoint(iface_attr, iface, peer_dev_addr, socket) < endpoint >
+
+    ep_params.field_mask = UCT_EP_PARAM_FIELD_IFACE;
+    ep_params.iface      = iface;
+    if (if_info.iface_attr.cap.flags & UCT_IFACE_FLAG_CONNECT_TO_IFACE)
+        - uct_ep_create(ep_params) < endpoint >
+    else if (if_info.iface_attr.cap.flags & UCT_IFACE_FLAG_CONNECT_TO_EP)
+        - uct_ep_create(ep_params) < endpoint >
+        - uct_ep_get_address(endpoint) < own_endpoint_addr >
+        - sendrecv(socket, own_endpoint_addr, iface_attr.ep_addr_len) < peer_endpoint_addr >
+        - uct_ep_connect_to_ep(endpoint, peer_dev_addr, peer_endpoint_addr)
+        - barrier
 
 main:
     - ucs_async_context_create  < async_context >
     - uct_worker_create (async_context)  < worker >
 
     - dev_tl_lookup(dev_name, tl_name, worker)  < iface_attr, iface, md_attr, md >
-    
-        - uct_query_components <components, num_components >
-
-        - for each component:
-            - uct_component_query #RES_CNT < component_attr >
-            - alloc resource array of size res_cnt
-            - uct_component_query #MD_RES_ARR < component_attr >
-
-            // Note to self, component_attr.md_resources[md_index].md_name, can probably use this to find relevant component immediately
-
-            - for each md i.e. memory domain
-                - uct_md_config_read < md_config >  , md_config freed after uct_md_open with uct_config_release
-
-                - uct_md_open(components[cmpt_index],
-                              component_attr.md_resources[md_index].md_name,
-                              md_config)
-                              < md >
-                
-                - uct_md_query(md) < md_attr >
-
-                - uct_md_query_tl_resources(md) < tl_resources, num_tl_resources >
-
-                // tl_resources[tl_index].dev_name, tl_resources[tl_index].tl_name  surely this can be used to find our transport
-
-                - for each tl_resource in tl_resources
-                    - init_iface(tl_resources[tl_index].dev_name,
-                                 tl_resources[tl_index].tl_name,
-                                 worker,
-                                 md)
-                                 < iface_attr, iface >
                 
     - uct_iface_set_am_handler(iface, id) CB->hello_world
 
@@ -73,16 +88,7 @@ main:
 
     - assert uct_iface_is_reachable(iface, peer_dev_addr, iface_addr)
 
-    // if else test to see whether some extra steps needs to be taken for that transport or not
-    // Let's just assume that the else-if case is true and that we can connect to iface whatever that means.
-    // It seems to mean that we can just create an endpoint with uct_ep_create without getting an enpoint address and sending it over, then connecting to it
-    // It's a mess
-    //   * if (if_info.iface_attr.cap.flags & UCT_IFACE_FLAG_CONNECT_TO_EP)
-    //   * else if (if_info.iface_attr.cap.flags & UCT_IFACE_FLAG_CONNECT_TO_IFACE)
-
-    ep_params.field_mask = UCT_EP_PARAM_FIELD_IFACE;
-    ep_params.iface      = iface;
-    - uct_ep_create(ep_params) < endpoint >
+    - create_endpoint(iface_attr, iface, peer_dev_addr, socket) < endpoint >
 
     assert that test string length is not higher than allowed.
 

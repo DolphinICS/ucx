@@ -1,0 +1,59 @@
+rsync -avz ucx_dev/ root@mx4-dev-5:/home/hilmar/;
+
+https://openucx.readthedocs.io/en/master/running.html
+
+mkdir /hilmar_install
+sudo chmod a+rwx /hilmar_install
+
+
+$ mkdir build
+$ cd build
+
+./autogen.sh
+cd build
+../configure --prefix=/hilmar_install/ucx_install; make -j4; make install
+
+../configure --prefix=/hilmar_install/ucx_install --enable-debug --enable-logging; make -j4; make install
+
+../configure --prefix=/hilmar_install/ucx_install --enable-debug --enable-logging --enable-assertions; make -j4; make install
+
+
+
+hilmar@mx4-dev-5:~/ucx_dev/build$ ./src/tools/perf/ucx_perftest -s 32 -t am_lat -d eno1 -x tcp
+hilmar@mx4-dev-6:~/ucx_dev/build$ ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -d eno1 -x tcp
+
+hilmar@mx4-dev-5:~/ucx_clean$ ./build/src/tools/perf/ucx_perftest -s 32 -t am_lat -d eno1 -x tcp
+hilmar@mx4-dev-6:~/ucx_clean$ ./build/src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -d eno1 -x tcp
+
+hilmar@mx4-dev-5:~/ucx_dev/build$ ./src/tools/info/ucx_info -d
+
+
+sisci_2097152  -t am_lat -D short  -d sci -x sci -s 2097152 -n 300
+sisci_1024     -t am_lat -D short  -d sci -x sci -s    1024 -n 1000
+
+
+hilmar@mx4-dev-5:~/ucx_sigurd/ucx-sisci/build$ ./src/tools/perf/ucx_perftest -t am_lat -D short  -d sci -x sci -s 1024 -n 1000
+hilmar@mx4-dev-6:~/ucx_sigurd/ucx-sisci/build$ ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d sci -x sci -n 1000
+
+./src/tools/perf/ucx_perftest -t am_lat -D short  -d sci -x sci -s 1024 -n 1
+./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d sci -x sci -n 1
+
+hilmar@mx4-dev-5:~/ucx_sigurd/ucx-sisci/build$ ./src/tools/perf/ucx_perftest -s 1024 -t am_lat -d eno1 -x tcp
+hilmar@mx4-dev-6:~/ucx_sigurd/ucx-sisci/build$ ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d eno1 -x tcp -n 1000
+
+
+# Developer build
+$ ./autogen.sh
+$ ./contrib/configure-devel --prefix=$PWD/install-debug
+
+
+maybe check out uct_hello_word.c?
+
+UCX APIs etc on download page: https://openucx.org/downloads/
+
+
+ucx_info -u m -c
+ucx_info -f
+ucx_info -f | grep -i AM
+
+

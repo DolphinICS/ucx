@@ -1,0 +1,55 @@
+Okay, so we have these macros
+
+UCS_CLASS_INIT_FUNC
+UCS_CLASS_CLEANUP_FUNC
+
+They are used to make the initialze and cleanup functions for a class.
+They make sure that initialize and cleanup functions follow a certain prototype such that UCX will now how to use it.
+Uhh, kind of, no, it actually is a subclass of another class which UCX knows how to use.
+Or wait yeah, UCX will call this UCS_CLASS_INIT_FUNC function, but then that function will call the super class constructor then do other setup.
+UCS_CLASS_CALL_SUPER_INIT is used to call the super class's constructor, basically using container_of type of macros common in C and Linux.
+
+UCS_CLASS_DEFINE actually defines what the class is, this will also be what is given as "self" in the init function for example, and other places.
+UCX will pass in that object as a self parameter to each function (similar to classes in python actually).
+
+
+// Hey this is the constructor. init function
+static UCS_CLASS_INIT_FUNC(uct_mytype_t, ...) {
+
+    // super constructor. Do parent class's constructor
+    UCS_CLASS_CALL_SUPER_INIT(...)
+    
+    // Do other stuff too probably.
+    ...
+}
+
+// This is the destructor. cleanup function
+static UCS_CLASS_CLEANUP_FUNC(uct_my_type_t) {
+    // Just undo whatever was done in UCS_CLASS_INIT_FUNC
+}
+
+
+// // At least two base types here
+// uct_base_iface_t
+// uct_base_ep_t
+
+UCS_CLASS_DEFINE(uct_mytype_t, uct_base_iface_t)
+or
+UCS_CLASS_DEFINE(uct_mytype_t, uct_base_ep_t)
+
+depending on which one.
+I believe this sets the self variable somehow, it seems related.
+And it informs ucx of the relation between the class we use and its parent class.
+Or I suppose it says which type mytype inherits from, hmmm....
+
+// Very similar concept to UCS_CLASS_DEFINE I suppose.
+// Informs that there is an init function that takes is named after uct_mytype_t in UCS_CLASS_INIT_FUNC
+// and then gives a series of parameters that are associated with, but before then also gives uct_base_iface_t
+// Really don't understand why this is also needed, this seems redundant, it could be inferred from UCS_CLASS_DEFINE
+// right? One of these macros seems to be redundant surely. This seems like a bad consequence of trying to implement
+// a language with macros.
+UCS_CLASS_DEFINE_NEW_FUNC(uct_mytype_t, uct_base_iface_t, ...)
+
+// Basically equivalent as UCS_CLASS_DEFINE_NEW_FUNC but for cleanup I think
+UCS_CLASS_DEFINE_DELETE_FUNC
+ 

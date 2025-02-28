@@ -402,6 +402,18 @@ ucs_status_t uct_iface_get_device_address(uct_iface_h iface, uct_device_addr_t *
 
 /**
  * @ingroup UCT_RESOURCE
+ * @brief Get interface address.
+ *
+ * requires @ref UCT_IFACE_FLAG_CONNECT_TO_IFACE.
+ *
+ * @param [in]  iface       Interface to query.
+ * @param [out] addr        Filled with interface address. The size of the buffer
+ *                          provided must be at least @ref uct_iface_attr_t::iface_addr_len.
+ */
+ucs_status_t uct_iface_get_address(uct_iface_h iface, uct_iface_addr_t *addr);
+
+/**
+ * @ingroup UCT_RESOURCE
  * @brief Check if remote iface address is reachable.
  *
  * This function checks if a remote address can be reached from a local interface.
@@ -456,3 +468,27 @@ int uct_iface_is_reachable(const uct_iface_h iface, const uct_device_addr_t *dev
  * @return              Error code as defined by @ref ucs_status_t
  */
 ucs_status_t uct_ep_create(const uct_ep_params_t *params, uct_ep_h *ep_p);
+
+/**
+ * @ingroup UCT_RESOURCE
+ * @brief Get endpoint address.
+ *
+ * @param [in]  ep       Endpoint to query.
+ * @param [out] addr     Filled with endpoint address. The size of the buffer
+ *                       provided must be at least @ref uct_iface_attr_t::ep_addr_len.
+ */
+ucs_status_t uct_ep_get_address(uct_ep_h ep, uct_ep_addr_t *addr);
+
+/**
+ * @ingroup UCT_RESOURCE
+ * @brief Connect endpoint to a remote endpoint.
+ *
+ * requires @ref UCT_IFACE_FLAG_CONNECT_TO_EP capability.
+ *
+ * @param [in] ep           Endpoint to connect.
+ * @param [in] dev_addr     Remote device address.
+ * @param [in] ep_addr      Remote endpoint address.
+ */
+ucs_status_t uct_ep_connect_to_ep(uct_ep_h ep, const uct_device_addr_t *dev_addr,
+                                  const uct_ep_addr_t *ep_addr);
+

@@ -1,0 +1,70 @@
+uct_iface_ops_t uct_sci_iface_ops = {
+    .ep_am_short = uct_sci_ep_am_short,
+    .ep_am_bcopy = uct_sci_ep_am_bcopy,
+    .ep_am_zcopy = uct_sci_ep_am_zcopy,
+    .ep_create = UCS_CLASS_NEW_FUNC_NAME(uct_sci_ep_t),
+    .ep_destroy = UCS_CLASS_DELETE_FUNC_NAME(uct_sci_ep_t),
+    .iface_close = UCS_CLASS_DELETE_FUNC_NAME(uct_sci_iface_t),
+    .iface_progress           = uct_sci_iface_progress,
+    .iface_query              = uct_sci_iface_query,
+    .iface_get_device_address = uct_sci_get_device_address,
+    .iface_get_address        = uct_sci_iface_get_address,
+    .iface_is_reachable       = uct_sci_iface_is_reachable,
+}
+
+uct_component_t uct_sci_component = {
+    .md_open            = uct_sci_md_open,
+}
+
+static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
+                           const uct_iface_params_t *params,
+                           const uct_iface_config_t *tl_config);
+
+UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t);
+
+typedef struct uct_sci_iface {
+    uct_base_iface_t            super;
+    ... [internal implementation fields]
+} uct_sci_iface_t;
+
+
+Before UCS_CLASS_INIT_FUNC_for_uct_sci_iface_t is called it seems like 
+
+
+UCS_CLASS_INIT_FUNC_for_uct_sci_iface_t (md, worker, iface_params, iface_config):
+    - sci_md = derived_of(md)             // sci_md.super = md, reverse that
+    - config = derived_of(iface_config)   // iface_config.super = config, reverse that
+
+    // assert UCT_IFACE_PARAM_FIELD_OPEN_MODE bit set in params->field_mask
+
+    // priv_worker = derived_of(worker)
+    // assert priv_worker->thread_mode != UCS_THREAD_MODE_MULTI
+    // Make sure sisci transport is used by a single threaded worker, it does not support multi-threaded workers
+
+    // init lock that is used by connection handler
+    - mutex_init(self->lock)
+
+    - UCS_CLASS_CALL_SUPER_INIT_for_uct_base_iface_t(
+        uct_sci_iface_ops,
+        uct_base_iface_internal_ops,
+        md,
+        worker,
+        params,
+        tl_config
+        UCS_STATS_ARG(...)
+      )
+
+    SCIGetLocalNodeId(adapter_id, flags) < node_id >
+
+    self.device_addr = nodeID;
+    self.segment_id  = ucs_generate_uuid(trash);
+    self.ctl_id      = ucs_generate_uuid(trash);
+    self.send_size   = config->send_size;
+    self.eps         = 0;
+    self.max_eps     = MIN(SCI_MAX_EPS, config->max_eps);
+    self.connections = 0;
+    self.queue_size  = config->queue_size;
+
+    - SCIOpen < self.sd_for_endpoints >
+
+    - SCIOpen < self.sd_for_control >

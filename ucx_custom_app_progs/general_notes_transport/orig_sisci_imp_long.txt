@@ -1,0 +1,155 @@
+
+CURRENT STATE UPON COPYING THINGS OVER
+
+------- sisci_ep ---------
+
+sisci_ep is relevant for remote segment.
+
+`static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)`
+
+Sets up remote segment connection used for sending. (SCIConnectSegment, SCIMapRemoteSegment)
+Some interrupts are also set up and used (don't know why, it may or may not be used properly, it could be useful though.)
+
+
+`static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)`
+Unaps and disconnects remote segment.
+
+Summary: init function sets up remote segment connection. cleanup function tears it down.
+
+------- sisci_iface ---------
+
+Mostly not used except some simple macros of unknown purpose.
+
+sisci_md is also empty.
+
+
+------ sisci.h / sisci.c -----------
+
+has structs for managing things, some may have been intended for something but may not be necessary.
+
+uct_sci_iface_addr - holds segment_id, only used to store it and then immediately put the value somewhere else, may not have a function.
+
+uct_sci_device_addr - also pobably not needed. Holds node_id and nothing else, which is immediatly just set before a printout.
+Only used with some qnx stuff here
+in uct_sci_iface_query: attr->device_addr_len  = sizeof(uct_sci_device_addr_t);
+Probably not needed however, this could be attr->device_addr_len = sizeof(uint32_t)
+But then again, maybe it could be future proofing.
+
+typedef struct sci_ctl {
+    unsigned int status;
+    uint32_t     ack;
+}   sci_ctl_t;
+
+This struct seems to have a purpose... Maybe. status is set to one a lot of places, never set to zero.
+ack is uised though:
+if(ep->seq - ctl->ack >= iface->queue_size)   ; in uct_sci_ep_am_short
+
+status field of any struct never set to zero anywhere, maybe QNX does this, but they are internal structs so it is rather strange.
+
+typedef struct sci_packet {
+    uint8_t     status;
+    uint8_t     am_id;
+    unsigned    length;
+    //void        data;
+} UCS_S_PACKED sci_packet_t;
+
+in uct_sci_ep_am_short
+	sci_packet_t* packet;
+	packet = ep->buf + offset;
+	packet->am_id = id;
+	packet->length = length + sizeof(header);
+	acket->status = 1;
+	
+
+
+uct_sci_ep_am_short seems important, let's describe it
+
+uct_sci_ep_t* ep
+First gets a pointer to an endpoint struct  (remote segment, where to send to), Used to get some offset related things. Send size, sequence number, queue size. Whatever those things are.
+
+sci_packet_t* packet;
+A pointer to a packet struct (Only meta info apparently. status, am_id, length). 
+Packet apparently points to a certain place in a buffer which the endpoint references. That memory location holds some meta info. The struct pointer is jsut used to update that info with information about the transfer.
+
+uct_sci_iface_t* iface
+The iface struct holds a whole lot of info, mostly local resources. It seems to be used for getting some meta info, but also for getting access to a control struct pointer.
+
+sci_ctl_t* ctl = iface->ctls + ep->ctl_offset;
+ctl->status = 1;
+This is all that happens in the control struct.
+	
+uct_sci_ep_am_bcopy follows equivalent set of operations
+
+
+typedef struct uct_sci_ep {
+    uct_base_ep_t           super;
+    sci_remote_segment_t    remote_segment;
+    sci_map_t               remote_map;
+    // Badly named probably, send_size is the size of the copy out buffer.
+    // So if you send a large section of memory then it gets chopped up into multiple copy operations.
+    // better name: packet_size
+    unsigned int            send_size;
+    // Message Queue size for each connection
+    unsigned int            queue_size;
+    unsigned int            offset;
+    unsigned int            ctl_offset;
+    unsigned int            remote_node_id;
+    unsigned int            remote_segment_id;
+    void *                  buf;
+    uint32_t                seq;
+    //sci_map_t               ctl_map;
+    //sci_ctl_t*              sci_ctl;              
+} uct_sci_ep_t;
+
+
+ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
+                                  const void *payload, unsigned length)
+{
+    
+    // Get end point pointer from standard uct_ep_h
+    // uct_sci_ep_t is apparently a subclass of uct_ep_h.
+    // Basically it specifies uct_ep_h as its parent by having a super element with that function.
+    // Then the ucx_derived_of macro is used to get a pointer to uct_sci_ep_t from uct_sci_ep.
+    // That macro in turn uses a ucs_container_of macro, which is a typical kind of macro type of macro.
+    uct_sci_ep_t* ep       = ucs_derived_of(tl_ep, uct_sci_ep_t);
+    sci_packet_t* packet; 
+    uct_sci_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_sci_iface_t);
+    sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
+    uint32_t offset = 0; 
+    
+    if (ep->seq - ctl->ack >= iface->queue_size) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+    
+    // Send size is the buffer size (I guess it should have been called packet_size, not send_size
+    // Okay, so this is the offset into a larger buffer. It is a rolling window it seems.
+    // So there are multiple copy_out buffers in one larger buffer. And it rolls over after reaching queue_size number of copies.
+    offset = ep->send_size * (ep->seq % ep->queue_size);
+    packet = ep->buf + offset;
+    // Don't know where this is checked
+    ctl->status = 1;
+    
+    packet->am_id = id;
+    packet->length = length + sizeof(header);
+    // Two flushes probably not necessary, un
+    uct_am_short_fill_data(ep->buf + offset + sizeof(sci_packet_t), header, payload, length, UCS_ARCH_MEMCPY_NT_DEST);
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);    
+    packet->status = 1;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    ep->seq++; // increment sequence number, will be used next time this is called actually
+    DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d SEQ:%d\n", ep->remote_segment_id, ep->remote_node_id, id, packet->length, ep->seq);
+    return UCS_OK;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+

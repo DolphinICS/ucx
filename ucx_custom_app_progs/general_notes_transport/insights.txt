@@ -1,0 +1,6 @@
+On init a callback is used to register connections with any endpoints.
+
+Endpoints can then connect to a data interrupt and send and receive data from iface to establish a connection.
+
+The conn_handler callback established by iface on iface init communicates with the end point's init function.
+

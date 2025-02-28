@@ -1,0 +1,92 @@
+// Callchain for
+//    - ./src/tools/perf/ucx_perftest -t am_lat -D short  -d sci -x sci -s 1024 -n 1
+// And seemingly for the other end as well:
+//    - ~/0_investigate_calltraces/build$ ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d sci -x sci -n 1
+
+in --- uct_sci_md_open
+in --- uct_sci_query_devices(uct_sci_iface_t, ...)
+in --- UCS_CLASS_INIT_FUNC(uct_sci_iface_t, ...)
+in --- uct_sci_iface_query
+in --- uct_sci_mem_alloc
+in --- uct_sci_mem_alloc
+in --- uct_sci_iface_progress_enable
+in --- uct_sci_iface_query
+in --- uct_sci_get_device_address
+in --- uct_sci_iface_get_address
+in --- uct_sci_iface_is_reachable
+in --- uct_sci_md_rkey_unpack
+in --- UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
+in --- uct_sci_iface_progress (only printed once)
+in --- sci_callback_action_t conn_handler(...)
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_ep_am_short (only printed once)
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- uct_sci_iface_query
+in --- static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
+in --- uct_sci_mem_free
+in --- uct_sci_mem_free
+in --- UCS_CLASS_CLEANUP_FUNC
+
+
+
+Details:
+	- uct_sci_ep_am_short is sent a lot since UCX wants to make sure it benchmarks things correctly (apparently)
+	
+	- uct_sci_iface_query for active messages a cpu is basically just spin waiting by calling this function.
+	  it is therefore called all the time, more often than uct_sci_ep_am_short.
+	  It is used to check whether a message has been sent yet.
+	  Takes up an entire CPU throughout the sending of a message basically, to ensure low latency (low latency vs CPU usage tradeoff)
+	  This might just be because the performance program wants to test the latency though. A typical program might do some work in this period instead.
+	  
+	- uct_sci_ep_am_short Does periodic checks. Checks bandwidth, message size, health status etc (if implemented to support this I assume).
+
+
+
+uct_iface_open -> magic -> UCS_CLASS_INIT_FUNC(uct_sci_iface_t, ...)
+
+
+uct_iface_close -> ? -> ucs_class_call_cleanup_chain -> magic -> UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
+
+uct_md_open -> ? -> uct_sci_md_open
+
+uct_iface_open:
+	uct_find_tl
+	ucs_vfs_obj_add_dir
+	ucs_vfs_obj_add_sym_link
+	ucs_vfs_obj_set_dirty
+
+void uct_iface_close(uct_iface_h iface)
+{
+    ucs_vfs_obj_remove(iface);
+    iface->ops.iface_close(iface);
+}
+
+
+
