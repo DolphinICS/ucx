@@ -1,3 +1,4 @@
+
 uct_iface_ops_t uct_sci_iface_ops = {
     .ep_am_short = uct_sci_ep_am_short,
     .ep_am_bcopy = uct_sci_ep_am_bcopy,
@@ -16,6 +17,25 @@ uct_component_t uct_sci_component = {
     .md_open            = uct_sci_md_open,
 }
 
+
+Call order:
+    - uct_sci_md_open
+    - uct_sci_query_devices
+    - UCS_CLASS_INIT_FUNC_for_uct_sci_iface_t
+    (then the rest with some unclear chaotic ordering)
+    - uct_sci_iface_query (once here, multiple times afterwards)
+    - uct_sci_mem_alloc (twice)
+    - uct_sci_iface_progress_enable
+    - uct_sci_iface_query
+    - uct_sci_get_device_address
+    - uct_sci_iface_get_address
+    - uct_sci_iface_is_reachable
+    - uct_sci_md_rkey_unpack
+    - UCS_CLASS_INIT_FUNC_for_uct_sci_ep_t
+    - uct_sci_iface_progress
+    - sci_callback_action_t
+    // Then message sending, querying, and cleanup
+
 static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
                            const uct_iface_params_t *params,
                            const uct_iface_config_t *tl_config);
@@ -28,21 +48,47 @@ typedef struct uct_sci_iface {
 } uct_sci_iface_t;
 
 
-Before UCS_CLASS_INIT_FUNC_for_uct_sci_iface_t is called it seems like 
+uct_sci_md_open(config) < md_name, md_p >
+    - md_config = derived_of(config)
+
+    - uct_sci_open
+        - SCIInitialize
+
+    static uct_sci_md_t sci_md; // variable stored in program memory
+    - SCIOpen < sci_md.sci_virtual_device >
+
+    // md_ops is a struct with function pointers for the memory domain
+    md.super.ops = &md_ops
+    sci_md.super.component = &uct_sci_component
+    md_num_devices = 11
+
+    *md_p = &sci_md.super
+    md_name = "sisci"
 
 
-UCS_CLASS_INIT_FUNC_for_uct_sci_iface_t (md, worker, iface_params, iface_config):
-    - sci_md = derived_of(md)             // sci_md.super = md, reverse that
-    - config = derived_of(iface_config)   // iface_config.super = config, reverse that
+// sci_md is made in uct_sci_md_open, and it can be accessed through the
+// md (memory domain) parameter for other fucntions
+//
+// In uct_sci_md_open:
+//    -- static uct_sci_md_t sci_md
+//    -- *md_p = &sci_md.super       // this is just the first part of the sci_md struct stored in program memory above
+//
+// In UCS_CLASS_INIT_FUNC _for_uct_sci_iface_t
+//    -- sci_md = derived_of(md)
+//
 
-    // assert UCT_IFACE_PARAM_FIELD_OPEN_MODE bit set in params->field_mask
+UCS_CLASS_INIT_FUNC _for_uct_sci_iface_t (md, worker, iface_params, iface_config):
+    - sci_md = derived_of(md)             // sci_md.super = md, reverse of that
+    - config = derived_of(iface_config)   // iface_config.super = config, reverse of that
+
+    // assert UCT_IFACE_PARAM_FIELD_OPEN_MODE bit set in params.field_mask
 
     // priv_worker = derived_of(worker)
-    // assert priv_worker->thread_mode != UCS_THREAD_MODE_MULTI
+    // assert priv_worker.thread_mode != UCS_THREAD_MODE_MULTI
     // Make sure sisci transport is used by a single threaded worker, it does not support multi-threaded workers
 
     // init lock that is used by connection handler
-    - mutex_init(self->lock)
+    - mutex_init(self.lock)
 
     - UCS_CLASS_CALL_SUPER_INIT_for_uct_base_iface_t(
         uct_sci_iface_ops,
@@ -54,17 +100,35 @@ UCS_CLASS_INIT_FUNC_for_uct_sci_iface_t (md, worker, iface_params, iface_config)
         UCS_STATS_ARG(...)
       )
 
-    SCIGetLocalNodeId(adapter_id, flags) < node_id >
+    - SCIGetLocalNodeId(adapter_id, flags) < node_id >
 
     self.device_addr = nodeID;
     self.segment_id  = ucs_generate_uuid(trash);
     self.ctl_id      = ucs_generate_uuid(trash);
-    self.send_size   = config->send_size;
+    self.send_size   = config.send_size;
     self.eps         = 0;
-    self.max_eps     = MIN(SCI_MAX_EPS, config->max_eps);
+    self.max_eps     = MIN(SCI_MAX_EPS, config.max_eps);
     self.connections = 0;
-    self.queue_size  = config->queue_size;
+    self.queue_size  = config.queue_size;
 
     - SCIOpen < self.sd_for_endpoints >
 
     - SCIOpen < self.sd_for_control >
+
+    // Create a "receive segment"
+    recv_segment_size = self.send_size * self.max_eps * self.queue_size
+    - SCICreateSegment (sci_md.sci_virtual_device, self.segment_id, recv_segment_size) < self.local_segment >
+    - SCIPrepareSegment < self.local_segment >
+    - SCISetSegmentAvailable < self.local_segment >
+    - SCIMapLocalSegment(self.local_segment, recv_segment_size) < self.tx_buf >
+
+    // Create a "control segment"
+    control_segment_size = sizeof(sci_ctl_t) * self.max_eps
+    - SCICreateSegment(sci_md.sci_virtual_device, self.ctl_id, control_segment_size) < self.ctl_segment >
+    - SCIPrepareSegment < self.ctl_segment >
+    - SCISetSegmentAvailable < self.ctl_segment >
+    - SCIMapLocalSegment(self.ctl_segment, control_segment_size) < self.ctls >
+
+
+
+
