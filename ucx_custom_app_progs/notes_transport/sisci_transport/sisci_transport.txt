@@ -65,6 +65,12 @@ uct_sci_md_open(config) < md_name, md_p >
     *md_p = &sci_md.super
     md_name = "sisci"
 
+uct_sci_query_devices(md) < tl_devices_p, num_tl_devices_p >
+    dev_name = md.component.md.name
+    dev_type = UCT_DEVICE_TYPE_ACC
+    sys_device = UCS_SYS_DEVICE_ID_UNKOWN
+    - uct_single_device_resource(md, dev_name, dev_type, sys_device) < tl_devices_p, num_tl_devices_p >
+
 
 // sci_md is made in uct_sci_md_open, and it can be accessed through the
 // md (memory domain) parameter for other fucntions
@@ -102,6 +108,7 @@ UCS_CLASS_INIT_FUNC _for_uct_sci_iface_t (md, worker, iface_params, iface_config
 
     - SCIGetLocalNodeId(adapter_id, flags) < node_id >
 
+    // self here seems to point to sci_iface... No idea why this is a thing
     self.device_addr = nodeID;
     self.segment_id  = ucs_generate_uuid(trash);
     self.ctl_id      = ucs_generate_uuid(trash);
@@ -129,6 +136,105 @@ UCS_CLASS_INIT_FUNC _for_uct_sci_iface_t (md, worker, iface_params, iface_config
     - SCISetSegmentAvailable < self.ctl_segment >
     - SCIMapLocalSegment(self.ctl_segment, control_segment_size) < self.ctls >
 
+    // DMA
+    - SCICreateDMAQueue(sci_md.sci_virtual_device) < self.dma_queue >
+    dma_seg_id = ucs_generate_uuid(trash);
+    - SCICreateSegment(sci_md.sci_virtual_device, dma_seg_id, self.send_size) < self.dma_segment >
+    - SCIPrepareSegment < self.dma_segment >
+    - SCIMapLocalSegment(self.dma_segment, self.send_size) < self.dma_buf >
+
+    self->interrupt_no = ucs_generate_uuid(trash);
+    - SCICreateDataInterrupt(sci_md.sci_virtual_device, self.interrupt_no, callback=conn_handler, callback_arg=self) < self.interrupt >
+    
+
+// uninteresting functions start
+
+uct_sci_iface_query(tl_iface) < attr >
+    - iface = derived_of(tl_iface)
+    - uct_base_iface_query(iface)
+    Fill attr < attr > , mostly just some junk currently
+
+uct_sci_mem_alloc(length_p) < memh_p, address_p >
+    - ucs_malloc < memh_p >
+    - malloc(length_p) < memh_p.ptr >
+
+uct_sci_iface_progress_enable(tl_iface, flags)
+    - uct_base_iface_progress_enable(tl_iface, flags)
+
+uct_sci_get_device_address(tl_iface) < sci_addr >
+    - sci_iface = derived_of(tl_iface)
+    - sci_addr.node_id = sci_iface.device_addr
+
+uct_sci_iface_get_address(tl_iface) < iface_addr >
+    - iface_addr->segment_id = iface->interruptNO;
+
+// uninteresting functions stop
 
 
 
+// establishes connection with endpoint
+conn_handler(arg, interrupt, data, length)
+
+    - sci_iface = (uct_sci_iface_t*) arg;
+    - connection_request = (conn_req_t*) data;
+    - md = derived_of(sci_iface.super.md)
+
+    - SCIConnectDataInterrupt(md.sci_virtual_device, connection_request.node_id, connection_request.interrupt_no) < ans_interrupt >
+    
+    - with lock sci_iface.lock
+
+        - get sci_cd from sci_iface.sci_cds array where sci_iface->sci_cds[i].status == 0
+          then set sci_iface->sci_cds[i].status = 2
+          connection_descriptor = sci_iface->sci_cds[i]
+
+        - sci_iface.connections++
+
+    // answer is a struct with these variables
+    answer.node_id = sci_iface.device_addr
+    answer.segment_id = sci_iface.segment_id
+    answer.offset = connection_descriptor
+    answer.send_size = sci_iface.send_size
+    answer.queue_size = sci_iface.queue_size
+
+    - SCITriggerDataInterrupt(ans_interrupt, answer)
+
+    - SCIConnectSegment(sci_iface.vdev_ctl, connection_request.node_id, connection_request.ctl_seg_id) < connection_descriptor.ctl_segment >
+
+    - SCIMapRemoteSegment(connection_descriptor.ctl_segment, ctl_segment.map, ) < connection_descriptor.ctl_buffer >
+
+    - SCIDisconnectDataInterrupt(ans_interrupt)
+
+
+
+
+
+uct_sci_iface_progress(tl_iface)
+    - sci_iface = derived_of(tl_iface)
+    - while (more_ready_messages)
+        - for all connections in sci_iface.connections
+            
+            if (anything out of the ordinary): continue, i.e. skip loop iteration
+
+            // cd is short for connection descriptor or something
+            - cd = sci_iface
+            
+            // send_size is obviously the length of a "packet" kind of
+            // and queue_size refers to the number of packets that the send queue can hold, not the size in bytes
+            - offset = sci_iface.send_size * ((cd.last_ack+1) % sci_iface.queue_size)
+            - packet = cd.cd_buf + offset
+            - data_ptr = packet + sizeof(sci_packet_t)
+
+            // check whether packet has arrived
+            if (packet.status != 1): continue, i.e. skip loop iteration
+
+            - status = uct_iface_invoke_am(sci_iface.super, packet.am_id, data_ptr, packet.length)
+
+            if (status is okay, not in progress)
+                packet.status = 0;
+                cd.ctl_buf.status = 0;
+                cd.last_ack++
+                cd.ctl_buf.ack = cd.last_ack; 
+                SCIFlush
+                more_ready_messages = false
+
+    return count

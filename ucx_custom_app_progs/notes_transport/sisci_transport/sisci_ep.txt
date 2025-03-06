@@ -1,0 +1,68 @@
+UCS_CLASS_INIT_FUNC _for_uct_sci_ep_t(params)
+    sci_iface_addr = params.iface_addr
+    sci_dev_addr = params.dev_addr
+    local_interrupt_id = ucs_generate_uuid(getpid())
+
+    - sci_iface = derived_of(params.iface)
+    - md = derived_of(sci_iface.super.md)
+
+    - UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS
+
+    self.super.super.iface = params.iface
+
+    - UCS_CLASS_CALL_SUPER_INIT _for_uct_base_ep_t (sci_iface.super)
+
+    - SCICreateDataInterrupt(md.sci_virtual_device, local_interrupt_id) < ans_interrupt >
+
+    - SCIConnectDataInterrupt(md.sci_virtual_device, node_id, segment_id) < req_interrupt >
+    request.status     = 1;
+    request.interrupt  = local_interrupt_id;
+    request.node_id    = iface.device_addr;
+    request.ctl_offset = iface.eps * sizeof(sci_ctl_t);
+    request.ctl_id     = iface.ctl_id;
+    - SCITriggerDataInterrupt (req_interrupt, request)
+
+    - SCIWaitForDataInterrupt(ans_interrupt) < answer >
+
+    self.remote_node_id    = answer.node_id;
+    self.remote_segment_id = answer.segment_id;
+    self.offset            = answer.offset;
+    self.send_size         = answer.send_size;
+    self.queue_size        = answer.queue_size;
+    self.ctl_offset        = iface.eps * sizeof(sci_ctl_t);
+    self.seq               = 1;
+
+    - SCIDisconnectDataInterrupt(req_interrupt)
+    - SCIRemoveDataInterrupt(ans_interrupt)
+
+    - SCIConnectSegment(sci_iface.vdev_ep, self.remote_node_id, self.remote_segment_id) < self.remote_segment >
+
+    remote_segment_size = sci_iface.send_size * self.queue_size
+    - SCIMapRemoteSegment(self.remote_segment, self.offset, remote_segment_size) < self.remote_map >
+
+    sci_iface.eps++;
+
+
+uct_sci_ep_am_short(tl_ep, id, header, payload) < tl_ep >
+    - ep = derived_of(tl_ep)
+    - sci_iface = derived_of(tl_ep.iface)
+
+    // Earlier in init `request.ctl_offset = iface->eps * sizeof(sci_ctl_t);`
+    // So the offset is the offset in bytes of the control struct for this particular segment.
+    // This may or may not be correct, it is quite sketchy. Pointer arithmetic is not allowed for void pointers, it is undefined.
+    // My guess is that adding an int to it would result either in an incrementation of bytes or words... it should be changed
+    sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
+
+    offset = ep->send_size * (ep->seq % ep->queue_size);
+    packet = ep->buf + offset;
+    ctl->status = 1;
+    packet.am_id = id;
+    packet.length = length + sizeof(header);
+
+    - uct_am_short_fill_data(packet + sizeof(packet), header, payload, length)
+    - SCIFlush
+    packet.status = 1
+    - SCIFlush
+    ep.seq++
+
+

@@ -1,0 +1,133 @@
+
+ --------------------------- From sisci_transport: ---------------------------
+
+UCS_CLASS_INIT_FUNC _for_uct_sci_iface_t (md, ...):
+
+    SCICreateSegment(sci_md.sci_virtual_device, self->ctl_id) < 
+
+    ...
+
+    self->interrupt_no = ucs_generate_uuid(trash);
+    - SCICreateDataInterrupt(sci_md.sci_virtual_device, self.interrupt_no, callback=conn_handler, callback_arg=self) < self.interrupt >
+
+
+// establishes connection with endpoint
+conn_handler(arg, interrupt, data, length)
+
+    - sci_iface = (uct_sci_iface_t*) arg;
+    - connection_request = (conn_req_t*) data;
+    - md = derived_of(sci_iface.super.md)
+
+    - SCIConnectDataInterrupt(md.sci_virtual_device, connection_request.node_id, connection_request.interrupt_no) < ans_interrupt >
+    
+    - with lock sci_iface.lock
+
+        - get sci_cd from sci_iface.sci_cds array where sci_iface->sci_cds[i].status == 0
+          then set sci_iface->sci_cds[i].status = 2
+          connection_descriptor = sci_iface->sci_cds[i]
+
+        - sci_iface.connections++
+
+    // answer is a struct with these variables
+    answer.node_id = sci_iface.device_addr
+    answer.segment_id = sci_iface.segment_id
+    answer.offset = connection_descriptor
+    answer.send_size = sci_iface.send_size
+    answer.queue_size = sci_iface.queue_size
+
+    - SCITriggerDataInterrupt(ans_interrupt, answer)
+    - SCIDisconnectDataInterrupt(ans_interrupt)
+
+    - SCIConnectSegment(sci_iface.vdev_ctl, connection_request.node_id, connection_request.ctl_seg_id) < connection_descriptor.ctl_segment >
+
+    - SCIMapRemoteSegment(connection_descriptor.ctl_segment, ctl_segment.map) < connection_descriptor.ctl_buffer >
+
+
+
+ ------------------------------ From sisci_ep: ------------------------------
+
+UCS_CLASS_INIT_FUNC _for_uct_sci_ep_t(params)
+    sci_iface_addr = params.iface_addr
+    sci_dev_addr = params.dev_addr
+    local_interrupt_id = ucs_generate_uuid(getpid())
+
+    - sci_iface = derived_of(params.iface)
+    - md = derived_of(sci_iface.super.md)
+
+    - UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS
+
+    self.super.super.iface = params.iface
+
+    - UCS_CLASS_CALL_SUPER_INIT _for_uct_base_ep_t (sci_iface.super)
+
+    - SCICreateDataInterrupt(md.sci_virtual_device, local_interrupt_id) < ans_interrupt >
+
+    - SCIConnectDataInterrupt(md.sci_virtual_device, node_id, segment_id) < req_interrupt >
+    request.status     = 1;
+    request.interrupt  = local_interrupt_id;
+    request.node_id    = iface.device_addr;
+    request.ctl_offset = iface.eps * sizeof(sci_ctl_t);
+    request.ctl_id     = iface.ctl_id;
+    - SCITriggerDataInterrupt (req_interrupt, request)
+
+    - SCIWaitForDataInterrupt(ans_interrupt) < answer >
+
+    self.remote_node_id    = answer.node_id;
+    self.remote_segment_id = answer.segment_id;
+    self.offset            = answer.offset;
+    self.send_size         = answer.send_size;
+    self.queue_size        = answer.queue_size;
+    self.ctl_offset        = iface.eps * sizeof(sci_ctl_t);
+    self.seq               = 1;
+
+    - SCIDisconnectDataInterrupt(req_interrupt)
+    - SCIRemoveDataInterrupt(ans_interrupt) 
+
+    - SCIConnectSegment(sci_iface.vdev_ep, self.remote_node_id, self.remote_segment_id) < self.remote_segment >
+
+    remote_segment_size = sci_iface.send_size * self.queue_size
+    - SCIMapRemoteSegment(self.remote_segment, self.offset, remote_segment_size) < self.remote_map >
+
+    sci_iface.eps++;
+
+
+
+-------------------------------------------------------------------------------
+
+client server view. client is endpoint.
+
+* server creates data interrupt
+
+* client creates data interrupt
+
+* client connects to server's data interrupt
+
+* client triggers data interrupt at server, passes data like its own
+  node ID, interrupt ID, and segment ID. + some other stuff that may not be used?
+  (client then waits until it receives a data interrupt from server)
+
+* data interrupt triggers callback on server (with data)
+
+* server connects to data interrupt on client
+
+* server triggers data interrupt with its segment with node_id, segment_id and other data
+  (client wakes up)
+
+* server connects to control segment on client, then maps it
+  (client has run its own init func, so both server and client has a
+   control segment with space for all the endpoints)
+
+* Server disconnects data interrupt (then callback is done)
+
+* Client stores data it received from server.
+
+* Client disconnects remote data interrupt, i.e request interrupt (freeing it up for other endpoints)
+* Client removes local interrupt, i.e. answer interrupt - because that is the interrupt the server used to answer
+
+* Client uses information it received to connect to server's segment to connect to its receive segment
+
+
+Key points:
+    * SERVER connects to CLIENT's CONTROL segment, while...
+      CLIENT connects to SERVER's RECEIVE segment
+
