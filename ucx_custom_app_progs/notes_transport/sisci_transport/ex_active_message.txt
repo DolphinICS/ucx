@@ -1,0 +1,73 @@
+
+ -------------------------------- sisci_ep.txt --------------------------------
+
+typedef struct sci_ctl {
+    unsigned int status;
+    uint32_t     ack;
+}   sci_ctl_t;
+
+typedef struct sci_packet {
+    uint8_t     status;
+    uint8_t     am_id;
+    unsigned    length;
+    //void        data;
+} UCS_S_PACKED sci_packet_t;
+
+UCS_CLASS_INIT_FUNC _for_uct_sci_iface_t:
+    self.ctl_id      = ucs_generate_uuid(trash);
+
+    ...
+
+    // Create a "control segment"
+    control_segment_size = sizeof(sci_ctl_t) * self.max_eps
+    - SCICreateSegment(sci_md.sci_virtual_device, self.ctl_id, control_segment_size) < self.ctl_segment >
+    - SCIPrepareSegment < self.ctl_segment >
+    - SCISetSegmentAvailable < self.ctl_segment >
+    - SCIMapLocalSegment(self.ctl_segment, control_segment_size) < self.ctls >
+
+conn_handler:
+    - SCIConnectSegment(sci_iface.vdev_ctl, connection_request.node_id, connection_request.ctl_seg_id) < connection_descriptor.ctl_segment >
+    - SCIMapRemoteSegment(connection_descriptor.ctl_segment, ctl_segment.map, ) < connection_descriptor.ctl_buffer >
+
+uct_sci_iface_progress(tl_iface):
+    // cd == sci_iface, it's just casted, let's say sci_iface here
+
+    ... 
+
+    status = uct_iface_invoke_am(sci_iface.super, packet.am_id, data_ptr, packet.length)
+
+    if (status is okay, not in progress)
+        packet.status = 0;
+        sci_iface.ctl_buf.status = 0;
+        sci_iface.last_ack++
+        sci_iface.ctl_buf.ack = sci_iface.last_ack; 
+
+
+uct_sci_ep_am_short(tl_ep, id, header, payload) < tl_ep >
+    - ep = derived_of(tl_ep)
+    - sci_iface = derived_of(tl_ep.iface)
+
+    sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
+
+    offset = ep->send_size * (ep->seq % ep->queue_size);
+    packet = ep->buf + offset;
+    ctl->status = 1;
+    packet.am_id = id;
+    packet.length = length + sizeof(header);
+
+    - uct_am_short_fill_data(packet + sizeof(packet), header, payload, length)
+    - SCIFlush
+    packet.status = 1
+    - SCIFlush
+    ep.seq++
+
+
+--------------------------------------------------------------------------
+
+
+uct_sci_iface_progress - packet.status = 0
+uct_sci_ep_am_short    - packet.status = 1
+
+
+
+
