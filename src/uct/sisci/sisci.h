@@ -55,8 +55,10 @@ typedef struct {
     unsigned    length;
 } UCS_S_PACKED uct_sci_packet_t;
 
-/*
-    sci file desctriptor, each incoming connection gets assigned a different section of the segment.
+/* (cd probably stood for connection descriptor. If not, it does now)
+    Connection Desctriptor,
+    
+    Each incoming connection gets assigned a different section of the segment.
     We are using one large segment, with a single map for this segment. So each cd is given an offset
     into the global offset.
 */
@@ -76,7 +78,7 @@ typedef {
     sci_remote_segment_t    ctl_segment;
     sci_map_t               ctl_map;
     uct_sci_ctl_t*          ctl_buf;
-} uct_sci_cd_t;
+} uct_sci_conn_desc_t;
 
 typedef {
     uint8_t status;
@@ -131,7 +133,7 @@ typedef struct uct_sci_iface {
     sci_dma_queue_t             dma_queue;
     sci_local_segment_t         dma_segment;
     sci_map_t                   dma_map;
-    uct_sci_cd_t                sci_cds[SCI_MAX_EPS];
+    uct_sci_conn_desc_t         sci_cds[SCI_MAX_EPS];
     sci_local_data_interrupt_t  interrupt; 
     unsigned int                interruptNO;
     void*                       tx_buf;
@@ -166,7 +168,7 @@ ucs_status_t uct_sci_ep_fence(uct_ep_t *tl_ep, unsigned flags);
 /**
  * @brief self device MD descriptor
  */
-typedef struct uct_sci_md {
+typedef struct {
     uct_md_t super;
     size_t   num_devices; /* Number of devices to create */
 
@@ -183,7 +185,7 @@ typedef struct uct_sci_md {
 /**
  * @brief self device MD configuration
  */
-typedef struct uct_sci_md_config {
+typedef struct {
     uct_md_config_t super;
     size_t          num_devices; /* Number of devices to create */
     size_t          segment_size;

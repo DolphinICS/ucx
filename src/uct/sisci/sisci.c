@@ -48,7 +48,7 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
  * @param[out] cd_index 
  * @return 
  */
-static int reserve_control_descriptor(uct_sci_iface_t* iface, unsigned int *cd_index)
+static int uct_sci_reserve_control_descriptor(uct_sci_iface_t* iface, unsigned int *cd_index)
 {
     unsigned int i;
     int rc = 0;
@@ -77,7 +77,7 @@ static int reserve_control_descriptor(uct_sci_iface_t* iface, unsigned int *cd_i
     return rc;
 }
 
-static void ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned int cd_index)
+static void uct_sci_ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned int cd_index)
 {
     pthread_mutex_lock(&iface->lock);
 
@@ -87,7 +87,7 @@ static void ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned int cd_
     pthread_mutex_unlock(&iface->lock);
 }
 
-static int send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_req_t* request) {
+static int uct_sci_send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_req_t* request) {
     uct_sci_conn_ans_t   answer;
     sci_remote_data_interrupt_t ans_interrupt;
     sci_error_t sci_error
@@ -113,7 +113,7 @@ static int send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_req_t* re
     return 0;
 }
 
-static int connect_control_buffer(uct_sci_iface_t* iface) {
+static int uct_sci_connect_control_buffer(uct_sci_iface_t* iface) {
 
     do {
         DEBUG_PRINT("waiting to connect to ctl %s\n", SCIGetErrorString(sci_error));
@@ -147,7 +147,7 @@ static int connect_control_buffer(uct_sci_iface_t* iface) {
  * @param[in] sci_error: Not used
  * @return sci_callback_action_t: Returns callback_continue  
  */
-static sci_callback_action_t conn_handler(
+static sci_callback_action_t uct_sci_conn_handler(
     void* arg,
     sci_local_data_interrupt_t interrupt,
     void* data,
@@ -158,28 +158,28 @@ static sci_callback_action_t conn_handler(
     uct_sci_iface_t* iface = (uct_sci_iface_t*) arg;
     uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t); 
     unsigned int sci_cd_index;
-    uct_sci_cd_t *sci_cd;
+    uct_sci_conn_desc_t *sci_cd;
 
     int ret;
 
-    ret = reserve_control_descriptor(iface, &sci_cd_index);
+    ret = uct_sci_reserve_control_descriptor(iface, &sci_cd_index);
     if (ret != 0) {
         ucs_error("Number of endpoints exceeds limit %u", iface->max_eps);
         return SCI_CALLBACK_CONTINUE;
     }
     sci_cd = &(iface->sci_cds[sci_cd_index]);
     
-    ret = send_answer_to_request(iface, request);
+    ret = uct_sci_send_answer_to_request(iface, request);
     if (ret != 0) {
         ucs_error("Failed to send answer to connection request");
-        ureserve_control_descriptor();
+        uct_sci_ureserve_control_descriptor();
         return SCI_CALLBACK_CONTINUE;
     }
 
-    ret = connect_control_buffer(iface);
+    ret = uct_sci_connect_control_buffer(iface);
     if (ret != 0) {
         ucs_error("Failed to connect to remote control buffer");
-        ureserve_control_descriptor();
+        uct_sci_ureserve_control_descriptor();
         return SCI_CALLBACK_CONTINUE;
     }
             
@@ -229,7 +229,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     ssize_t i = 0;
     sci_error_t sci_error;
     unsigned dma_seg_id;
-    sci_cb_data_interrupt_t callback = conn_handler;
+    sci_cb_data_interrupt_t callback = uct_sci_conn_handler;
     uct_sci_iface_config_t* config = ucs_derived_of(tl_config, uct_sci_iface_config_t); 
     uct_sci_md_t * sci_md = ucs_derived_of(md, uct_sci_md_t);
 
@@ -737,7 +737,7 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
     ucs_status_t ucs_ret;
     unsigned count = 0;
     uct_sci_packet_t* packet;
-    uct_sci_cd_t* cd;
+    uct_sci_conn_desc_t* cd;
 
     for (size_t i = 0; i < iface->connections; i++) {
         cd = &iface->sci_cds[i];
