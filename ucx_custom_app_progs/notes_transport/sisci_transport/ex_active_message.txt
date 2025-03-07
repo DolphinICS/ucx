@@ -47,11 +47,12 @@ uct_sci_ep_am_short(tl_ep, id, header, payload) < tl_ep >
     - ep = derived_of(tl_ep)
     - sci_iface = derived_of(tl_ep.iface)
 
-    sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
+    // rename ctl to ctl_buf here, it is clear that it actually interacts with ctl_buf above, but that is hard to see when they have two different names
+    sci_ctl_t* ctl_buf         = iface->ctls + ep->ctl_offset;
 
     offset = ep->send_size * (ep->seq % ep->queue_size);
     packet = ep->buf + offset;
-    ctl->status = 1;
+    ctl_buf.status = 1;
     packet.am_id = id;
     packet.length = length + sizeof(header);
 
@@ -64,10 +65,62 @@ uct_sci_ep_am_short(tl_ep, id, header, payload) < tl_ep >
 
 --------------------------------------------------------------------------
 
+local:    uct_sci_ep_am_short
+endpoint: uct_sci_ep_am_short
+
+uct_sci_ep_am_short is for sending
+
+uct_sci_ep_am_short is for receiving, or rather checking the status of packets
+                                      that may have been received (from any endpoint probably)
+
+ after all, the endpoint piece of code runs locally. It is about how this node
+ handles endpoints, so it is not the remote node itself, though that can easily
+ confuse. Really both the endpoint and the local/sisci.c parts are part of the
+ same program... it's confusing.
+ 
+ At any rate data comes in from the "endpoint" piece of code that is present on
+ another node. This node also has an "endpoint" piece of code that is equivalent
+ to it, but that piece of code does not interact with this node.
+
 
 uct_sci_iface_progress - packet.status = 0
 uct_sci_ep_am_short    - packet.status = 1
 
+uct_sci_iface_progress - sci_iface.ctl_buf.status = 0
+uct_sci_ep_am_short    - ctl_buf.status = 1;
 
 
+
+
+uct_sci_ep_am_short:
+
+    // uct_am_short_fill_data basically just results in an efficient memcpy
+    - uct_am_short_fill_data(packet + sizeof(packet), header, payload, length)
+
+    // Send the data, then change the status bit indicating that the data is sent.
+    // Used to make sure this comes after... May not be necessary, PCIe makes sure that what is sent first arrives first.
+    // So the first of these SCIFlush's can probably be removed.
+    // The compiler won't reorder memory writes and function calls I believe.    
+    - SCIFlush
+    packet.status = 1
+    - SCIFlush
+
+
+
+uct_sci_iface_progress:
+    for every active connection
+        if connection descriptor's status is 1, and packet's status is 1   (cd->status != 1)  &&  ((packet->status != 1))
+
+            status = uct_iface_invoke_am(&iface->super, packet->am_id, cd->cd_buf + offset + sizeof(sci_packet_t), packet->length,0);
+            
+            // UCS_INPROGRESS would be unexpected, since the status of the packet should be tracked by the status fields that have already been checked
+
+            if(status == UCS_OK) {
+                packet->status = 0;
+                cd->ctl_buf->status = 0;
+                cd->ctl_buf->ack = cd->last_ack + 1; 
+                SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+                cd->last_ack++;
+                found_message = 1;
+            }
 
