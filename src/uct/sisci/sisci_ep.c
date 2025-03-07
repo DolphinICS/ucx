@@ -6,8 +6,6 @@
 static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
 {   
     sci_error_t sci_error;
-    //printf("UCS_SICSCI_EP_CLEANUP_FUNC() %d \n", self->remote_segment_id);
-    
     
     SCIUnmapSegment(self->remote_map, 0, &sci_error);
     
@@ -16,15 +14,6 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_UNMAP_SEGMENT: %s\n", SCIGetErrorString(sci_error));
     }
-
-    /* Deprecated code
-    SCIUnmapSegment(self->ctl_map, 0, &sci_error);
-    self->sci_ctl = NULL;
-
-    if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_UNMAP_CTL: %s\n", SCIGetErrorString(sci_error));
-    }
-    */
 
     SCIDisconnectSegment(self->remote_segment, 0, &sci_error);
 
@@ -100,8 +89,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
         printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
-
-    //printf("%d sent interrupt of %zd to %d\n", getpid(), sizeof(request), segment_id);
               
     SCIWaitForDataInterrupt(ans_interrupt, (void*) &answer, &ans_length,SCI_INFINITE_TIMEOUT, 0, &sci_error);
 
@@ -109,9 +96,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
         printf("SCI Wait For Interrupt: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }        
-
-
-    //printf("node %d segment %d\n", answer.node_id, answer.segment_id);
 
 
     self->remote_node_id    = answer.node_id;
@@ -151,14 +135,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
         printf("SCI_MAP_REM_SEG: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
-
-    /*
-    self->sci_ctl = (sci_ctl_t*) SCIMapLocalSegment(iface->ctl_segment, &self->ctl_map, sizeof(sci_ctl_t) * iface->eps, sizeof(sci_ctl_t), NULL, SCI_NO_FLAGS , &sci_error);
-
-    if(sci_error != SCI_ERR_OK) {
-        printf("SCI_MAP_CTL: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }*/
 
     iface->eps += 1;    
     DEBUG_PRINT("EP connected to segment %d at node %d\n",  self->remote_segment_id, self->remote_node_id);
@@ -358,8 +334,6 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
         return UCS_ERR_NO_RESOURCE;
     }
 
-    //printf("1 %zd\n", iface->send_size);
-
     ctl->status = 1;
 
     offset = ep->send_size * (ep->seq % ep->queue_size);
@@ -373,8 +347,6 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
     /* Convert the iov into a contiguous buffer */
     ucs_iov_iter_init(&uct_iov_iter);
 
-    //printf("2.2\n");
-
     bytes_copied = uct_iov_to_buffer(iov, iovcnt, &uct_iov_iter, tx + sizeof(sci_packet_t) + header_length, iface->send_size);
 
     if(bytes_copied != iov_total_len) {
@@ -382,14 +354,9 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
         printf("PANIK\n");
     }
 
-    //printf("2.5\n");
-
     /* Set header values */
     tx_pack->am_id = id;
     tx_pack->length = iov_total_len + header_length;
-
-        //printf("3\n");
-
 
     if (header_length != 0)
     {
@@ -405,10 +372,6 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
         printf("DMA Transfer Error: %s\n", SCIGetErrorString(sci_error));
     }
 
-    //printf("4\n");
-
-
-    //SCIWaitForDMAQueue(iface->dma_queue, SCI_INFINITE_TIMEOUT, SCI_NO_FLAGS, &sci_error);
     ep->seq++;
     sci_header->status = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);

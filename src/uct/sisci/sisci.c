@@ -42,11 +42,6 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
 };
 
 
-/*Forward declaration of the md config table*/
-/*static ucs_config_field_t uct_sci_md_config_table[] = {
-    NULL
-};*/
-
 /**
  * @brief This function handles incoming connection requests and assigns a sci file descriptor to that connection.
  * Then it replies with information back to the connecting request to enable the incoming conneciton to connect and offset correctly
@@ -61,30 +56,18 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
  */
 sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interrupt, void* data, unsigned int length, sci_error_t sci_error) {
     sci_remote_data_interrupt_t ans_interrupt;
-    //sci_error_t sci_error;
     con_ans_t   answer;
     conn_req_t* request = (conn_req_t*) data;
     uct_sci_iface_t* iface = (uct_sci_iface_t*) arg;
     uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t); 
     size_t i;
 
-    //printf("%d expected %zd ret_int %d  ret_node %d \n", length, sizeof(conn_req_t), request->node_id, request->interrupt);
-    //printf("%d callback started \n", getpid());
-
-
     do {
         SCIConnectDataInterrupt(md->sci_virtual_device, &ans_interrupt, request->node_id, 0, request->interrupt, 1000, 0, &sci_error);
-        //printf("waiting to connect to %d\n", request->interrupt);
     } while (sci_error != SCI_ERR_OK);
 
-    //printf("connected to answer request\n");
-    
-    //todo add spin lock:
-
     /*   Enter critical   */
-
     pthread_mutex_lock(&iface->lock);
-
     for (i = 0; i < iface->max_eps; i++)
     {
         if(iface->sci_cds[i].status == 0) {
@@ -92,7 +75,6 @@ sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interru
             break;
         }
     }
-
     iface->connections++;
 
     /*  leave critical  */
@@ -110,7 +92,6 @@ sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interru
     }    
 
     /*  set status to ready  */ 
-
     do {
         DEBUG_PRINT("waiting to connect to ctl %s\n", SCIGetErrorString(sci_error));
         SCIConnectSegment(iface->vdev_ctl, &iface->sci_cds[i].ctl_segment, request->node_id, request->ctl_id, 
@@ -118,8 +99,6 @@ sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interru
         
     } while (sci_error != SCI_ERR_OK);
 
-
-    //printf("cd ctl offset %d \n", request->ctl_offset);
     iface->sci_cds[i].ctl_buf = (sci_ctl_t *) SCIMapRemoteSegment(iface->sci_cds[i].ctl_segment, &iface->sci_cds[i].ctl_map, request->ctl_offset, 
                                                                   sizeof(sci_ctl_t), NULL, 0, &sci_error);
 
@@ -131,8 +110,6 @@ sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interru
     iface->sci_cds[i].status = 1;
     /* NOTE: does not return any error messages of any kind */
     SCIDisconnectDataInterrupt(ans_interrupt, SCI_NO_FLAGS, &sci_error);
-
-   //printf("%d callback done \n", getpid());
     return SCI_CALLBACK_CONTINUE;
 }
 
@@ -198,7 +175,6 @@ static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
     .ep_is_connected       = uct_cuda_ipc_ep_is_connected
 };
 
-//also known as "macro hell"
 /**
  * @brief Construct a new ucs class init func object
  * 
@@ -216,8 +192,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     unsigned int adapterID = 0;
     unsigned int flags = 0;
     ssize_t i = 0;
-    //size_t alignment, align_offset;
-    //ucs_status_t status;
     sci_error_t sci_error;
     unsigned dma_seg_id;
     sci_cb_data_interrupt_t callback = conn_handler;
@@ -238,17 +212,10 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         return UCS_ERR_INVALID_PARAM;
     }
 
-     /* 
-        Lock usage taken from here.
-        https://www.thegeekstuff.com/2012/05/c-mutex-examples/
-     */
-    
     if (pthread_mutex_init(&self->lock, NULL) != 0) {
         printf("\n mutex init failed\n");
         return UCS_ERR_NO_RESOURCE;
     }
-
-
 
     UCS_CLASS_CALL_SUPER_INIT(
             uct_base_iface_t, &uct_sci_iface_ops, &uct_base_iface_internal_ops,
@@ -258,8 +225,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
                             params->stats_root :
                             NULL) UCS_STATS_ARG(UCT_SCI_NAME));
     
-
-
     //---------- IFACE sci --------------------------
     SCIGetLocalNodeId(adapterID, &nodeID, flags, &sci_error);
 
@@ -395,8 +360,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
 
     /*------------------------- INTERRUPTS --------------------------------- */
-    //TODO
-
     self->interruptNO = ucs_generate_uuid(trash);
 
     SCICreateDataInterrupt(sci_md->sci_virtual_device, &self->interrupt, 0, &self->interruptNO,  
@@ -407,18 +370,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         printf("SCI CREATE INTERRUPT: %s %d\n", SCIGetErrorString(sci_error), SCI_FLAG_USE_CALLBACK);
         return UCS_ERR_NO_RESOURCE;
     } 
-
-    /*Need to find out how mpool works and how it is used by the underlying systems in ucx*/
-    /*status = uct_iface_param_am_alignment(params, self->send_size, 0, 0,
-                                          &alignment, &align_offset);
-
-
-    if (status != UCS_OK) {
-        printf("failed to init sci mpool\n");
-        return status;
-    }*/
-
-
 
     DEBUG_PRINT("iface_addr: %d dev_addr: %d segment_size %zd\n", self->interruptNO, self->device_addr, self->send_size);
     return UCS_OK;
@@ -603,27 +554,12 @@ typedef struct uct_sci_alloc_handle {
     size_t length;
 } uct_sci_alloc_handle_t;
 
-
-// static sci_desc_t              sd;
-// static sci_local_segment_t     localSegment;
-// static sci_map_t               localMap;
-// // static unsigned int            localNodeId;
-// // static unsigned int            localSegmentId;
-// static sci_map_t               localMap;
-
 static ucs_status_t
 uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
                         ucs_memory_type_t mem_type, unsigned flags,
                         const char *alloc_name, uct_mem_h *memh_p)
 {
-    // sci_error_t sci_error;
-
-    // ucs_status_t status;
-    // ucs_log_level_t log_level;
     uct_sci_alloc_handle_t *alloc_handle;
-
-
-    // printf("uct_sci_mem_alloc running!\n");
     alloc_handle = ucs_malloc(sizeof(*alloc_handle),
                               "uct_sci_mem_alloc");
     if (NULL == alloc_handle) {
@@ -638,38 +574,6 @@ uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
         return UCS_ERR_NO_MEMORY;
     }
 
-    // SCIOpen(&sd, 0, &sci_error);
-    // if (sci_error != SCI_ERR_OK) {
-    //     printf("uct_sci_mem_alloc, SCIOpen: %s\n", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_MEMORY;
-    // }
-
-    // SCICreateSegment(sd, &localSegment, 0x123, *length_p, NULL, NULL, 0, &sci_error);
-    // if (sci_error != SCI_ERR_OK) { 
-    //     printf("uct_sci_mem_alloc, SCICreateSegment: %s\n", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_MEMORY;
-    // }
-
-    // SCIPrepareSegment(localSegment, 0, 0, &sci_error);
-    // if (sci_error != SCI_ERR_OK) { 
-    //     printf("uct_sci_mem_alloc, SCIPrepareSegment: %s\n", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_MEMORY;
-
-    // }
-
-    // SCISetSegmentAvailable(localSegment, 0, 0, &sci_error);
-    // if (sci_error != SCI_ERR_OK) { 
-    //     printf("uct_sci_mem_alloc, SCISetSegmentAvailable: %s\n", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_MEMORY;
-    // }
-
-    // alloc_handle->ptr = SCIMapLocalSegment(localSegment, &localMap, 0, *length_p, NULL, SCI_NO_FLAGS, &sci_error);
-    // if(sci_error != SCI_ERR_OK) {
-    //     printf("uct_sci_mem_alloc, SCIMapLocalSegment: %s\n", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_MEMORY;
-    // } 
-
-
     alloc_handle->length = *length_p;
 
     *memh_p    = alloc_handle;
@@ -679,21 +583,11 @@ uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
 
 static ucs_status_t uct_sci_mem_free(uct_md_h md, uct_mem_h memh)
 {
-    // sci_error_t sci_error;
-
     uct_sci_alloc_handle_t *alloc_handle = (uct_sci_alloc_handle_t*) memh;
-
-    // printf("uct_sci_mem_free running!\n");
 
     free(alloc_handle->ptr);
 
     ucs_free(alloc_handle);
-
-    // SCISetSegmentUnavailable(localSegment, 0, SCI_NO_FLAGS, &sci_error);
-    // SCIUnmapSegment(localMap,SCI_NO_FLAGS,&sci_error);
-    // SCIRemoveSegment(localSegment,SCI_NO_FLAGS,&sci_error);
-    // SCIClose(sd,SCI_NO_FLAGS,&sci_error);
-    // ucs_free(alloc_handle);
 
     return UCS_OK;
 }
@@ -715,7 +609,6 @@ static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_n
         .detect_memory_type = ucs_empty_function_return_unsupported
     };
 
-    //create sci memory domain struct
     static uct_sci_md_t md;
     sci_error_t errors;
     uct_sci_open();
@@ -731,14 +624,11 @@ static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_n
 
     md.super.ops       = &md_ops;
     md.super.component = &uct_sci_component;
-    //md.super.component->name = "sci"
     md.num_devices     = md_config->num_devices;
     md.segment_id = 11;
     
     *md_p = &md.super;
     md_name = "sci";
-
-    //uct_md_h = sci_md;
 
     DEBUG_PRINT("md opened \n");
     return UCS_OK;
@@ -764,7 +654,6 @@ int uct_sci_iface_is_reachable(const uct_iface_h tl_iface,
 
 ucs_status_t uct_sci_get_device_address(uct_iface_h iface, uct_device_addr_t *addr) {
     uct_sci_iface_t* sci_iface = ucs_derived_of(iface, uct_sci_iface_t);
-    //uct_sci_md_t* md =  ucs_derived_of(sci_iface->super.md, uct_sci_md_t);  UNUSED
     uct_sci_device_addr_t* sci_addr = (uct_sci_device_addr_t *) addr;
     sci_addr->node_id = sci_iface->device_addr;
     DEBUG_PRINT("segment_id %d node_id %d\n", sci_iface->segment_id, sci_iface->device_addr);
@@ -861,11 +750,6 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
         DEBUG_PRINT("iface querried\n");
     }
 
-    /*  
-        https://github.com/openucx/ucx/issues/6879
-        According to this, we should call uct_base_iface_query()
-    */
-
     uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);   
     
     /* These flags advertises the functionality of our transport. We currently only support active message  */
@@ -889,20 +773,14 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
     attr->cap.am.max_bcopy = 2048;
     attr->cap.am.min_zcopy = 32768;
     attr->cap.am.max_zcopy = iface->send_size;
-
-
-    /*TODO Sane numbers, and not guesses for fun.*/
     attr->cap.am.max_iov   = 10;
     attr->cap.am.max_hdr   = 100;
-
 
     attr->latency                 = ucs_linear_func_make(0, 0);;
     attr->bandwidth.dedicated     = 10 * UCS_MBYTE;
     attr->bandwidth.shared        = 0;
     attr->overhead                = 10e-9;
     attr->priority                = 0;
-
-    
 
     /*
         Iface gets queried multiple times so we had to disallow more than one debug print : )
@@ -912,7 +790,6 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
         iface_query_printed = 1;
     }
     return UCS_OK;
-    //return UCS_ERR_NOT_IMPLEMENTED;
 }
 
 
