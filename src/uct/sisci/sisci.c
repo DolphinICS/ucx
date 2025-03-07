@@ -158,72 +158,33 @@ static sci_callback_action_t conn_handler(
     uct_sci_iface_t* iface = (uct_sci_iface_t*) arg;
     uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t); 
     unsigned int sci_cd_index;
-    sci_cd_t sci_cd;
+    sci_cd_t *sci_cd;
 
     int ret;
 
     ret = reserve_control_descriptor(iface, &sci_cd_index);
     if (ret != 0) {
-        ucs_warn("Number of endpoints exceeds limit %u", iface->max_eps);
+        ucs_error("Number of endpoints exceeds limit %u", iface->max_eps);
         return SCI_CALLBACK_CONTINUE;
     }
-    *sci_cd = &(iface->sci_cds[sci_cd_index]);
+    sci_cd = &(iface->sci_cds[sci_cd_index]);
     
     ret = send_answer_to_request(iface, request);
     if (ret != 0) {
-        ucs_warn("Failed to send answer to connection request");
+        ucs_error("Failed to send answer to connection request");
         ureserve_control_descriptor();
         return SCI_CALLBACK_CONTINUE;
     }
 
     ret = connect_control_buffer(iface);
     if (ret != 0) {
-        ucs_warn("Failed to connect to remote control buffer");
+        ucs_error("Failed to connect to remote control buffer");
         ureserve_control_descriptor();
         return SCI_CALLBACK_CONTINUE;
     }
             
     sci_cd->status = 1;
     return SCI_CALLBACK_CONTINUE;
-}
-
-int sci_opened = 0;
-int iface_query_printed = 0;
-
-/*
-    The linux version initialization of the sci api doesnt do much except for comparing the api version against the adapter version, and setting up some ref handles
-    So we dont really need handle anything special except for the initialization faliing :). 
-    Since the api doesn't have any good way to check if the driver is initialized we have to keep track of it ourselves. 
-*/
-static unsigned int uct_sci_open(){
-    sci_error_t sci_error = 0;
-
-    DEBUG_PRINT("sci_open(%d)\n", sci_opened);
-    if (sci_opened == 0)
-    {
-        SCIInitialize(0,&sci_error);
-        if (sci_error != SCI_ERR_OK)
-        {
-            printf("sci_init error: %s/n", SCIGetErrorString(sci_error));
-            return 0;
-        }
-        sci_opened = 1;
-
-    }
-    return 1;
-}
-
-/*
-    Closing the api is even more hands off than 
-*/
-static unsigned int uct_sci_close(){
-    DEBUG_PRINT("sci_close(%d)\n", sci_opened);
-    if (sci_opened == 1)
-    {
-        SCITerminate();
-        sci_opened = 0;
-    }
-    return 1;    
 }
 
 static int
@@ -619,8 +580,6 @@ static void uct_sci_md_close(uct_md_h md) {
             /*NOTE*/
             printf("Error closing Virtual_Device error: %s \n", SCIGetErrorString(sci_error));
         }
-    
-    uct_sci_close();
 }
 
 typedef struct uct_sci_alloc_handle {
@@ -685,7 +644,6 @@ static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_n
 
     static uct_sci_md_t md;
     sci_error_t errors;
-    uct_sci_open();
     SCIOpen(&md.sci_virtual_device, 0, &errors);
 
 
@@ -816,13 +774,7 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
 
 static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *attr)
 {
-    
-
     uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
-
-    if (!iface_query_printed) {
-        DEBUG_PRINT("iface querried\n");
-    }
 
     uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);   
     
@@ -855,14 +807,6 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
     attr->bandwidth.shared        = 0;
     attr->overhead                = 10e-9;
     attr->priority                = 0;
-
-    /*
-        Iface gets queried multiple times so we had to disallow more than one debug print : )
-    */
-    if(!iface_query_printed) {
-        DEBUG_PRINT("max_eps: %zd iface->attr->cap.flags: %ld event_flags-> %ld\n",attr->max_num_eps, attr->cap.flags, attr->cap.event_flags);
-        iface_query_printed = 1;
-    }
     return UCS_OK;
 }
 
@@ -957,3 +901,22 @@ static uct_iface_ops_t uct_sci_iface_ops = {
  */
 UCT_TL_DEFINE(&uct_sci_component, sci, uct_sci_query_devices, uct_sci_iface_t,
               UCT_SCI_CONFIG_PREFIX, uct_sci_iface_config_table, uct_sci_iface_config_t);
+
+
+/* It seems this is the place to initalize any global variables, or one-time
+ * initialization on start, type of things. Cuda does `cuInit` with this macro,
+ * so it makes sense that we do `SCIInitialize` using the same macro */
+UCS_STATIC_INIT
+{
+    sci_error_t sci_error;
+    SCIInitialize(0,&sci_error);
+    if (sci_error != SCI_ERR_OK)
+    {
+        ucs_error("SCIInitialize error: %s", SCIGetErrorString(sci_error));
+    }
+}
+
+UCS_STATIC_CLEANUP
+{
+    SCITerminate();
+}
