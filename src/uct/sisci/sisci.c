@@ -87,8 +87,8 @@ static void ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned int cd_
     pthread_mutex_unlock(&iface->lock);
 }
 
-static int send_answer_to_request(uct_sci_iface_t* iface, conn_req_t* request) {
-    con_ans_t   answer;
+static int send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_req_t* request) {
+    uct_sci_conn_ans_t   answer;
     sci_remote_data_interrupt_t ans_interrupt;
     sci_error_t sci_error
 
@@ -122,8 +122,8 @@ static int connect_control_buffer(uct_sci_iface_t* iface) {
         
     } while (sci_error != SCI_ERR_OK);
 
-    sci_cd->ctl_buf = (sci_ctl_t *) SCIMapRemoteSegment(sci_cd->ctl_segment, &sci_cd->ctl_map, request->ctl_offset, 
-                                                                  sizeof(sci_ctl_t), NULL, 0, &sci_error);
+    sci_cd->ctl_buf = (uct_sci_ctl_t *) SCIMapRemoteSegment(sci_cd->ctl_segment, &sci_cd->ctl_map, request->ctl_offset, 
+                                                                  sizeof(uct_sci_ctl_t), NULL, 0, &sci_error);
 
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_MAP_REM_SEG: %s\n", SCIGetErrorString(sci_error));
@@ -154,11 +154,11 @@ static sci_callback_action_t conn_handler(
     unsigned int length,
     sci_error_t sci_error)
 {
-    conn_req_t* request = (conn_req_t*) data;
+    uct_sci_conn_req_t* request = (uct_sci_conn_req_t*) data;
     uct_sci_iface_t* iface = (uct_sci_iface_t*) arg;
     uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t); 
     unsigned int sci_cd_index;
-    sci_cd_t *sci_cd;
+    uct_sci_cd_t *sci_cd;
 
     int ret;
 
@@ -319,7 +319,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     /*    ctl segment    */
     
-    SCICreateSegment(sci_md->sci_virtual_device, &self->ctl_segment, self->ctl_id, sizeof(sci_ctl_t) * self->max_eps, NULL, NULL, 0, &sci_error);
+    SCICreateSegment(sci_md->sci_virtual_device, &self->ctl_segment, self->ctl_id, sizeof(uct_sci_ctl_t) * self->max_eps, NULL, NULL, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_CREATE_CTL_SEGMENT: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
@@ -337,7 +337,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         return UCS_ERR_NO_RESOURCE;
     }
 
-    self->ctls = (void*) SCIMapLocalSegment(self->ctl_segment, &self->ctl_map, 0, sizeof(sci_ctl_t) * self->max_eps, NULL, SCI_NO_FLAGS, &sci_error);
+    self->ctls = (void*) SCIMapLocalSegment(self->ctl_segment, &self->ctl_map, 0, sizeof(uct_sci_ctl_t) * self->max_eps, NULL, SCI_NO_FLAGS, &sci_error);
 
     if(sci_error != SCI_ERR_OK) {
         printf("DMA ctl segment: %s \n", SCIGetErrorString(sci_error));
@@ -357,7 +357,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         self->sci_cds[i].size = self->send_size * self->queue_size;
         self->sci_cds[i].offset = i * self->send_size * self->queue_size; 
         self->sci_cds[i].cd_buf = (void*) self->tx_buf + self->sci_cds[i].offset;
-        self->sci_cds[i].packet = (sci_packet_t*) self->sci_cds[i].cd_buf;
+        self->sci_cds[i].packet = (uct_sci_packet_t*) self->sci_cds[i].cd_buf;
         self->sci_cds[i].last_ack = 0;
     }
 
@@ -723,12 +723,12 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
     int found_message = 0;
     uint32_t  offset = 0;
     ucs_status_t status;
-    sci_packet_t* packet;
+    uct_sci_packet_t* packet;
 
     retry:
 
     for (size_t i = 0; i < iface->connections; i++) {
-        sci_cd_t* cd = &iface->sci_cds[i];
+        uct_sci_cd_t* cd = &iface->sci_cds[i];
         
         if(cd->status != 1) {
             continue;
@@ -741,7 +741,7 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
             continue;
         }
         
-        status = uct_iface_invoke_am(&iface->super, packet->am_id, cd->cd_buf + offset + sizeof(sci_packet_t), packet->length,0);
+        status = uct_iface_invoke_am(&iface->super, packet->am_id, cd->cd_buf + offset + sizeof(uct_sci_packet_t), packet->length,0);
     
         if(status == UCS_INPROGRESS) {
             DEBUG_PRINT("UCS_IN_PROGRESS\n");

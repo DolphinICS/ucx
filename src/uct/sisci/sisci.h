@@ -23,7 +23,7 @@
 #define SCI_VDEVS   3 //Max number of virtual_devices available. Each virtual descriptor should be able to handle 16 connections.
 
 #define SISCI_STATUS_WRITING_DONE 1
-#define SCI_PACKET_SIZE sizeof(sci_packet_t)
+#define SCI_PACKET_SIZE sizeof(uct_sci_packet_t)
 
 #define DEBUG 0
 
@@ -34,34 +34,33 @@
  #define DEBUG_PRINT(fmt, args...) /* Don't do anything in release builds */
 #endif
 
-typedef struct uct_sci_iface_addr {
+typedef struct {
     unsigned int segment_id; /* Listening port of iface */
 } UCS_S_PACKED uct_sci_iface_addr_t;
 
-typedef struct uct_sci_device_addr {
+typedef struct {
     unsigned int node_id;
 } UCS_S_PACKED uct_sci_device_addr_t;
 
 
-typedef struct sci_ctl {
+typedef struct {
     unsigned int status;
     uint32_t     ack;
-}   sci_ctl_t;
+} uct_sci_ctl_t;
 
 
-typedef struct sci_packet {
+typedef struct {
     uint8_t     status;
     uint8_t     am_id;
     unsigned    length;
-    //void        data;
-} UCS_S_PACKED sci_packet_t;
+} UCS_S_PACKED uct_sci_packet_t;
 
 /*
     sci file desctriptor, each incoming connection gets assigned a different section of the segment.
     We are using one large segment, with a single map for this segment. So each cd is given an offset
     into the global offset.
 */
-typedef struct sci_cd {
+typedef {
     int                     status; /* taken | available | ready |  */
     int                     size;   /* size */
     int                     remote_node;
@@ -70,38 +69,35 @@ typedef struct sci_cd {
     /*        rx info          */
     uint32_t                offset; /* start of our map in the global segment */
     void*                   cd_buf;
-    sci_packet_t*           packet;
+    uct_sci_packet_t*       packet;
     
     /*    Control info        */
     uint32_t                ctl_id;
     sci_remote_segment_t    ctl_segment;
     sci_map_t               ctl_map;
-    sci_ctl_t*              ctl_buf;
-} sci_cd_t;
+    uct_sci_ctl_t*          ctl_buf;
+} uct_sci_cd_t;
 
-typedef struct con_req {
+typedef {
     uint8_t status;
     int     node_id;
     int     interrupt;
     int     ctl_id;
     int     ctl_offset;
-} conn_req_t;
+} uct_sci_conn_req_t;
 
-typedef struct con_ans {
+typedef {
     uint8_t      status;
     unsigned int node_id;
     unsigned int segment_id;
     unsigned int offset;
     unsigned int send_size;
     unsigned int queue_size;
-} con_ans_t;
+} uct_sci_conn_ans_t;
 
 
 void sci_testing();
 
-// iface file contents
-
-//extern ucs_config_field_t uct_sci_iface_config_table[];
 
 typedef struct uct_sci_iface_config {
     uct_iface_config_t    super;
@@ -114,7 +110,7 @@ typedef struct uct_sci_iface_config {
 
 
 typedef struct uct_sci_ep_zcopy_tx {
-    sci_packet_t                super;     /* UCT TCP AM header */
+    uct_sci_packet_t              super;     /* UCT TCP AM header */
     uct_completion_t              *comp;     /* Local UCT completion object */
     size_t                        iov_index; /* Current IOV index */
     size_t                        iov_cnt;   /* Number of IOVs that should be sent */
@@ -135,7 +131,7 @@ typedef struct uct_sci_iface {
     sci_dma_queue_t             dma_queue;
     sci_local_segment_t         dma_segment;
     sci_map_t                   dma_map;
-    sci_cd_t                    sci_cds[SCI_MAX_EPS];
+    uct_sci_cd_t                sci_cds[SCI_MAX_EPS];
     sci_local_data_interrupt_t  interrupt; 
     unsigned int                interruptNO;
     void*                       tx_buf;
