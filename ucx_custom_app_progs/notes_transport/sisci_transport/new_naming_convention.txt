@@ -1,0 +1,21 @@
+
+Struct names:
+
+// As long as it doesn't start with sci it will not be confused with sisci internal structs
+// Starting with "uct" is done for all other components so it should be done for the sisci component too.
+
+typdedef uct_sci_structname_t
+
+variable of that type is then typically called structname
+
+The rest of the codebase has no special naming conventionn for static functions.
+They are also named WITH the prefix just like externally linked functions.
+Makes sense to follow the same scheme. Having a special naming convention for a function is nice, but it's not a big deal.
+
+
+The struct uct_sci_iface_t is therefore just referred to as iface.
+When the top most "class" uct_iface_h needs to be referred to tl_iface will be used as the variable name
+
+If we ever need to refer to uct_base_iface_t, we'll just call it base_iface. That happens rarely though.
+Other transports sometimes call it just "iface" but that is a mess!
+
