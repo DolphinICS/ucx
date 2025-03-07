@@ -25,7 +25,6 @@
 #define SISCI_STATUS_WRITING_DONE 1
 #define SCI_PACKET_SIZE sizeof(sci_packet_t)
 
-// https://stackoverflow.com/questions/1941307/debug-print-macro-in-c by Tom Kuschel
 #define DEBUG 0
 
 #if defined(DEBUG) && DEBUG > 0
