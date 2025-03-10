@@ -24,17 +24,87 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
     DEBUG_PRINT("ep deleted segment_id %d node_id %d\n", self->remote_segment_id, self->remote_node_id);
 }
 
+static int uct_sci_ep_send_conn_request(
+    uct_sci_iface_t* iface,
+    unsigned int node_id,
+    unsigned int segment_id,
+    unsigned int local_interrupt_id)
+{
+    sci_error_t sci_error;
+    uct_sci_conn_req_t request;
+    sci_remote_data_interrupt_t req_interrupt;
+    int rc = UCS_OK;
+
+    do {
+        SCIConnectDataInterrupt(md->sci_virtual_device, &req_interrupt, node_id, 0, segment_id, 0, 0, &sci_error);
+    } while (sci_error != SCI_ERR_OK);
+
+    //printf("%d connected to remote interrupt!, ret_int %d\n", getpid(),local_interrupt_id);
+    //printf("size of answer %zd size of struct answer %zd\n", sizeof(answer), sizeof(uct_sci_conn_ans_t));
+    request.status     = 1;
+    request.interrupt  = local_interrupt_id;
+    request.node_id    = iface->device_addr;
+    request.ctl_offset = iface->eps * sizeof(uct_sci_ctl_t);
+    request.ctl_id     = iface->ctl_id;
+
+    SCITriggerDataInterrupt(req_interrupt, (void *) &request, sizeof(request), SCI_NO_FLAGS, &sci_error);
+    if(sci_error != SCI_ERR_OK) {
+        printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
+        rc = UCS_ERR_NO_RESOURCE;
+    }
+
+    /* Should probably retry then? */
+    /*  Clean up for connection.  */
+    SCIDisconnectDataInterrupt(req_interrupt, SCI_NO_FLAGS, &sci_error);
+    if(sci_error == SCI_ERR_BUSY) {
+        printf("SCIRemoveDataInterrupt: Interrupt still being used by another proccess");
+    }
+
+    SCIRemoveDataInterrupt(ans_interrupt, SCI_NO_FLAGS, &sci_error);
+    if(sci_error == SCI_ERR_BUSY) {
+        printf("SCIRemoveDataInterrupt: Interrupt still being used by another proccess");
+    }
+
+    return rc;
+}
+
+static int uct_sci_ep_recv_conn_answer(
+    uct_sci_conn_ans_t *answer,
+    unsigned int local_interrupt_id)
+{
+    sci_error_t sci_error;
+    uct_sci_conn_req_t request;
+    sci_local_data_interrupt_t ans_interrupt;
+    int ans_length = sizeof(uct_sci_conn_ans_t);
+    int rc = UCS_OK;
+
+    SCICreateDataInterrupt(md->sci_virtual_device, &ans_interrupt, 0, &local_interrupt_id,  
+        NULL, NULL, SCI_FLAG_FIXED_INTNO, &sci_error);
+    if(sci_error != SCI_ERR_OK) {
+        printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    SCIWaitForDataInterrupt(ans_interrupt, (void*) answer, &ans_length,SCI_INFINITE_TIMEOUT, 0, &sci_error);
+    if(sci_error != SCI_ERR_OK) {
+        printf("SCI Wait For Interrupt: %s\n", SCIGetErrorString(sci_error));
+        rc = UCS_ERR_NO_RESOURCE;
+    }
+
+    SCIRemoveDataInterrupt(ans_interrupt, SCI_NO_FLAGS, &sci_error);
+
+    return rc;
+}
 
 static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
 
     sci_error_t sci_error;
+    ucs_status_t ucs_ret;
     uct_sci_iface_addr_t* iface_addr =  (uct_sci_iface_addr_t*) params->iface_addr;
     uct_sci_device_addr_t* dev_addr = (uct_sci_device_addr_t*) params->dev_addr;
     sci_remote_data_interrupt_t req_interrupt;
     sci_local_data_interrupt_t  ans_interrupt;
-    unsigned int local_interrupt_id =    ucs_generate_uuid(getpid());
-    int ans_length          = sizeof(uct_sci_conn_ans_t);
-    uct_sci_conn_req_t request;
+    unsigned int local_interrupt_id = ucs_generate_uuid(getpid());
     uct_sci_conn_ans_t answer;
 
 
@@ -57,47 +127,37 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     DEBUG_PRINT("EP created segment_id %d node_id %d\n", segment_id, node_id);
 
     self->super.super.iface = params->iface;
-    self->remote_segment_id = segment_id;
-    self->remote_node_id = node_id;
-
+    
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super); //segfaults without this line, probably has something to do with the stats member...
+    
+    ucs_ret = uct_sci_ep_send_conn_request(iface, node_id, segment_id, local_interrupt_id);
+    if (ucs_ret != UCS_OK) {
+        return ucs_ret;
+    }
 
-    do {
-        SCIConnectDataInterrupt(md->sci_virtual_device, &req_interrupt, node_id, 0, segment_id, 0, 0, &sci_error);
-    } while (sci_error != SCI_ERR_OK);
-
-    //printf("%d connected to remote interrupt!, ret_int %d\n", getpid(),local_interrupt_id);
-    //printf("size of answer %zd size of struct answer %zd\n", sizeof(answer), sizeof(uct_sci_conn_ans_t));
-    request.status     = 1;
-    request.interrupt  = local_interrupt_id;
-    request.node_id    = iface->device_addr;
-    request.ctl_offset = iface->eps * sizeof(uct_sci_ctl_t);
-    request.ctl_id     = iface->ctl_id;
+    uct_ret = uct_sci_ep_recv_conn_answer(&answer, local_interrupt_id);
+    if (ucs_ret != UCS_OK) {
+        return ucs_ret;
+    }
 
     SCICreateDataInterrupt(md->sci_virtual_device, &ans_interrupt, 0, &local_interrupt_id,  
-                            NULL, NULL, SCI_FLAG_FIXED_INTNO, &sci_error);
-
-    if(sci_error != SCI_ERR_OK) {
-        printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }            
-
-    
-    SCITriggerDataInterrupt(req_interrupt, (void *) &request, sizeof(request), SCI_NO_FLAGS, &sci_error);
-    
+        NULL, NULL, SCI_FLAG_FIXED_INTNO, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
-              
-    SCIWaitForDataInterrupt(ans_interrupt, (void*) &answer, &ans_length,SCI_INFINITE_TIMEOUT, 0, &sci_error);
 
+    SCIWaitForDataInterrupt(ans_interrupt, (void*) &answer, &ans_length,SCI_INFINITE_TIMEOUT, 0, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("SCI Wait For Interrupt: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
-    }        
+    }
 
-
+    SCIRemoveDataInterrupt(ans_interrupt, SCI_NO_FLAGS, &sci_error);
+    
+    /* uct_sci_ep_t *self */
+    self->remote_segment_id = segment_id;
+    self->remote_node_id = node_id;
     self->remote_node_id    = answer.node_id;
     self->remote_segment_id = answer.segment_id;
     self->offset            = answer.offset;
@@ -107,20 +167,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     /* quick fix for weird behaviour when queue size was 1...*/
     self->seq               = self->queue_size > 1 ? 1 : 0;
 
-
-    /*  Clean up for connection.  */
-    SCIDisconnectDataInterrupt(req_interrupt, SCI_NO_FLAGS, &sci_error);
-
-    if(sci_error == SCI_ERR_BUSY) {
-        printf("SCIRemoveDataInterrupt: Interrupt still being used by another proccess");
-    }
-
-    SCIRemoveDataInterrupt(ans_interrupt, SCI_NO_FLAGS, &sci_error);
-
-    if(sci_error == SCI_ERR_BUSY) {
-        printf("SCIRemoveDataInterrupt: Interrupt still being used by another proccess");
-    }
-
     do {
         DEBUG_PRINT("waiting to connect %d %s\n", sci_error,  SCIGetErrorString(sci_error));
         
@@ -129,7 +175,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     } while (sci_error != SCI_ERR_OK);
 
     self->buf = (void *) SCIMapRemoteSegment(self->remote_segment, &self->remote_map, self->offset, iface->send_size * self->queue_size, NULL, 0, &sci_error);
-
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_MAP_REM_SEG: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
