@@ -35,7 +35,7 @@
 #endif
 
 typedef struct {
-    unsigned int segment_id; /* Listening port of iface */
+    unsigned int interrupt_no; /* Listening port of iface */
 } UCS_S_PACKED uct_sci_iface_addr_t;
 
 typedef struct {

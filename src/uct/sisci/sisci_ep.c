@@ -106,29 +106,24 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     uct_sci_conn_ans_t answer;
 
 
-    unsigned int segment_id = 0; //(unsigned int) params->segment_id;
-    unsigned int node_id = 0; //(unsigned int) params->node_id;
+    unsigned int interrupt_no;
+    unsigned int node_id;
     uct_sci_iface_t* iface = ucs_derived_of(params->iface, uct_sci_iface_t);
     uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t);
 
 
     UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS(params);
 
-    segment_id = (unsigned int) iface_addr->segment_id;
+    interrupt_no = (unsigned int) iface_addr->interrupt_no;
     node_id = (unsigned int) dev_addr->node_id;
 
-
-    if(iface->segment_id == segment_id) {
-        printf("%d connecting to a local segment %d\n", getpid(), segment_id);
-    }
-
-    DEBUG_PRINT("EP created segment_id %d node_id %d\n", segment_id, node_id);
+    DEBUG_PRINT("EP created interrupt_no %d node_id %d\n", interrupt_no, node_id);
 
     self->super.super.iface = params->iface;
     
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super); //segfaults without this line, probably has something to do with the stats member...
     
-    ucs_ret = uct_sci_ep_send_conn_request(iface, node_id, segment_id, local_interrupt_id);
+    ucs_ret = uct_sci_ep_send_conn_request(iface, node_id, interrupt_no, local_interrupt_id);
     if (ucs_ret != UCS_OK) {
         return ucs_ret;
     }
@@ -139,8 +134,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     }
     
     /* uct_sci_ep_t *self */
-    self->remote_segment_id = segment_id;
-    self->remote_node_id = node_id;
     self->remote_node_id    = answer.node_id;
     self->remote_segment_id = answer.segment_id;
     self->offset            = answer.offset;

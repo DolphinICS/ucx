@@ -213,7 +213,7 @@ static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
 ucs_error_t uct_sci_helper_create_segment(
     sci_desc_t sd,
     sci_local_segment_t *segment,
-    sci_map_t *segment_map
+    sci_map_t *segment_map,
     unsigned int segment_id,
     size_t segment_size,
     void **buf)
@@ -263,12 +263,13 @@ void uct_sci_helper_remove_segment(
 ucs_error_t uct_sci_helper_create_seg_set_avail(
     sci_desc_t sd,
     sci_local_segment_t *segment,
-    sci_map_t *segment_map
+    sci_map_t *segment_map,
     unsigned int segment_id,
     size_t segment_size,
     void **buf)
 {
     ucs_error_t ret;
+    sci_error_t sci_error;
     
     ret = uct_sci_helper_create_segment(sd, segment, segment_map, segment_id, segment_size, buf);
     if (ret == UCS_OK) {
@@ -419,16 +420,16 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     } 
 
     /*------------------------- INTERRUPTS --------------------------------- */
-    self->interruptNO = ucs_generate_uuid(trash);
+    self->interrupt_no = ucs_generate_uuid(trash);
 
-    SCICreateDataInterrupt(sci_md->sci_virtual_device, &self->interrupt, 0, &self->interruptNO,  
+    SCICreateDataInterrupt(sci_md->sci_virtual_device, &self->interrupt, 0, &self->interrupt_no,  
                             callback, self, SCI_FLAG_USE_CALLBACK, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("SCI CREATE INTERRUPT: %s %d\n", SCIGetErrorString(sci_error), SCI_FLAG_USE_CALLBACK);
         return UCS_ERR_NO_RESOURCE;
     }
 
-    DEBUG_PRINT("iface_addr: %d dev_addr: %d segment_size %zd\n", self->interruptNO, self->device_addr, self->send_size);
+    DEBUG_PRINT("iface_addr: %d dev_addr: %d segment_size %zd\n", self->interrupt_no, self->device_addr, self->send_size);
     return UCS_OK;
 }
 
@@ -698,7 +699,7 @@ int uct_sci_iface_is_reachable(const uct_iface_h tl_iface,
         uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
         uct_sci_device_addr_t* sci_dev_addr = (uct_sci_device_addr_t *) dev_addr;
         uct_sci_iface_addr_t*  sci_iface_addr = (uct_sci_iface_addr_t*) iface_addr;
-        DEBUG_PRINT("FROM if_addr: %d dev_addr: %d  TO: iface_addr: %d dev_addr: %d \n",iface->interruptNO, iface->device_addr,  sci_iface_addr->segment_id, sci_dev_addr->node_id);
+        DEBUG_PRINT("FROM if_addr: %d dev_addr: %d  TO: iface_addr: %d dev_addr: %d \n",iface->interrupt_no, iface->device_addr,  sci_iface_addr->segment_id, sci_dev_addr->node_id);
     #endif
 
     return 1;
@@ -727,7 +728,7 @@ ucs_status_t uct_sci_iface_get_address(uct_iface_h tl_iface,
     
     uct_sci_iface_addr_t* iface_addr = (uct_sci_iface_addr_t *) addr;
     
-    iface_addr->segment_id = iface->interruptNO;
+    iface_addr->interrupt_no = iface->interrupt_no;
     
     DEBUG_PRINT("uct_iface_get_address()\n");
     return UCS_OK;
