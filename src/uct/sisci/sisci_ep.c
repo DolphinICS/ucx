@@ -102,8 +102,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     ucs_status_t ucs_ret;
     uct_sci_iface_addr_t* iface_addr =  (uct_sci_iface_addr_t*) params->iface_addr;
     uct_sci_device_addr_t* dev_addr = (uct_sci_device_addr_t*) params->dev_addr;
-    sci_remote_data_interrupt_t req_interrupt;
-    sci_local_data_interrupt_t  ans_interrupt;
     unsigned int local_interrupt_id = ucs_generate_uuid(getpid());
     uct_sci_conn_ans_t answer;
 
@@ -135,25 +133,10 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
         return ucs_ret;
     }
 
-    uct_ret = uct_sci_ep_recv_conn_answer(&answer, local_interrupt_id);
+    ucs_ret = uct_sci_ep_recv_conn_answer(&answer, local_interrupt_id);
     if (ucs_ret != UCS_OK) {
         return ucs_ret;
     }
-
-    SCICreateDataInterrupt(md->sci_virtual_device, &ans_interrupt, 0, &local_interrupt_id,  
-        NULL, NULL, SCI_FLAG_FIXED_INTNO, &sci_error);
-    if(sci_error != SCI_ERR_OK) {
-        printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }
-
-    SCIWaitForDataInterrupt(ans_interrupt, (void*) &answer, &ans_length,SCI_INFINITE_TIMEOUT, 0, &sci_error);
-    if(sci_error != SCI_ERR_OK) {
-        printf("SCI Wait For Interrupt: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }
-
-    SCIRemoveDataInterrupt(ans_interrupt, SCI_NO_FLAGS, &sci_error);
     
     /* uct_sci_ep_t *self */
     self->remote_segment_id = segment_id;

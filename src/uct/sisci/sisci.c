@@ -81,7 +81,7 @@ static void uct_sci_ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned
 {
     pthread_mutex_lock(&iface->lock);
 
-    iface->sci_cds[i].status = 0;
+    iface->sci_cds[cd_index].status = 0;
     iface->connections--;
 
     pthread_mutex_unlock(&iface->lock);
@@ -210,6 +210,92 @@ static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
     .ep_is_connected       = uct_sci_ipc_ep_is_connected
 };
 
+ucs_error_t uct_sci_helper_create_segment(
+    sci_desc_t sd,
+    sci_local_segment_t *segment,
+    sci_map_t *segment_map
+    unsigned int segment_id,
+    size_t segment_size,
+    void **buf)
+{
+    sci_error_t sci_error;
+    SCICreateSegment(sd, segment, segment_id, segment_size, NULL, NULL, 0, &sci_error);
+    if (sci_error != SCI_ERR_OK) { 
+            printf("SCI_CREATE_RECV_SEGMENT: %s\n", SCIGetErrorString(sci_error));
+            return UCS_ERR_NO_RESOURCE;
+    }
+
+    SCIPrepareSegment(*segment, 0, 0, &sci_error);
+    if (sci_error != SCI_ERR_OK) { 
+        printf("SCI_PREPARE_SEGMENT: %s\n", SCIGetErrorString(sci_error));
+        SCIRemoveSegment(segment, SCI_NO_FLAGS , &sci_error);
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    *buf = SCIMapLocalSegment(*segment, &self->local_map, 0, segment_size, NULL,0, &sci_error);
+    if (sci_error != SCI_ERR_OK) { 
+        printf("SCI_MAP_LOCAL_SEG: %s\n", SCIGetErrorString(sci_error));
+        SCIRemoveSegment(segment, SCI_NO_FLAGS , &sci_error);
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    return UCS_OK;
+}
+
+void uct_sci_helper_remove_segment(
+    sci_desc_t sd,
+    sci_local_segment_t *segment,
+    sci_map_t *segment_map)
+{
+    sci_error_t sci_error;
+
+    SCIUnmapSegment(segment_map, 0, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_warn("Failed to unmap segment\n");
+    }
+
+    SCIRemoveSegment(segment, SCI_FLAG_FORCE_REMOVE , &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_warn("Failed to remove segment\n");
+    }
+}
+
+ucs_error_t uct_sci_helper_create_seg_set_avail(
+    sci_desc_t sd,
+    sci_local_segment_t *segment,
+    sci_map_t *segment_map
+    unsigned int segment_id,
+    size_t segment_size,
+    void **buf)
+{
+    ucs_error_t ret;
+    
+    ret = uct_sci_helper_create_segment(sd, segment, segment_map, segment_id, segment_size, buf);
+    if (ret == UCS_OK) {
+        SCISetSegmentAvailable(self->local_segment, 0, 0, &sci_error);
+        if (sci_error != SCI_ERR_OK) { 
+            ucs_err("Failed to set segment as available\n");
+            uct_sci_helper_remove_segment(sd, segment, segment_map);
+            return UCS_ERR_NO_RESOURCE;
+        }
+    }
+
+    return UCS_OK;
+}
+
+void uct_sci_helper_remove_seg_set_unavail(
+    sci_desc_t sd,
+    sci_local_segment_t *segment,
+    sci_map_t *segment_map)
+{
+    sci_error_t sci_error;
+    SCISetSegmentUnavailable(*segment, 0, SCI_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_warn("Failed to set segment unavailable\n");
+    }
+    uct_sci_helper_remove_segment(sd, segment, segment_map);
+}
+
 /**
  * @brief Construct a new ucs class init func object
  * 
@@ -232,6 +318,9 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     sci_cb_data_interrupt_t callback = uct_sci_conn_handler;
     uct_sci_iface_config_t* config = ucs_derived_of(tl_config, uct_sci_iface_config_t); 
     uct_sci_md_t * sci_md = ucs_derived_of(md, uct_sci_md_t);
+    size_t recv_segment_size;
+    size_t control_segment_size;
+    ucs_error_t ucs_error;
 
     UCT_CHECK_PARAM(params->field_mask & UCT_IFACE_PARAM_FIELD_OPEN_MODE,
                     "UCT_IFACE_PARAM_FIELD_OPEN_MODE is not defined");
@@ -280,76 +369,29 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     self->queue_size  = config->queue_size;
 
     SCIOpen(&self->vdev_ep, 0, &sci_error);
-
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_OPEN_EP_VDEVS: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
 
     SCIOpen(&self->vdev_ctl, 0, &sci_error);
-
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_OPEN_EP_VDEVS: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
-    }     
+    }
 
     /*  recv segment    */
-
-    SCICreateSegment(sci_md->sci_virtual_device, &self->local_segment, self->segment_id, self->send_size * self->max_eps * self->queue_size, NULL, NULL, 0, &sci_error);
-    
-    if (sci_error != SCI_ERR_OK) { 
-            printf("SCI_CREATE_RECV_SEGMENT: %s\n", SCIGetErrorString(sci_error));
-            return UCS_ERR_NO_RESOURCE;
+    recv_segment_size = self.send_size * self.max_eps * self.queue_size;
+    ucs_error = uct_sci_helper_create_seg_set_avail(sci_md->sci_virtual_device, &self->local_segment, &self->local_map, self->segment_id, recv_segment_size, &self->tx_buf);
+    if (ucs_error != UCS_OK) {
+        ucs_warn("Failed to set up receive segment")
     }
 
-    SCIPrepareSegment(self->local_segment, 0, 0, &sci_error);
-    
-    if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_PREPARE_SEGMENT: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-
-    }
-
-    SCISetSegmentAvailable(self->local_segment, 0, 0, &sci_error);
-    
-    if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_SET_AVAILABLE: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }
-
-    /*    ctl segment    */
-    
-    SCICreateSegment(sci_md->sci_virtual_device, &self->ctl_segment, self->ctl_id, sizeof(uct_sci_ctl_t) * self->max_eps, NULL, NULL, 0, &sci_error);
-    if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_CREATE_CTL_SEGMENT: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }
-    
-    SCIPrepareSegment(self->ctl_segment, 0, 0, &sci_error); 
-    if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_PREPARE_SEGMENT: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }
-
-    SCISetSegmentAvailable(self->ctl_segment, 0, 0, &sci_error);
-    if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_SET_AVAILABLE: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }
-
-    self->ctls = (void*) SCIMapLocalSegment(self->ctl_segment, &self->ctl_map, 0, sizeof(uct_sci_ctl_t) * self->max_eps, NULL, SCI_NO_FLAGS, &sci_error);
-
-    if(sci_error != SCI_ERR_OK) {
-        printf("DMA ctl segment: %s \n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    } 
-
-
-    self->tx_buf = (void*) SCIMapLocalSegment(self->local_segment, &self->local_map, 0, self->send_size * self->max_eps * self->queue_size, NULL,0, &sci_error);
-
-    if (sci_error != SCI_ERR_OK) { 
-            printf("SCI_MAP_LOCAL_SEG: %s\n", SCIGetErrorString(sci_error));
-            return UCS_ERR_NO_RESOURCE;
+    /* ctl segment */
+    control_segment_size = sizeof(uct_sci_ctl_t) * self->max_eps;
+    ucs_error = uct_sci_helper_create_seg_set_avail(sci_md->sci_virtual_device, &self->ctl_segment, &self->ctl_map, self->ctl_id, control_segment_size, &self->ctls);
+    if (ucs_error != UCS_OK) {
+        ucs_warn("Failed to set up receive segment")
     }
 
     for(i = 0; i < self->max_eps; i++) {
@@ -362,49 +404,29 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     }
 
     /*----------------- DMA starts here ---------------*/
-    /*TODO: add a reasonable number of max entries for SCICreateDMAQueue instead of 5.*/
+    
+    dma_seg_id = ucs_generate_uuid(trash);
+    ucs_error = uct_sci_helper_create_segment(sci_md->sci_virtual_device, &self->dma_segment, &self->dma_map, dma_seg_id, self->send_size, &sself->dma_buf);
+    if (ucs_error != UCS_OK) {
+        ucs_warn("Failed to set up receive segment")
+    }
+    
+    /*TODO: add a reasonable number of max entries for SCICreateDMAQueue instead of 10.*/
     SCICreateDMAQueue(sci_md->sci_virtual_device, &self->dma_queue, 0, 10, SCI_NO_FLAGS, &sci_error);
-
     if(sci_error != SCI_ERR_OK) {
         printf("CreateDMAQueue: %s \n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     } 
-
-    dma_seg_id = ucs_generate_uuid(trash);
-    SCICreateSegment(sci_md->sci_virtual_device, &self->dma_segment, dma_seg_id, self->send_size, NULL, NULL, SCI_NO_FLAGS, &sci_error);
-
-    if(sci_error != SCI_ERR_OK) {
-        printf("DMA create segment: %s \n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    } 
-
-    SCIPrepareSegment(self->dma_segment, 0, SCI_NO_FLAGS, &sci_error);
-
-    if(sci_error != SCI_ERR_OK) {
-        printf("DMA prepare segment: %s \n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    } 
-
-    self->dma_buf = SCIMapLocalSegment(self->dma_segment, &self->dma_map, 0, self->send_size, NULL, SCI_NO_FLAGS, &sci_error);
-
-    if(sci_error != SCI_ERR_OK) {
-        printf("DMA map segment: %s \n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    } 
-
-
 
     /*------------------------- INTERRUPTS --------------------------------- */
     self->interruptNO = ucs_generate_uuid(trash);
 
     SCICreateDataInterrupt(sci_md->sci_virtual_device, &self->interrupt, 0, &self->interruptNO,  
                             callback, self, SCI_FLAG_USE_CALLBACK, &sci_error);
-
-
     if(sci_error != SCI_ERR_OK) {
         printf("SCI CREATE INTERRUPT: %s %d\n", SCIGetErrorString(sci_error), SCI_FLAG_USE_CALLBACK);
         return UCS_ERR_NO_RESOURCE;
-    } 
+    }
 
     DEBUG_PRINT("iface_addr: %d dev_addr: %d segment_size %zd\n", self->interruptNO, self->device_addr, self->send_size);
     return UCS_OK;
