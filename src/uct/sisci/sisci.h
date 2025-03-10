@@ -16,14 +16,12 @@
 #define UCT_SCI_NAME "sci"
 #define UCT_SCI_CONFIG_PREFIX "SCI_"
 
-#define ADAPTER_NO 0
-#define SCI_NO_FLAGS 0
-#define SCI_NO_CALLBACK 0
-#define SCI_MAX_EPS 28
-#define SCI_VDEVS   3 //Max number of virtual_devices available. Each virtual descriptor should be able to handle 16 connections.
+#define UCT_SCI_LOCAL_ADAPTER_NO 0
+#define UCT_SCI_NO_FLAGS 0
+#define UCT_SCI_NO_CALLBACK 0
+#define UCT_SCI_MAX_EPS 28
 
-#define SISCI_STATUS_WRITING_DONE 1
-#define SCI_PACKET_SIZE sizeof(uct_sci_packet_t)
+#define UCT_SCI_PACKET_SIZE sizeof(uct_sci_packet_t)
 
 #define DEBUG 0
 
@@ -56,7 +54,7 @@ typedef struct {
 } UCS_S_PACKED uct_sci_packet_t;
 
 /* (cd probably stood for connection descriptor. If not, it does now)
-    Connection Desctriptor,
+    Connection Descriptor,
     
     Each incoming connection gets assigned a different section of the segment.
     We are using one large segment, with a single map for this segment. So each cd is given an offset
@@ -133,7 +131,7 @@ typedef struct uct_sci_iface {
     sci_dma_queue_t             dma_queue;
     sci_local_segment_t         dma_segment;
     sci_map_t                   dma_map;
-    uct_sci_conn_desc_t         sci_cds[SCI_MAX_EPS];
+    uct_sci_conn_desc_t         sci_cds[UCT_SCI_MAX_EPS];
     sci_local_data_interrupt_t  interrupt; 
     unsigned int                interruptNO;
     void*                       tx_buf;

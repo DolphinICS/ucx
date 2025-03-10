@@ -102,12 +102,12 @@ static int uct_sci_send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_r
     answer.send_size  = iface->send_size;
     answer.queue_size = iface->queue_size;
     
-    SCITriggerDataInterrupt(ans_interrupt, (void *) &answer, sizeof(answer), SCI_NO_FLAGS, &sci_error);
+    SCITriggerDataInterrupt(ans_interrupt, (void *) &answer, sizeof(answer), UCT_SCI_NO_FLAGS, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         ucs_warn("SCI Trigger Interrupt: %s", SCIGetErrorString(sci_error));
     }
 
-    SCIDisconnectDataInterrupt(ans_interrupt, SCI_NO_FLAGS, &sci_error);
+    SCIDisconnectDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
 
     /* todo, do error checking */
     return 0;
@@ -118,7 +118,7 @@ static int uct_sci_connect_control_buffer(uct_sci_iface_t* iface) {
     do {
         DEBUG_PRINT("waiting to connect to ctl %s\n", SCIGetErrorString(sci_error));
         SCIConnectSegment(iface->vdev_ctl, &sci_cd->ctl_segment, request->node_id, request->ctl_id, 
-                ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
+                UCT_SCI_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
         
     } while (sci_error != SCI_ERR_OK);
 
@@ -228,14 +228,14 @@ ucs_error_t uct_sci_helper_create_segment(
     SCIPrepareSegment(*segment, 0, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_PREPARE_SEGMENT: %s\n", SCIGetErrorString(sci_error));
-        SCIRemoveSegment(segment, SCI_NO_FLAGS , &sci_error);
+        SCIRemoveSegment(segment, UCT_SCI_NO_FLAGS , &sci_error);
         return UCS_ERR_NO_RESOURCE;
     }
 
     *buf = SCIMapLocalSegment(*segment, &self->local_map, 0, segment_size, NULL,0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_MAP_LOCAL_SEG: %s\n", SCIGetErrorString(sci_error));
-        SCIRemoveSegment(segment, SCI_NO_FLAGS , &sci_error);
+        SCIRemoveSegment(segment, UCT_SCI_NO_FLAGS , &sci_error);
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -288,7 +288,7 @@ void uct_sci_helper_remove_seg_set_unavail(
     sci_map_t *segment_map)
 {
     sci_error_t sci_error;
-    SCISetSegmentUnavailable(*segment, 0, SCI_NO_FLAGS, &sci_error);
+    SCISetSegmentUnavailable(*segment, 0, UCT_SCI_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_warn("Failed to set segment unavailable\n");
     }
@@ -363,7 +363,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     self->ctl_id      = ucs_generate_uuid(trash);
     self->send_size   = config->send_size; //this is probbably arbitrary, and could be higher. 2^16 was just selected for looks
     self->eps         = 0;
-    self->max_eps     = MIN(SCI_MAX_EPS, config->max_eps);
+    self->max_eps     = MIN(UCT_SCI_MAX_EPS, config->max_eps);
     self->connections = 0;
     self->queue_size  = config->queue_size;
 
@@ -411,7 +411,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     }
     
     /*TODO: add a reasonable number of max entries for SCICreateDMAQueue instead of 10.*/
-    SCICreateDMAQueue(sci_md->sci_virtual_device, &self->dma_queue, 0, 10, SCI_NO_FLAGS, &sci_error);
+    SCICreateDMAQueue(sci_md->sci_virtual_device, &self->dma_queue, 0, 10, UCT_SCI_NO_FLAGS, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("CreateDMAQueue: %s \n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
@@ -457,7 +457,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
 
     uct_sci_helper_remove_segment(self->dma_segment, self->dma_map);
 
-    SCIRemoveDMAQueue(self->dma_queue, SCI_NO_FLAGS, &sci_error);
+    SCIRemoveDMAQueue(self->dma_queue, UCT_SCI_NO_FLAGS, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("IFACE CLOSE, Failed to remove dma queue: %s\n", SCIGetErrorString(sci_error));
     }
@@ -486,8 +486,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
     uct_sci_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_map);
 
     /* Closing device descriptors used for connections */
-    SCIClose(self->vdev_ctl, SCI_NO_FLAGS, &sci_error);
-    SCIClose(self->vdev_ep, SCI_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_ep, UCT_SCI_NO_FLAGS, &sci_error);
 }
 
 
