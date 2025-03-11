@@ -68,41 +68,14 @@ static int uct_sci_ep_send_conn_request(
     return rc;
 }
 
-static int uct_sci_ep_recv_conn_answer(
-    uct_sci_conn_ans_t *answer,
-    unsigned int local_interrupt_id)
-{
-    sci_error_t sci_error;
-    uct_sci_conn_req_t request;
-    sci_local_data_interrupt_t ans_interrupt;
-    int ans_length = sizeof(uct_sci_conn_ans_t);
-    int rc = UCS_OK;
-
-    SCICreateDataInterrupt(md->sci_virtual_device, &ans_interrupt, UCT_SCI_LOCAL_ADAPTER_NO, &local_interrupt_id,  
-        NULL, NULL, SCI_FLAG_FIXED_INTNO, &sci_error);
-    if(sci_error != SCI_ERR_OK) {
-        printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }
-
-    SCIWaitForDataInterrupt(ans_interrupt, (void*) answer, &ans_length, SCI_INFINITE_TIMEOUT, 0, &sci_error);
-    if(sci_error != SCI_ERR_OK) {
-        printf("SCI Wait For Interrupt: %s\n", SCIGetErrorString(sci_error));
-        rc = UCS_ERR_NO_RESOURCE;
-    }
-
-    SCIRemoveDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
-
-    return rc;
-}
-
 static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
 
     sci_error_t sci_error;
     ucs_status_t ucs_ret;
     uct_sci_iface_addr_t* iface_addr =  (uct_sci_iface_addr_t*) params->iface_addr;
     uct_sci_device_addr_t* dev_addr = (uct_sci_device_addr_t*) params->dev_addr;
-    unsigned int local_interrupt_id = ucs_generate_uuid(getpid());
+    sci_local_data_interrupt_t ans_interrupt;
+    unsigned int local_interrupt_id;
     uct_sci_conn_ans_t answer;
 
     unsigned int interrupt_no;
@@ -121,16 +94,44 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     self->super.super.iface = params->iface;
     
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super); //segfaults without this line, probably has something to do with the stats member...
+
+    /* todo: should be a helper function */
+    /* 1.
+     * Create the data interrupt we will use to receive the response of our
+     * connection request. We get sisci to give us a free interrupt id.
+     * We send that ID along with our connection request such that the server
+     * can get back to us. */
+    SCICreateDataInterrupt(
+        md->sci_virtual_device,
+        &ans_interrupt,
+        UCT_SCI_LOCAL_ADAPTER_NO,
+        &local_interrupt_id,  
+        NULL,
+        NULL,
+        UCT_SCI_NO_FLAGS,
+        &sci_error);
+    if(sci_error != SCI_ERR_OK) {
+        printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
+        return UCS_ERR_NO_RESOURCE;
+    }
     
+    /* 2.
+     * Send connection request to the server. This will trigger a callback on
+     * the other side, and that callback will get back to us and send us an
+     * answer to our connection request. */
     ucs_ret = uct_sci_ep_send_conn_request(iface, node_id, interrupt_no, local_interrupt_id);
     if (ucs_ret != UCS_OK) {
         return ucs_ret;
     }
 
-    ucs_ret = uct_sci_ep_recv_conn_answer(&answer, local_interrupt_id);
-    if (ucs_ret != UCS_OK) {
-        return ucs_ret;
+    /* 3. Wait for connection request answer */
+    SCIWaitForDataInterrupt(ans_interrupt, (void*) answer, &ans_length, SCI_INFINITE_TIMEOUT, 0, &sci_error);
+    if(sci_error != SCI_ERR_OK) {
+        printf("SCI Wait For Interrupt: %s\n", SCIGetErrorString(sci_error));
+        rc = UCS_ERR_NO_RESOURCE;
     }
+    /* Done. Clean up data interrupt made in step 1 */
+    SCIRemoveDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
     
     /* uct_sci_ep_t *self */
     self->remote_node_id    = answer.node_id;

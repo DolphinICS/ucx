@@ -87,7 +87,8 @@ static void uct_sci_ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned
     pthread_mutex_unlock(&iface->lock);
 }
 
-static int uct_sci_send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_req_t* request) {
+static int uct_sci_send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_req_t* request)
+{
     uct_sci_conn_ans_t   answer;
     sci_remote_data_interrupt_t ans_interrupt;
     sci_error_t sci_error
@@ -113,8 +114,8 @@ static int uct_sci_send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_r
     return 0;
 }
 
-static int uct_sci_connect_control_buffer(uct_sci_iface_t* iface) {
-
+static int uct_sci_connect_control_buffer(uct_sci_iface_t* iface)
+{
     do {
         DEBUG_PRINT("waiting to connect to ctl %s\n", SCIGetErrorString(sci_error));
         SCIConnectSegment(iface->vdev_ctl, &sci_cd->ctl_segment, request->node_id, request->ctl_id, 
@@ -214,30 +215,49 @@ ucs_error_t uct_sci_helper_create_segment(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
-    unsigned int segment_id,
+    unsigned int *segment_id,
     size_t segment_size,
     void **buf)
 {
     sci_error_t sci_error;
-    SCICreateSegment(sd, segment, segment_id, segment_size, NULL, NULL, 0, &sci_error);
+
+    SCICreateSegment(
+        sd,
+        segment,
+        0,  /* segment_id, but by specifying SCI_FLAG_AUTO_ID
+             * we are asking sisci to give us an available one from [0,128] */
+        segment_size,
+        UCT_SCI_NO_CALLBACK,
+        NULL, /* callbackArg == NULL */
+        SCI_FLAG_AUTO_ID,
+        &sci_error);
     if (sci_error != SCI_ERR_OK) { 
             printf("SCI_CREATE_RECV_SEGMENT: %s\n", SCIGetErrorString(sci_error));
             return UCS_ERR_NO_RESOURCE;
     }
 
-    SCIPrepareSegment(*segment, 0, 0, &sci_error);
+    SCIPrepareSegment(*segment, UCT_SCI_LOCAL_ADAPTER_NO, UCT_SCI_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_PREPARE_SEGMENT: %s\n", SCIGetErrorString(sci_error));
         SCIRemoveSegment(segment, UCT_SCI_NO_FLAGS , &sci_error);
         return UCS_ERR_NO_RESOURCE;
     }
 
-    *buf = SCIMapLocalSegment(*segment, &self->local_map, 0, segment_size, NULL,0, &sci_error);
+    *buf = SCIMapLocalSegment(
+        *segment,
+        &self->local_map,
+        0, /* Mapping offset == 0 */
+        segment_size,
+        NULL, /* No suggested virtual address */
+        UCT_SCI_NO_FLAGS,
+        &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_MAP_LOCAL_SEG: %s\n", SCIGetErrorString(sci_error));
         SCIRemoveSegment(segment, UCT_SCI_NO_FLAGS , &sci_error);
         return UCS_ERR_NO_RESOURCE;
     }
+
+    *segment_id = SCIGetLocalSegmentId(segment);
 
     return UCS_OK;
 }
@@ -263,7 +283,7 @@ ucs_error_t uct_sci_helper_create_seg_set_avail(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
-    unsigned int segment_id,
+    unsigned int *segment_id,
     size_t segment_size,
     void **buf)
 {
@@ -303,11 +323,12 @@ void uct_sci_helper_remove_seg_set_unavail(
  * @param params 
  * @param tl_config 
  */
-static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
-                           const uct_iface_params_t *params,
-                           const uct_iface_config_t *tl_config)
+static UCS_CLASS_INIT_FUNC(uct_sci_iface_t,
+    uct_md_h md,
+    uct_worker_h worker,
+    const uct_iface_params_t *params,
+    const uct_iface_config_t *tl_config)
 {
-    unsigned int trash = getpid();
     unsigned int nodeID;
     unsigned int adapterID = 0;
     unsigned int flags = 0;
@@ -359,8 +380,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     
     /* uct_sci_iface_t *self */
     self->device_addr = nodeID;
-    self->segment_id  = ucs_generate_uuid(trash);
-    self->ctl_id      = ucs_generate_uuid(trash);
     self->send_size   = config->send_size; //this is probbably arbitrary, and could be higher. 2^16 was just selected for looks
     self->eps         = 0;
     self->max_eps     = MIN(UCT_SCI_MAX_EPS, config->max_eps);
@@ -382,7 +401,13 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     /*  recv segment    */
     recv_segment_size = self.send_size * self.max_eps * self.packet_queue_len;
-    ucs_error = uct_sci_helper_create_seg_set_avail(sci_md->sci_virtual_device, &self->local_segment, &self->local_map, self->segment_id, recv_segment_size, &self->tx_buf);
+    ucs_error = uct_sci_helper_create_seg_set_avail(
+        sci_md->sci_virtual_device,
+        &self->local_segment,
+        &self->local_map,
+        &self->segment_id,
+        recv_segment_size,
+        &self->tx_buf);
     if (ucs_error != UCS_OK) {
         ucs_error("Failed to set up receive segment");
         return UCS_ERR_NO_RESOURCE;
@@ -390,7 +415,13 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     /* ctl segment */
     control_segment_size = sizeof(uct_sci_ctl_t) * self->max_eps;
-    ucs_error = uct_sci_helper_create_seg_set_avail(sci_md->sci_virtual_device, &self->ctl_segment, &self->ctl_map, self->ctl_id, control_segment_size, &self->ctls);
+    ucs_error = uct_sci_helper_create_seg_set_avail(
+        sci_md->sci_virtual_device,
+        &self->ctl_segment,
+        &self->ctl_map,
+        &self->ctl_id,
+        control_segment_size,
+        &self->ctls);
     if (ucs_error != UCS_OK) {
         ucs_error("Failed to set up receive segment");
         return UCS_ERR_NO_RESOURCE;
@@ -407,25 +438,41 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     /*----------------- DMA starts here ---------------*/
     
-    dma_seg_id = ucs_generate_uuid(trash);
-    ucs_error = uct_sci_helper_create_segment(sci_md->sci_virtual_device, &self->dma_segment, &self->dma_map, dma_seg_id, self->send_size, &sself->dma_buf);
+    ucs_error = uct_sci_helper_create_segment(
+        sci_md->sci_virtual_device,
+        &self->dma_segment,
+        &self->dma_map,
+        &dma_seg_id,
+        self->send_size,
+        &sself->dma_buf);
     if (ucs_error != UCS_OK) {
         ucs_error("Failed to set up receive segment");
         return UCS_ERR_NO_RESOURCE;
     }
     
     /*TODO: add a reasonable number of max entries for SCICreateDMAQueue instead of 10.*/
-    SCICreateDMAQueue(sci_md->sci_virtual_device, &self->dma_queue, 0, 10, UCT_SCI_NO_FLAGS, &sci_error);
+    SCICreateDMAQueue(
+        sci_md->sci_virtual_device,
+        &self->dma_queue,
+        0,
+        10,
+        UCT_SCI_NO_FLAGS,
+        &sci_error);
     if(sci_error != SCI_ERR_OK) {
         ucs_error("CreateDMAQueue: %s", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     } 
 
     /*------------------------- INTERRUPTS --------------------------------- */
-    self->interrupt_no = ucs_generate_uuid(trash);
-
-    SCICreateDataInterrupt(sci_md->sci_virtual_device, &self->interrupt, 0, &self->interrupt_no,  
-                            callback, self, SCI_FLAG_USE_CALLBACK, &sci_error);
+    SCICreateDataInterrupt(
+        sci_md->sci_virtual_device,
+        &self->interrupt,
+        0,
+        &self->interrupt_no,  
+        callback,
+        self,
+        SCI_FLAG_USE_CALLBACK,
+        &sci_error);
     if(sci_error != SCI_ERR_OK) {
         ucs_error("SCICreateDataInterrupt: %s", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
@@ -583,9 +630,14 @@ typedef struct uct_sci_alloc_handle {
 } uct_sci_alloc_handle_t;
 
 static ucs_status_t
-uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
-                        ucs_memory_type_t mem_type, unsigned flags,
-                        const char *alloc_name, uct_mem_h *memh_p)
+uct_sci_mem_alloc(
+    uct_md_h uct_md,
+    size_t *length_p,
+    void **address_p,
+    ucs_memory_type_t mem_type,
+    unsigned flags,
+    const char *alloc_name,
+    uct_mem_h *memh_p)
 {
     uct_sci_alloc_handle_t *alloc_handle;
     alloc_handle = ucs_malloc(sizeof(*alloc_handle),
@@ -620,8 +672,11 @@ static ucs_status_t uct_sci_mem_free(uct_md_h md, uct_mem_h memh)
     return UCS_OK;
 }
 
-static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_name,
-                                     const uct_md_config_t *config, uct_md_h *md_p)
+static ucs_status_t uct_sci_md_open(
+    uct_component_t *component,
+    const char *md_name,
+    const uct_md_config_t *config,
+    uct_md_h *md_p)
 {
     /* NOTE   */
     uct_sci_md_config_t *md_config = ucs_derived_of(config, uct_sci_md_config_t);
@@ -662,8 +717,8 @@ static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_n
 }
 
 int uct_sci_iface_is_reachable(const uct_iface_h tl_iface,
-                                       const uct_device_addr_t *dev_addr,
-                                       const uct_iface_addr_t *iface_addr)
+                               const uct_device_addr_t *dev_addr,
+                               const uct_iface_addr_t *iface_addr)
 {
    /*NOTE We have no good way to actually check if given address is reachable, so we just return 1*/
     
@@ -692,8 +747,7 @@ ucs_status_t uct_sci_get_device_address(uct_iface_h iface, uct_device_addr_t *ad
  * @brief returns the ID used for the connection interrupt
  *  
  */
-ucs_status_t uct_sci_iface_get_address(uct_iface_h tl_iface,
-                                               uct_iface_addr_t *addr)
+ucs_status_t uct_sci_iface_get_address(uct_iface_h tl_iface, uct_iface_addr_t *addr)
 {
     
     uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
