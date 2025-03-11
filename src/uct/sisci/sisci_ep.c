@@ -354,9 +354,10 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
     ucs_iov_iter_t uct_iov_iter;
     sci_error_t sci_error;
     uint32_t packet_buf_offset;
+    size_t bytes_to_send;
 
-    void* tx = iface->dma_buf;
-    uct_sci_packet_prefix_t* tx_pack = (uct_sci_packet_prefix_t*) tx;
+    uint8_t* tx_buf = iface->dma_buf;
+    uct_sci_packet_prefix_t* tx_packet_prefix = (uct_sci_packet_prefix_t*) tx_buf;
 
     size_t iov_total_len = uct_iov_total_length(iov, iovcnt);
     
@@ -375,31 +376,39 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
     /* Convert the iov into a contiguous buffer */
     ucs_iov_iter_init(&uct_iov_iter);
 
-    bytes_copied = uct_iov_to_buffer(iov, iovcnt, &uct_iov_iter, tx + sizeof(uct_sci_packet_prefix_t) + header_length, iface->packet_size_bytes);
+    /* Set uct_sci packet prefix values, stored directly into the DMA buffer ready for sending */
+    tx_packet_prefix->am_id = id;
+    tx_packet_prefix->length = iov_total_len + header_length;
 
-    if(bytes_copied != iov_total_len) {
-        /* Might wanna replace this with an assert */
-        printf("PANIK\n");
-    }
-
-    /* Set header values */
-    tx_pack->am_id = id;
-    tx_pack->length = iov_total_len + header_length;
-
+    /* Copy the uct header to the transfer buffer after prefix. Copied after uct_sci packet prefix*/
     if (header_length != 0)
     {
-        memcpy(tx + sizeof(uct_sci_packet_prefix_t), header, header_length);
+        memcpy(&tx_buf[sizeof(uct_sci_packet_prefix_t)], header, header_length);
     }
-    
-    SCIStartDmaTransfer(iface->dma_queue, iface->dma_segment, ep->remote_segment, 
-                        0, iov_total_len + header_length + UCT_SCI_PACKET_SIZE, packet_buf_offset,
-                        UCT_SCI_NO_CALLBACK, NULL, UCT_SCI_NO_FLAGS, &sci_error);
-    
 
+    /* Copy package from iov to the the DMA buffer. The rest of the data, after uct_sci packet prefix, and uct header */
+    bytes_copied = uct_iov_to_buffer(iov, iovcnt, &uct_iov_iter, &tx_buf[sizeof(uct_sci_packet_prefix_t) + header_length], iface->packet_size_bytes);
+    assert(bytes_copied != iov_total_len);
+
+    bytes_to_send = iov_total_len + header_length + sizeof(uct_sci_packet_prefix_t);
+
+    /* Send All the data  */
+    SCIStartDmaTransfer(
+        iface->dma_queue,
+        iface->dma_segment,
+        ep->remote_segment, 
+        0,
+        bytes_to_send,
+        packet_buf_offset,
+        UCT_SCI_NO_CALLBACK,
+        NULL,
+        UCT_SCI_NO_FLAGS,
+        &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("DMA Transfer Error: %s\n", SCIGetErrorString(sci_error));
     }
-
+    
+    /* Need to wait for transfer to finish first? */
     ep->seq++;
     packet_prefix->status = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);

@@ -21,8 +21,6 @@
 #define UCT_SCI_NO_CALLBACK 0
 #define UCT_SCI_MAX_EPS 28
 
-#define UCT_SCI_PACKET_SIZE sizeof(uct_sci_packet_prefix_t)
-
 #define DEBUG 0
 
 #if defined(DEBUG) && DEBUG > 0
