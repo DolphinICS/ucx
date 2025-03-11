@@ -357,7 +357,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     DEBUG_PRINT("CONFIG\n\tSEND_SIZE: %zd \n\tMAX_EPS: %u\n", config->send_size, config->max_eps);
     
-
+    /* uct_sci_iface_t *self */
     self->device_addr = nodeID;
     self->segment_id  = ucs_generate_uuid(trash);
     self->ctl_id      = ucs_generate_uuid(trash);
@@ -367,15 +367,16 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     self->connections = 0;
     self->packet_queue_len  = config->packet_queue_len;
 
+    /* todo: fix resource cleanup */
     SCIOpen(&self->vdev_ep, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_OPEN_EP_VDEVS: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCIOpen: %s", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
 
     SCIOpen(&self->vdev_ctl, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_OPEN_EP_VDEVS: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCIOpen: %s", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -383,14 +384,16 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     recv_segment_size = self.send_size * self.max_eps * self.packet_queue_len;
     ucs_error = uct_sci_helper_create_seg_set_avail(sci_md->sci_virtual_device, &self->local_segment, &self->local_map, self->segment_id, recv_segment_size, &self->tx_buf);
     if (ucs_error != UCS_OK) {
-        ucs_warn("Failed to set up receive segment")
+        ucs_error("Failed to set up receive segment");
+        return UCS_ERR_NO_RESOURCE;
     }
 
     /* ctl segment */
     control_segment_size = sizeof(uct_sci_ctl_t) * self->max_eps;
     ucs_error = uct_sci_helper_create_seg_set_avail(sci_md->sci_virtual_device, &self->ctl_segment, &self->ctl_map, self->ctl_id, control_segment_size, &self->ctls);
     if (ucs_error != UCS_OK) {
-        ucs_warn("Failed to set up receive segment")
+        ucs_error("Failed to set up receive segment");
+        return UCS_ERR_NO_RESOURCE;
     }
 
     for(i = 0; i < self->max_eps; i++) {
@@ -407,13 +410,14 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     dma_seg_id = ucs_generate_uuid(trash);
     ucs_error = uct_sci_helper_create_segment(sci_md->sci_virtual_device, &self->dma_segment, &self->dma_map, dma_seg_id, self->send_size, &sself->dma_buf);
     if (ucs_error != UCS_OK) {
-        ucs_warn("Failed to set up receive segment")
+        ucs_error("Failed to set up receive segment");
+        return UCS_ERR_NO_RESOURCE;
     }
     
     /*TODO: add a reasonable number of max entries for SCICreateDMAQueue instead of 10.*/
     SCICreateDMAQueue(sci_md->sci_virtual_device, &self->dma_queue, 0, 10, UCT_SCI_NO_FLAGS, &sci_error);
     if(sci_error != SCI_ERR_OK) {
-        printf("CreateDMAQueue: %s \n", SCIGetErrorString(sci_error));
+        ucs_error("CreateDMAQueue: %s", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     } 
 
@@ -423,7 +427,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     SCICreateDataInterrupt(sci_md->sci_virtual_device, &self->interrupt, 0, &self->interrupt_no,  
                             callback, self, SCI_FLAG_USE_CALLBACK, &sci_error);
     if(sci_error != SCI_ERR_OK) {
-        printf("SCI CREATE INTERRUPT: %s %d\n", SCIGetErrorString(sci_error), SCI_FLAG_USE_CALLBACK);
+        ucs_error("SCICreateDataInterrupt: %s", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
 

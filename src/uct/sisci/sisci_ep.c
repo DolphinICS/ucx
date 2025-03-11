@@ -105,7 +105,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     unsigned int local_interrupt_id = ucs_generate_uuid(getpid());
     uct_sci_conn_ans_t answer;
 
-
     unsigned int interrupt_no;
     unsigned int node_id;
     uct_sci_iface_t* iface = ucs_derived_of(params->iface, uct_sci_iface_t);
@@ -342,6 +341,37 @@ ssize_t uct_sci_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
     return length;
 }
 
+static void uct_sci_fill_buffer_with_packet(
+    const void *header,
+    unsigned header_length,
+    uint8_t id,
+    const uct_iov_t *iov,
+    size_t iovcnt,
+    size_t iov_total_len
+    uint8_t* tx_buf)
+{
+    size_t bytes_copied;
+    ucs_iov_iter_t uct_iov_iter;
+    uct_sci_packet_prefix_t* tx_packet_prefix = (uct_sci_packet_prefix_t*) tx_buf;
+
+    /* Convert the iov into a contiguous buffer */
+    ucs_iov_iter_init(&uct_iov_iter);
+    
+    /* Set uct_sci packet prefix values, stored directly into the DMA buffer ready for sending */
+    tx_packet_prefix->am_id = id;
+    tx_packet_prefix->length = iov_total_len + header_length;
+    
+    /* Copy the uct header to the transfer buffer after prefix. Copied after uct_sci packet prefix*/
+    if (header_length != 0) {
+        memcpy(&tx_buf[sizeof(uct_sci_packet_prefix_t)], header, header_length);
+    }
+    
+    /* Copy package from iov to the the DMA buffer. The rest of the data, after uct_sci packet prefix, and uct header */
+    bytes_copied = uct_iov_to_buffer(iov, iovcnt, &uct_iov_iter, &tx_buf[sizeof(uct_sci_packet_prefix_t) + header_length], iface->packet_size_bytes);
+    assert(bytes_copied != iov_total_len);
+    
+}
+
 ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header, unsigned header_length, 
                             const uct_iov_t *iov, size_t iovcnt, unsigned flags, uct_completion_t *comp) 
 {
@@ -350,14 +380,11 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
     uct_sci_iface_t* iface = ucs_derived_of(uct_ep->iface, uct_sci_iface_t);
     uct_sci_packet_prefix_t* packet_prefix; 
     uct_sci_ctl_t* ctl = iface->ctls + ep->ctl_offset;
-    size_t bytes_copied;
-    ucs_iov_iter_t uct_iov_iter;
-    sci_error_t sci_error;
     uint32_t packet_buf_offset;
     size_t bytes_to_send;
+    sci_error_t sci_error;
 
     uint8_t* tx_buf = iface->dma_buf;
-    uct_sci_packet_prefix_t* tx_packet_prefix = (uct_sci_packet_prefix_t*) tx_buf;
 
     size_t iov_total_len = uct_iov_total_length(iov, iovcnt);
     
@@ -367,32 +394,14 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
 
     ctl->status = 1;
 
-    packet_buf_offset = ep->packet_size_bytes * (ep->seq % ep->packet_queue_len);
-    
-    packet_prefix = ep->buf + packet_buf_offset;
-
-    UCT_CHECK_LENGTH(header_length + iov_total_len + sizeof(uct_sci_packet_prefix_t), 0 , iface->packet_size_bytes, "am_zcopy");
-    UCT_CHECK_AM_ID(id);
-    /* Convert the iov into a contiguous buffer */
-    ucs_iov_iter_init(&uct_iov_iter);
-
-    /* Set uct_sci packet prefix values, stored directly into the DMA buffer ready for sending */
-    tx_packet_prefix->am_id = id;
-    tx_packet_prefix->length = iov_total_len + header_length;
-
-    /* Copy the uct header to the transfer buffer after prefix. Copied after uct_sci packet prefix*/
-    if (header_length != 0)
-    {
-        memcpy(&tx_buf[sizeof(uct_sci_packet_prefix_t)], header, header_length);
-    }
-
-    /* Copy package from iov to the the DMA buffer. The rest of the data, after uct_sci packet prefix, and uct header */
-    bytes_copied = uct_iov_to_buffer(iov, iovcnt, &uct_iov_iter, &tx_buf[sizeof(uct_sci_packet_prefix_t) + header_length], iface->packet_size_bytes);
-    assert(bytes_copied != iov_total_len);
-
     bytes_to_send = iov_total_len + header_length + sizeof(uct_sci_packet_prefix_t);
+    UCT_CHECK_LENGTH(bytes_to_send, 0 , iface->packet_size_bytes, "am_zcopy");
+    UCT_CHECK_AM_ID(id);
 
-    /* Send All the data  */
+    uct_sci_fill_buffer_with_packet(header, header_length, id, iov, iovcnt, iov_total_len, tx_buf);
+    
+    packet_buf_offset = ep->packet_size_bytes * (ep->seq % ep->packet_queue_len);
+    /* Send all the data  */
     SCIStartDmaTransfer(
         iface->dma_queue,
         iface->dma_segment,
@@ -407,12 +416,12 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
     if(sci_error != SCI_ERR_OK) {
         printf("DMA Transfer Error: %s\n", SCIGetErrorString(sci_error));
     }
-    
+        
     /* Need to wait for transfer to finish first? */
+    packet_prefix = ep->buf + packet_buf_offset;
     ep->seq++;
     packet_prefix->status = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
-
 
     DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d \n", ep->remote_segment_id, ep->remote_node_id, id, packet_prefix->length);
 
