@@ -21,7 +21,7 @@
 #define UCT_SCI_NO_CALLBACK 0
 #define UCT_SCI_MAX_EPS 28
 
-#define UCT_SCI_PACKET_SIZE sizeof(uct_sci_packet_t)
+#define UCT_SCI_PACKET_SIZE sizeof(uct_sci_packet_prefix_t)
 
 #define DEBUG 0
 
@@ -51,7 +51,7 @@ typedef struct {
     uint8_t     status;
     uint8_t     am_id;
     unsigned    length;
-} UCS_S_PACKED uct_sci_packet_t;
+} UCS_S_PACKED uct_sci_packet_prefix_t;
 
 /* (cd probably stood for connection descriptor. If not, it does now)
     Connection Descriptor,
@@ -69,7 +69,7 @@ typedef {
     /*        rx info          */
     uint32_t                offset; /* start of our map in the global segment */
     void*                   cd_buf;
-    uct_sci_packet_t*       packet;
+    uct_sci_packet_prefix_t*  packet;
     
     /*    Control info        */
     uint32_t                ctl_id;
@@ -91,8 +91,8 @@ typedef {
     unsigned int node_id;
     unsigned int segment_id;
     unsigned int offset;
-    unsigned int send_size;
-    unsigned int queue_size;
+    unsigned int packet_size_bytes;
+    unsigned int packet_queue_len;
 } uct_sci_conn_ans_t;
 
 
@@ -101,16 +101,16 @@ void sci_testing();
 
 typedef struct uct_sci_iface_config {
     uct_iface_config_t    super;
-    size_t                send_size;      /* Maximal send size */
+    size_t                packet_size_bytes;      /* Maximal send size */
     unsigned int          max_eps;
-    unsigned int          queue_size;
+    unsigned int          packet_queue_len;
 
 } uct_sci_iface_config_t;
 
 
 
 typedef struct uct_sci_ep_zcopy_tx {
-    uct_sci_packet_t              super;     /* UCT TCP AM header */
+    uct_sci_packet_prefix_t       super;     /* UCT TCP AM header */
     uct_completion_t              *comp;     /* Local UCT completion object */
     size_t                        iov_index; /* Current IOV index */
     size_t                        iov_cnt;   /* Number of IOVs that should be sent */
@@ -120,9 +120,8 @@ typedef struct uct_sci_ep_zcopy_tx {
 typedef struct uct_sci_iface {
     uct_base_iface_t            super;
     unsigned int                segment_id;           /* Unique identifier for the instance */
-    unsigned int                interrupt_id;
     unsigned int                device_addr; //nodeID
-    size_t                      send_size;    /* Maximum size for payload */
+    size_t                      packet_size_bytes;    /* Maximum size for payload */
     unsigned int                max_eps;
     //ucs_mpool_t                 msg_mp;       /* Messages memory pool */
     void*                       recv_buffer;
@@ -133,10 +132,10 @@ typedef struct uct_sci_iface {
     sci_map_t                   dma_map;
     uct_sci_conn_desc_t         sci_cds[UCT_SCI_MAX_EPS];
     sci_local_data_interrupt_t  interrupt; 
-    unsigned int                interruptNO;
+    unsigned int                interrupt_no;
     void*                       tx_buf;
     void*                       dma_buf;
-    uint32_t                    queue_size;
+    uint32_t                    packet_queue_len;
 
     /*      ctl segment, used for control during runtime between processes  */
     sci_desc_t                  vdev_ep; //Vdev used for outgoing eps

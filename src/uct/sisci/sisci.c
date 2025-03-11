@@ -34,7 +34,7 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
 
     {
         "QUEUE_SIZE", "5", "Message Queue size for each connection",
-        ucs_offsetof(uct_sci_iface_config_t, queue_size),
+        ucs_offsetof(uct_sci_iface_config_t, packet_queue_len),
         UCS_CONFIG_TYPE_UINT
     },
 
@@ -100,7 +100,7 @@ static int uct_sci_send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_r
     answer.segment_id = iface->segment_id;
     answer.offset     = sci_cd->offset;
     answer.send_size  = iface->send_size;
-    answer.queue_size = iface->queue_size;
+    answer.packet_queue_len = iface->packet_queue_len;
     
     SCITriggerDataInterrupt(ans_interrupt, (void *) &answer, sizeof(answer), UCT_SCI_NO_FLAGS, &sci_error);
     if(sci_error != SCI_ERR_OK) {
@@ -365,7 +365,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     self->eps         = 0;
     self->max_eps     = MIN(UCT_SCI_MAX_EPS, config->max_eps);
     self->connections = 0;
-    self->queue_size  = config->queue_size;
+    self->packet_queue_len  = config->packet_queue_len;
 
     SCIOpen(&self->vdev_ep, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
@@ -380,7 +380,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     }
 
     /*  recv segment    */
-    recv_segment_size = self.send_size * self.max_eps * self.queue_size;
+    recv_segment_size = self.send_size * self.max_eps * self.packet_queue_len;
     ucs_error = uct_sci_helper_create_seg_set_avail(sci_md->sci_virtual_device, &self->local_segment, &self->local_map, self->segment_id, recv_segment_size, &self->tx_buf);
     if (ucs_error != UCS_OK) {
         ucs_warn("Failed to set up receive segment")
@@ -395,10 +395,10 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     for(i = 0; i < self->max_eps; i++) {
         self->sci_cds[i].status = 0;
-        self->sci_cds[i].size = self->send_size * self->queue_size;
-        self->sci_cds[i].offset = i * self->send_size * self->queue_size; 
+        self->sci_cds[i].size = self->send_size * self->packet_queue_len;
+        self->sci_cds[i].offset = i * self->send_size * self->packet_queue_len; 
         self->sci_cds[i].cd_buf = (void*) self->tx_buf + self->sci_cds[i].offset;
-        self->sci_cds[i].packet = (uct_sci_packet_t*) self->sci_cds[i].cd_buf;
+        self->sci_cds[i].packet = (uct_sci_packet_prefix_t*) self->sci_cds[i].cd_buf;
         self->sci_cds[i].last_ack = 0;
     }
 
@@ -712,7 +712,7 @@ void uct_sci_iface_progress_enable(uct_iface_h iface, unsigned flags) {
  * @brief 
  * @param[inout] iface input is 
  *                       - iface->send_size
- *                       - iface->queue_size
+ *                       - iface->packet_queue_len
  *                       - iface->sci_cds[i].last_ack
  *                       - iface->send_size
  *                     output is
@@ -727,7 +727,7 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
     uint32_t offset = 0;
     ucs_status_t ucs_ret;
     unsigned count = 0;
-    uct_sci_packet_t* packet;
+    uct_sci_packet_prefix_t* packet;
     uct_sci_conn_desc_t* cd;
 
     for (size_t i = 0; i < iface->connections; i++) {
@@ -737,14 +737,14 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
             continue;
         }
 
-        offset = iface->send_size * ((cd->last_ack + 1) % iface->queue_size);
+        offset = iface->send_size * ((cd->last_ack + 1) % iface->packet_queue_len);
         packet = cd->cd_buf + offset; 
         
         if (packet->status != 1) {
             continue;
         }
         
-        ucs_ret = uct_iface_invoke_am(&iface->super, packet->am_id, cd->cd_buf + offset + sizeof(uct_sci_packet_t), packet->length,0);
+        ucs_ret = uct_iface_invoke_am(&iface->super, packet->am_id, cd->cd_buf + offset + sizeof(uct_sci_packet_prefix_t), packet->length,0);
     
         if(ucs_ret == UCS_INPROGRESS) {
             ucs_debug("uct_sci_iface_progress_aux in progress");
@@ -778,7 +778,7 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
     uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
     unsigned total_count = 0;
     unsigned sub_count;
-    uct_sci_packet_t* packet;
+    uct_sci_packet_prefix_t* packet;
 
     do {
         sub_count = uct_sci_iface_progress_aux(iface);
