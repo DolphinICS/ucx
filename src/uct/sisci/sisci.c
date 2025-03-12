@@ -8,14 +8,10 @@
 #include "sisci.h"
 #include "sisci_ep.h"
 #include "sisci_iface.h" //TODO, is this needed?
-//#include "sci_iface.c"
-
 
 /* Forward declarations */
 static uct_iface_ops_t uct_sci_iface_ops;
 static uct_component_t uct_sci_component;
-
-
 
 static ucs_config_field_t uct_sci_iface_config_table[] = {
     {"", "MAX_NUM_EPS=16", NULL,
@@ -43,9 +39,12 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
 
 
 /**
- * @brief 
+ * @brief Reserve a uct_sci control descriptor from the uct_sci_iface's list
+ *        of control descriptor.
+ * 
  * @param[in] iface 
  * @param[out] cd_index 
+ * 
  * @return 
  */
 static int uct_sci_reserve_control_descriptor(uct_sci_iface_t* iface, unsigned int *cd_index)
@@ -77,6 +76,15 @@ static int uct_sci_reserve_control_descriptor(uct_sci_iface_t* iface, unsigned i
     return rc;
 }
 
+/**
+ * @brief Unreserve a uct_sci control descriptor from the uct_sci_iface's list
+ *        of control descriptor.
+ * 
+ * @details helper function to uct_sci_conn_handler.
+ * 
+ * @param[inout] iface 
+ * @param[in] cd_index 
+ */
 static void uct_sci_ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned int cd_index)
 {
     pthread_mutex_lock(&iface->lock);
@@ -87,11 +95,20 @@ static void uct_sci_ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned
     pthread_mutex_unlock(&iface->lock);
 }
 
+/**
+ * @brief Send answer to incoming request.
+ * 
+ * @details helper function to uct_sci_conn_handler.
+ * 
+ * @param[in] iface
+ * @param[in] request 
+ * @return 
+ */
 static int uct_sci_send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_req_t* request)
 {
     uct_sci_conn_ans_t   answer;
     sci_remote_data_interrupt_t ans_interrupt;
-    sci_error_t sci_error
+    sci_error_t sci_error;
 
     do {
         SCIConnectDataInterrupt(md->sci_virtual_device, &ans_interrupt, request->node_id, 0, request->interrupt, 1000, 0, &sci_error);
@@ -114,8 +131,17 @@ static int uct_sci_send_answer_to_request(uct_sci_iface_t* iface, uct_sci_conn_r
     return 0;
 }
 
+/**
+ * @brief Connect to remote endpoint's control buffer
+ * 
+ * @details helper function to uct_sci_conn_handler.
+ * 
+ * @param[in] iface
+ * @return 
+ */
 static int uct_sci_connect_control_buffer(uct_sci_iface_t* iface)
 {
+    sci_error_t sci_error;
     do {
         DEBUG_PRINT("waiting to connect to ctl %s\n", SCIGetErrorString(sci_error));
         SCIConnectSegment(iface->vdev_ctl, &sci_cd->ctl_segment, request->node_id, request->ctl_id, 
@@ -211,12 +237,23 @@ static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
     .ep_is_connected       = uct_sci_ipc_ep_is_connected
 };
 
+/**
+ * @brief Creates, prepares and maps a local sisci segment. Gets sisci to
+ *        automatically assign a segment ID that is unique to this node.
+ * @param[in] sd 
+ * @param[in] segment 
+ * @param[in] segment_map 
+ * @param[in] segment_size 
+ * @param[out] segment_id 
+ * @param[out] buf 
+ * @return 
+ */
 ucs_error_t uct_sci_helper_create_segment(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
-    unsigned int *segment_id,
     size_t segment_size,
+    unsigned int *segment_id,
     void **buf)
 {
     sci_error_t sci_error;
@@ -262,6 +299,14 @@ ucs_error_t uct_sci_helper_create_segment(
     return UCS_OK;
 }
 
+/**
+ * @brief Undos setup by uct_sci_helper_create_segment.
+ * 
+ * @details Unmaps and removes local segment set up by uct_sci_helper_create_segment.
+ * 
+ * @param[in] segment 
+ * @param[in] segment_map 
+ */
 void uct_sci_helper_remove_segment(
     sci_local_segment_t *segment,
     sci_map_t *segment_map)
@@ -279,18 +324,30 @@ void uct_sci_helper_remove_segment(
     }
 }
 
+/**
+ * @brief Creates, prepares and maps a local sisci segment, then sets it
+ *        available for remote connections. Gets sisci to automatically assign
+ *        a segment ID that is unique to this node.
+ * @param[in] sd 
+ * @param[in] segment 
+ * @param[in] segment_map 
+ * @param[in] segment_size 
+ * @param[out] segment_id 
+ * @param[out] buf 
+ * @return 
+ */
 ucs_error_t uct_sci_helper_create_seg_set_avail(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
-    unsigned int *segment_id,
     size_t segment_size,
+    unsigned int *segment_id,
     void **buf)
 {
     ucs_error_t ret;
     sci_error_t sci_error;
     
-    ret = uct_sci_helper_create_segment(sd, segment, segment_map, segment_id, segment_size, buf);
+    ret = uct_sci_helper_create_segment(sd, segment, segment_map, segment_size, segment_id, buf);
     if (ret == UCS_OK) {
         SCISetSegmentAvailable(self->local_segment, 0, 0, &sci_error);
         if (sci_error != SCI_ERR_OK) { 
@@ -303,6 +360,17 @@ ucs_error_t uct_sci_helper_create_seg_set_avail(
     return UCS_OK;
 }
 
+/**
+ * @brief Unmaps, removes local segment (after first setting it to unavailable)
+ *        set up by uct_sci_helper_create_segment.
+ *        (Undos setup by uct_sci_helper_create_segment)
+ *
+ * @details Unmaps, removes local segment set up by uct_sci_helper_create_segment.
+ *          (after first setting it to unavailable)
+ * 
+ * @param[in] segment 
+ * @param[in] segment_map 
+ */
 void uct_sci_helper_remove_seg_set_unavail(
     sci_local_segment_t *segment,
     sci_map_t *segment_map)
@@ -405,8 +473,8 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t,
         sci_md->sci_virtual_device,
         &self->local_segment,
         &self->local_map,
-        &self->segment_id,
         recv_segment_size,
+        &self->segment_id,
         &self->tx_buf);
     if (ucs_error != UCS_OK) {
         ucs_error("Failed to set up receive segment");
@@ -419,8 +487,8 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t,
         sci_md->sci_virtual_device,
         &self->ctl_segment,
         &self->ctl_map,
-        &self->ctl_id,
         control_segment_size,
+        &self->ctl_id,
         &self->ctls);
     if (ucs_error != UCS_OK) {
         ucs_error("Failed to set up receive segment");
@@ -442,8 +510,8 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t,
         sci_md->sci_virtual_device,
         &self->dma_segment,
         &self->dma_map,
-        &dma_seg_id,
         self->send_size,
+        &dma_seg_id,
         &sself->dma_buf);
     if (ucs_error != UCS_OK) {
         ucs_error("Failed to set up receive segment");

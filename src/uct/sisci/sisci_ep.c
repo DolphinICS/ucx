@@ -24,11 +24,19 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
     DEBUG_PRINT("ep deleted segment_id %d node_id %d\n", self->remote_segment_id, self->remote_node_id);
 }
 
-static int uct_sci_ep_send_conn_request(
+/**
+ * @brief 
+ * @param[in] iface 
+ * @param[in] node_id 
+ * @param[in] remote_interrupt_no 
+ * @param[in] local_interrupt_no 
+ * @return 
+ */
+static ucs_status_t uct_sci_ep_send_conn_request(
     uct_sci_iface_t* iface,
     unsigned int node_id,
-    unsigned int segment_id,
-    unsigned int local_interrupt_id)
+    unsigned int remote_interrupt_no,
+    unsigned int local_interrupt_no)
 {
     sci_error_t sci_error;
     uct_sci_conn_req_t request;
@@ -36,13 +44,13 @@ static int uct_sci_ep_send_conn_request(
     int rc = UCS_OK;
 
     do {
-        SCIConnectDataInterrupt(md->sci_virtual_device, &req_interrupt, node_id, 0, segment_id, 0, 0, &sci_error);
+        SCIConnectDataInterrupt(md->sci_virtual_device, &req_interrupt, node_id, 0, remote_interrupt_no, 0, 0, &sci_error);
     } while (sci_error != SCI_ERR_OK);
 
-    //printf("%d connected to remote interrupt!, ret_int %d\n", getpid(),local_interrupt_id);
+    //printf("%d connected to remote interrupt!, ret_int %d\n", getpid(),local_interrupt_no);
     //printf("size of answer %zd size of struct answer %zd\n", sizeof(answer), sizeof(uct_sci_conn_ans_t));
     request.status     = 1;
-    request.interrupt  = local_interrupt_id;
+    request.interrupt  = local_interrupt_no;
     request.node_id    = iface->device_addr;
     request.ctl_offset = iface->eps * sizeof(uct_sci_ctl_t);
     request.ctl_id     = iface->ctl_id;
@@ -60,53 +68,41 @@ static int uct_sci_ep_send_conn_request(
         printf("SCIRemoveDataInterrupt: Interrupt still being used by another proccess");
     }
 
-    SCIRemoveDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
-    if(sci_error == SCI_ERR_BUSY) {
-        printf("SCIRemoveDataInterrupt: Interrupt still being used by another proccess");
-    }
-
     return rc;
 }
 
-static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
-
+/**
+ * @brief 
+ * @param[in] iface 
+ * @param[in] node_id 
+ * @param[in] remote_interrupt_no 
+ * @param[in] sci_virtual_device 
+ * @param[out] answer 
+ */
+static void uct_sci_ep_send_recv_conn_request(
+    uct_sci_iface_t* iface,
+    unsigned int node_id,
+    unsigned int remote_interrupt_no,
+    sci_desc_t sci_virtual_device,
+    uct_sci_conn_ans_t *answer)
+{
     sci_error_t sci_error;
+    unsigned int local_interrupt_no;
     ucs_status_t ucs_ret;
-    uct_sci_iface_addr_t* iface_addr =  (uct_sci_iface_addr_t*) params->iface_addr;
-    uct_sci_device_addr_t* dev_addr = (uct_sci_device_addr_t*) params->dev_addr;
     sci_local_data_interrupt_t ans_interrupt;
-    unsigned int local_interrupt_id;
-    uct_sci_conn_ans_t answer;
+    size_t ans_size = sizeof(uct_sci_conn_ans_t);
 
-    unsigned int interrupt_no;
-    unsigned int node_id;
-    uct_sci_iface_t* iface = ucs_derived_of(params->iface, uct_sci_iface_t);
-    uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t);
-
-
-    UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS(params);
-
-    interrupt_no = (unsigned int) iface_addr->interrupt_no;
-    node_id = (unsigned int) dev_addr->node_id;
-
-    DEBUG_PRINT("EP created interrupt_no %d node_id %d\n", interrupt_no, node_id);
-
-    self->super.super.iface = params->iface;
-    
-    UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super); //segfaults without this line, probably has something to do with the stats member...
-
-    /* todo: should be a helper function */
     /* 1.
      * Create the data interrupt we will use to receive the response of our
      * connection request. We get sisci to give us a free interrupt id.
      * We send that ID along with our connection request such that the server
      * can get back to us. */
     SCICreateDataInterrupt(
-        md->sci_virtual_device,
+        sci_virtual_device,
         &ans_interrupt,
         UCT_SCI_LOCAL_ADAPTER_NO,
-        &local_interrupt_id,  
-        NULL,
+        &local_interrupt_no,  
+        NULL,p
         NULL,
         UCT_SCI_NO_FLAGS,
         &sci_error);
@@ -119,19 +115,51 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
      * Send connection request to the server. This will trigger a callback on
      * the other side, and that callback will get back to us and send us an
      * answer to our connection request. */
-    ucs_ret = uct_sci_ep_send_conn_request(iface, node_id, interrupt_no, local_interrupt_id);
+    ucs_ret = uct_sci_ep_send_conn_request(iface, node_id, remote_interrupt_no, local_interrupt_no);
     if (ucs_ret != UCS_OK) {
         return ucs_ret;
     }
 
     /* 3. Wait for connection request answer */
-    SCIWaitForDataInterrupt(ans_interrupt, (void*) answer, &ans_length, SCI_INFINITE_TIMEOUT, 0, &sci_error);
+    SCIWaitForDataInterrupt(ans_interrupt, (void*) answer, &ans_size, SCI_INFINITE_TIMEOUT, 0, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("SCI Wait For Interrupt: %s\n", SCIGetErrorString(sci_error));
-        rc = UCS_ERR_NO_RESOURCE;
+        ucs_ret = UCS_ERR_NO_RESOURCE;
     }
     /* Done. Clean up data interrupt made in step 1 */
     SCIRemoveDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
+
+    return ucs_ret;
+}
+
+static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
+{
+    sci_error_t sci_error;
+    ucs_status_t ucs_ret;
+    uct_sci_iface_addr_t* iface_addr =  (uct_sci_iface_addr_t*) params->iface_addr;
+    uct_sci_device_addr_t* dev_addr = (uct_sci_device_addr_t*) params->dev_addr;
+    uct_sci_conn_ans_t answer;
+
+    unsigned int remote_interrupt_no;
+    unsigned int node_id;
+    uct_sci_iface_t* iface = ucs_derived_of(params->iface, uct_sci_iface_t);
+    uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t);
+
+    UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS(params);
+
+    remote_interrupt_no = (unsigned int) iface_addr->interrupt_no;
+    node_id = (unsigned int) dev_addr->node_id;
+
+    DEBUG_PRINT("EP created remote_interrupt_no %d node_id %d\n", remote_interrupt_no, node_id);
+
+    self->super.super.iface = params->iface;
+    
+    UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super); //segfaults without this line, probably has something to do with the stats member...
+
+    ucs_ret = uct_sci_ep_send_recv_conn_request(iface, node_id, remote_interrupt_no, md->sci_virtual_device, &answer);
+    if (ucs_ret != UCS_OK) {
+        return ucs_ret;
+    }
     
     /* uct_sci_ep_t *self */
     self->remote_node_id    = answer.node_id;
@@ -152,7 +180,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
 
     self->buf = (uint8_t *) SCIMapRemoteSegment(self->remote_segment, &self->remote_map, self->offset, iface->packet_size_bytes * self->packet_queue_len, NULL, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_MAP_REM_SEG: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCI_MAP_REM_SEG: %s", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -262,6 +290,15 @@ ucs_status_t uct_sci_ep_atomic_cswap32(uct_ep_h tl_ep, uint32_t compare,
 
 /*  // SECTION Active messages */
 
+/**
+ * @brief 
+ * @param[inout] tl_ep 
+ * @param[in] id 
+ * @param[in] header 
+ * @param[in] payload 
+ * @param[in] length 
+ * @return 
+ */
 ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
                                   const void *payload, unsigned length)
 {
@@ -303,6 +340,15 @@ ucs_status_t uct_sci_ep_am_short_iov(uct_ep_h tl_ep, uint8_t id,
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
+/**
+ * @brief 
+ * @param[inout] tl_ep
+ * @param[in] id 
+ * @param[in] pack_cb Callback to put specified data into 
+ * @param[in] arg Data to copy.
+ * @param[in] flags 
+ * @return 
+ */
 ssize_t uct_sci_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
                              uct_pack_callback_t pack_cb, void *arg,
                              unsigned flags)
@@ -342,6 +388,15 @@ ssize_t uct_sci_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
     return length;
 }
 
+/**
+ * @brief 
+ * @param[in] header 
+ * @param[in] header_length 
+ * @param[in] id 
+ * @param[in] iov 
+ * @param[in] iovcnt 
+ * @param[out] tx_buf 
+ */
 static void uct_sci_fill_buffer_with_packet(
     const void *header,
     unsigned header_length,
@@ -373,6 +428,18 @@ static void uct_sci_fill_buffer_with_packet(
     
 }
 
+/**
+ * @brief 
+ * @param[inout] uct_ep 
+ * @param[in] id 
+ * @param[in] header 
+ * @param[in] header_length 
+ * @param[in] iov 
+ * @param[in] iovcnt 
+ * @param[in] flags 
+ * @param comp Unused 
+ * @return 
+ */
 ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header, unsigned header_length, 
                             const uct_iov_t *iov, size_t iovcnt, unsigned flags, uct_completion_t *comp) 
 {
