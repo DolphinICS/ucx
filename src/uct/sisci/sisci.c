@@ -136,44 +136,7 @@ sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interru
     return SCI_CALLBACK_CONTINUE;
 }
 
-int sci_opened = 0;
 int iface_query_printed = 0;
-
-/*
-    The linux version initialization of the sci api doesnt do much except for comparing the api version against the adapter version, and setting up some ref handles
-    So we dont really need handle anything special except for the initialization faliing :). 
-    Since the api doesn't have any good way to check if the driver is initialized we have to keep track of it ourselves. 
-*/
-static unsigned int uct_sci_open(){
-    sci_error_t sci_error = 0;
-
-    DEBUG_PRINT("sci_open(%d)\n", sci_opened);
-    if (sci_opened == 0)
-    {
-        SCIInitialize(0,&sci_error);
-        if (sci_error != SCI_ERR_OK)
-        {
-            printf("sci_init error: %s/n", SCIGetErrorString(sci_error));
-            return 0;
-        }
-        sci_opened = 1;
-
-    }
-    return 1;
-}
-
-/*
-    Closing the api is even more hands off than 
-*/
-static unsigned int uct_sci_close(){
-    DEBUG_PRINT("sci_close(%d)\n", sci_opened);
-    if (sci_opened == 1)
-    {
-        SCITerminate();
-        sci_opened = 0;
-    }
-    return 1;    
-}
 
 static int
 uct_sisci_ipc_iface_is_reachable_v2(const uct_iface_h tl_iface,
@@ -594,8 +557,6 @@ static void uct_sci_md_close(uct_md_h md) {
             /*NOTE*/
             printf("Error closing Virtual_Device error: %s \n", SCIGetErrorString(sci_error));
         }
-    
-    uct_sci_close();
 }
 
 typedef struct uct_sci_alloc_handle {
@@ -718,7 +679,6 @@ static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_n
     //create sci memory domain struct
     static uct_sci_md_t md;
     sci_error_t errors;
-    uct_sci_open();
     SCIOpen(&md.sci_virtual_device, 0, &errors);
 
 
@@ -1006,3 +966,18 @@ static uct_iface_ops_t uct_sci_iface_ops = {
  */
 UCT_TL_DEFINE(&uct_sci_component, sci, uct_sci_query_devices, uct_sci_iface_t,
               UCT_SCI_CONFIG_PREFIX, uct_sci_iface_config_table, uct_sci_iface_config_t);
+
+UCS_STATIC_INIT
+{
+    sci_error_t sci_error;
+    SCIInitialize(0,&sci_error);
+    if (sci_error != SCI_ERR_OK)
+    {
+        ucs_error("SCIInitialize error: %s", SCIGetErrorString(sci_error));
+    }
+}
+
+UCS_STATIC_CLEANUP
+{
+    SCITerminate();
+}
