@@ -32,7 +32,7 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
     },
 
     {
-        "packet_queue_len", "5", "Message Queue size for each connection",
+        "PACKET_QUEUE_LEN", "5", "Message Queue size for each connection",
         ucs_offsetof(uct_sci_iface_config_t, packet_queue_len),
         UCS_CONFIG_TYPE_UINT
     },
@@ -47,79 +47,124 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
 };*/
 
 /**
- * @brief This function handles incoming connection requests and assigns a sci file descriptor to that connection.
- * Then it replies with information back to the connecting request to enable the incoming conneciton to connect and offset correctly
- * into the iface's recv buffer. The iface also connects to the connectors control block, so we can signal it when we are ready to recv data.
+ * @brief Reserve a uct_sci control descriptor from the uct_sci_iface's list
+ *        of control descriptor.
  * 
- * @param arg iface 
- * @param interrupt which interrupt was triggered
- * @param data: Information received from the connecting process
- * @param length: length of data
- * @param sci_error: Not used
- * @return sci_callback_action_t: Returns callback_continue  
+ * @param[in] iface 
+ * @param[out] cd_index 
+ * 
+ * @return 
  */
-sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interrupt, void* data, unsigned int length, sci_error_t sci_error) {
-    sci_remote_data_interrupt_t ans_interrupt;
-    //sci_error_t sci_error;
-    uct_sci_conn_ans_t   answer;
-    uct_sci_conn_req_t* request = (uct_sci_conn_req_t*) data;
-    uct_sci_iface_t* iface = (uct_sci_iface_t*) arg;
-    uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t); 
-    size_t i;
-
-    //printf("%d expected %zd ret_int %d  ret_node %d \n", length, sizeof(uct_sci_conn_req_t), request->node_id, request->interrupt);
-    //printf("%d callback started \n", getpid());
-
-
-    do {
-        SCIConnectDataInterrupt(md->sci_virtual_device, &ans_interrupt, request->node_id, 0, request->interrupt, 1000, 0, &sci_error);
-        //printf("waiting to connect to %d\n", request->interrupt);
-    } while (sci_error != SCI_ERR_OK);
-
-    //printf("connected to answer request\n");
-    
-    //todo add spin lock:
-
-    /*   Enter critical   */
+static int uct_sci_reserve_control_descriptor(uct_sci_iface_t* iface, unsigned int *cd_index)
+{
+    unsigned int i;
+    int rc = 0;
 
     pthread_mutex_lock(&iface->lock);
 
+    /* Find free sci_cd in iface sci_cd list */
     for (i = 0; i < iface->max_eps; i++)
     {
         if(iface->sci_cds[i].status == 0) {
-            iface->sci_cds[i].status = 2;
             break;
         }
     }
+    
+    if (i < iface->max_eps) {
+        /* Success: reserve sci_cd */
+        *cd_index = i;
+        iface->sci_cds[i].status = 2;
+        iface->connections++;
+    } else {
+        rc = -1;
+    }
 
-    iface->connections++;
-
-    /*  leave critical  */
     pthread_mutex_unlock(&iface->lock);
-    answer.node_id    = iface->device_addr;
-    answer.segment_id = iface->segment_id;
-    answer.offset     = iface->sci_cds[i].offset;
-    answer.send_size  = iface->send_size;
-    answer.packet_queue_len = iface->packet_queue_len;
 
-    SCITriggerDataInterrupt(ans_interrupt, (void *) &answer, sizeof(answer), UCT_SCI_NO_FLAGS, &sci_error);
+    return rc;
+}
 
-    if(sci_error != SCI_ERR_OK) {
-        printf("SCI Trigger Interrupt: %s/n", SCIGetErrorString(sci_error));
-    }    
+/**
+ * @brief Unreserve a uct_sci control descriptor from the uct_sci_iface's list
+ *        of control descriptor.
+ * 
+ * @details helper function to uct_sci_conn_handler.
+ * 
+ * @param[inout] iface 
+ * @param[in] cd_index 
+ */
+static void uct_sci_ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned int cd_index)
+{
+    pthread_mutex_lock(&iface->lock);
 
-    /*  set status to ready  */ 
+    iface->sci_cds[cd_index].status = 0;
+    iface->connections--;
+
+    pthread_mutex_unlock(&iface->lock);
+}
+
+/**
+ * @brief Send answer to incoming request.
+ * 
+ * @details helper function to uct_sci_conn_handler.
+ * 
+ * @param[in] iface
+ * @param[in] request 
+ * @return 
+ */
+static int uct_sci_send_answer_to_request(
+    uct_sci_iface_t* iface,
+    uct_sci_conn_req_t* request,
+    sci_desc_t sci_virtual_device,
+    uct_sci_conn_desc_t *sci_cd)
+{
+    uct_sci_conn_ans_t   answer;
+    sci_remote_data_interrupt_t ans_interrupt;
+    sci_error_t sci_error;
 
     do {
+        SCIConnectDataInterrupt(sci_virtual_device, &ans_interrupt, request->node_id, 0, request->interrupt, 1000, 0, &sci_error);
+    } while (sci_error != SCI_ERR_OK);
+
+    answer.node_id    = iface->device_addr;
+    answer.segment_id = iface->segment_id;
+    answer.offset     = sci_cd->offset;
+    answer.send_size  = iface->send_size;
+    answer.packet_queue_len = iface->packet_queue_len;
+    
+    SCITriggerDataInterrupt(ans_interrupt, (void *) &answer, sizeof(answer), UCT_SCI_NO_FLAGS, &sci_error);
+    if(sci_error != SCI_ERR_OK) {
+        ucs_warn("SCI Trigger Interrupt: %s", SCIGetErrorString(sci_error));
+    }
+
+    SCIDisconnectDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
+
+    /* todo, do error checking */
+    return 0;
+}
+
+/**
+ * @brief Connect to remote endpoint's control buffer
+ * 
+ * @details helper function to uct_sci_conn_handler.
+ * 
+ * @param[in] iface
+ * @return 
+ */
+static int uct_sci_connect_control_buffer(
+    uct_sci_iface_t* iface,
+    uct_sci_conn_req_t* request,
+    uct_sci_conn_desc_t *sci_cd)
+{
+    sci_error_t sci_error;
+    do {
         DEBUG_PRINT("waiting to connect to ctl %s\n", SCIGetErrorString(sci_error));
-        SCIConnectSegment(iface->vdev_ctl, &iface->sci_cds[i].ctl_segment, request->node_id, request->ctl_id, 
+        SCIConnectSegment(iface->vdev_ctl, &sci_cd->ctl_segment, request->node_id, request->ctl_id, 
                 UCT_SCI_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
         
     } while (sci_error != SCI_ERR_OK);
 
-
-    //printf("cd ctl offset %d \n", request->ctl_offset);
-    iface->sci_cds[i].ctl_buf = (uct_sci_ctl_t *) SCIMapRemoteSegment(iface->sci_cds[i].ctl_segment, &iface->sci_cds[i].ctl_map, request->ctl_offset, 
+    sci_cd->ctl_buf = (uct_sci_ctl_t *) SCIMapRemoteSegment(sci_cd->ctl_segment, &sci_cd->ctl_map, request->ctl_offset, 
                                                                   sizeof(uct_sci_ctl_t), NULL, 0, &sci_error);
 
     if (sci_error != SCI_ERR_OK) { 
@@ -127,11 +172,64 @@ sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interru
         return UCS_ERR_NO_RESOURCE;
     }
 
-    iface->sci_cds[i].status = 1;
-    /* NOTE: does not return any error messages of any kind */
-    SCIDisconnectDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
+    /* todo, do error checking */
+    return 0;
+}
 
-   //printf("%d callback done \n", getpid());
+
+/**
+ * @brief This function handles incoming connection requests and assigns a sci file descriptor to that connection.
+ * Then it replies with information back to the connecting request to enable the incoming conneciton to connect and offset correctly
+ * into the iface's recv buffer. The iface also connects to the connectors control block, so we can signal it when we are ready to recv data.
+ * 
+ * @param[in] arg iface 
+ * @param[in] interrupt which interrupt was triggered
+ * @param[in] data: Information received from the connecting process
+ * @param[in] length: length of data
+ * @param[in] sci_error: Not used
+ * @return sci_callback_action_t: Returns callback_continue  
+ */
+static sci_callback_action_t uct_sci_conn_handler(
+    void* arg,
+    sci_local_data_interrupt_t interrupt,
+    void* data,
+    unsigned int length,
+    sci_error_t sci_error)
+{
+    uct_sci_conn_req_t* request = (uct_sci_conn_req_t*) data;
+    uct_sci_iface_t* iface = (uct_sci_iface_t*) arg;
+    uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t); 
+    unsigned int sci_cd_index;
+    uct_sci_conn_desc_t *sci_cd;
+
+    int ret;
+
+    ret = uct_sci_reserve_control_descriptor(iface, &sci_cd_index);
+    if (ret != 0) {
+        ucs_error("Number of endpoints exceeds limit %u", iface->max_eps);
+        return SCI_CALLBACK_CONTINUE;
+    }
+    sci_cd = &(iface->sci_cds[sci_cd_index]);
+    
+    ret = uct_sci_send_answer_to_request(
+        iface,
+        request,
+        md->sci_virtual_device,
+        sci_cd);
+    if (ret != 0) {
+        ucs_error("Failed to send answer to connection request");
+        uct_sci_ureserve_control_descriptor(iface, sci_cd_index);
+        return SCI_CALLBACK_CONTINUE;
+    }
+
+    ret = uct_sci_connect_control_buffer(iface, request, sci_cd);
+    if (ret != 0) {
+        ucs_error("Failed to connect to remote control buffer");
+        uct_sci_ureserve_control_descriptor(iface, sci_cd_index);
+        return SCI_CALLBACK_CONTINUE;
+    }
+            
+    sci_cd->status = 1;
     return SCI_CALLBACK_CONTINUE;
 }
 
@@ -324,7 +422,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     ssize_t i = 0;
     sci_error_t sci_error;
     unsigned dma_seg_id;
-    sci_cb_data_interrupt_t callback = conn_handler;
+    sci_cb_data_interrupt_t callback = uct_sci_conn_handler;
     uct_sci_iface_config_t* config = ucs_derived_of(tl_config, uct_sci_iface_config_t); 
     uct_sci_md_t * sci_md = ucs_derived_of(md, uct_sci_md_t);
 

@@ -70,13 +70,13 @@ typedef struct {
     /*        rx info          */
     uint32_t                offset; /* start of our map in the global segment */
     void*                   cd_buf;
-    uct_sci_am_hdr_t*           packet;
+    uct_sci_am_hdr_t*       packet;
     
     /*    Control info        */
     uint32_t                ctl_id;
     sci_remote_segment_t    ctl_segment;
     sci_map_t               ctl_map;
-    uct_sci_ctl_t*              ctl_buf;
+    uct_sci_ctl_t*          ctl_buf;
 } uct_sci_conn_desc_t;
 
 typedef struct {
