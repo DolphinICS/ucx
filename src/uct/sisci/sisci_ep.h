@@ -8,12 +8,12 @@
 
 
 
-typedef struct uct_sicsci_ep_addr{
+typedef struct {
     uct_sci_device_addr_t device_addr;
     uct_sci_iface_addr_t iface_addr;
-}  UCS_S_PACKED uct_sicsci_ep_addr_t;
+}  UCS_S_PACKED uct_sci_ep_addr_t;
 
-typedef struct uct_sci_ep {
+typedef struct {
     uct_base_ep_t           super;
     sci_remote_segment_t    remote_segment;
     sci_map_t               remote_map;
@@ -26,7 +26,7 @@ typedef struct uct_sci_ep {
     void *                  buf;
     uint32_t                seq;
     //sci_map_t               ctl_map;
-    //sci_ctl_t*              sci_ctl;              
+    //uct_sci_ctl_t*              sci_ctl;              
 } uct_sci_ep_t;
 
 

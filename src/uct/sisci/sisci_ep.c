@@ -6,8 +6,6 @@
 static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
 {   
     sci_error_t sci_error;
-    //printf("UCS_SICSCI_EP_CLEANUP_FUNC() %d \n", self->remote_segment_id);
-    
     
     SCIUnmapSegment(self->remote_map, 0, &sci_error);
     
@@ -16,16 +14,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_UNMAP_SEGMENT: %s\n", SCIGetErrorString(sci_error));
     }
-
-    /* Deprecated code
-    SCIUnmapSegment(self->ctl_map, 0, &sci_error);
-    self->sci_ctl = NULL;
-
-    if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_UNMAP_CTL: %s\n", SCIGetErrorString(sci_error));
-    }
-    */
-
+    
     SCIDisconnectSegment(self->remote_segment, 0, &sci_error);
 
     if (sci_error != SCI_ERR_OK) { 
@@ -44,9 +33,9 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     sci_remote_data_interrupt_t req_interrupt;
     sci_local_data_interrupt_t  ans_interrupt;
     unsigned int local_interrupt_id =    ucs_generate_uuid(getpid());
-    int ans_length          = sizeof(con_ans_t);
-    conn_req_t request;
-    con_ans_t answer;
+    int ans_length          = sizeof(uct_sci_conn_ans_t);
+    uct_sci_conn_req_t request;
+    uct_sci_conn_ans_t answer;
 
 
     unsigned int segment_id = 0; //(unsigned int) params->segment_id;
@@ -78,11 +67,11 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     } while (sci_error != SCI_ERR_OK);
 
     //printf("%d connected to remote interrupt!, ret_int %d\n", getpid(),local_interrupt_id);
-    //printf("size of answer %zd size of struct answer %zd\n", sizeof(answer), sizeof(con_ans_t));
+    //printf("size of answer %zd size of struct answer %zd\n", sizeof(answer), sizeof(uct_sci_conn_ans_t));
     request.status     = 1;
     request.interrupt  = local_interrupt_id;
     request.node_id    = iface->device_addr;
-    request.ctl_offset = iface->eps * sizeof(sci_ctl_t);
+    request.ctl_offset = iface->eps * sizeof(uct_sci_ctl_t);
     request.ctl_id     = iface->ctl_id;
 
     SCICreateDataInterrupt(md->sci_virtual_device, &ans_interrupt, 0, &local_interrupt_id,  
@@ -94,7 +83,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     }            
 
     
-    SCITriggerDataInterrupt(req_interrupt, (void *) &request, sizeof(request), SCI_NO_FLAGS, &sci_error);
+    SCITriggerDataInterrupt(req_interrupt, (void *) &request, sizeof(request), UCT_SCI_NO_FLAGS, &sci_error);
     
     if(sci_error != SCI_ERR_OK) {
         printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
@@ -119,19 +108,19 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     self->offset            = answer.offset;
     self->send_size         = answer.send_size;
     self->queue_size        = answer.queue_size;
-    self->ctl_offset        = iface->eps * sizeof(sci_ctl_t);
+    self->ctl_offset        = iface->eps * sizeof(uct_sci_ctl_t);
     /* quick fix for weird behaviour when queue size was 1...*/
     self->seq               = self->queue_size > 1 ? 1 : 0;
 
 
     /*  Clean up for connection.  */
-    SCIDisconnectDataInterrupt(req_interrupt, SCI_NO_FLAGS, &sci_error);
+    SCIDisconnectDataInterrupt(req_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
 
     if(sci_error == SCI_ERR_BUSY) {
         printf("SCIRemoveDataInterrupt: Interrupt still being used by another proccess");
     }
 
-    SCIRemoveDataInterrupt(ans_interrupt, SCI_NO_FLAGS, &sci_error);
+    SCIRemoveDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
 
     if(sci_error == SCI_ERR_BUSY) {
         printf("SCIRemoveDataInterrupt: Interrupt still being used by another proccess");
@@ -141,7 +130,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     DEBUG_PRINT("waiting to connect %d %s\n", sci_error,  SCIGetErrorString(sci_error));
     
     SCIConnectSegment(iface->vdev_ep, &self->remote_segment, self->remote_node_id, self->remote_segment_id, 
-                ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
+                UCT_SCI_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
 
     } while (sci_error != SCI_ERR_OK);
 
@@ -151,14 +140,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
         printf("SCI_MAP_REM_SEG: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
-
-    /*
-    self->sci_ctl = (sci_ctl_t*) SCIMapLocalSegment(iface->ctl_segment, &self->ctl_map, sizeof(sci_ctl_t) * iface->eps, sizeof(sci_ctl_t), NULL, SCI_NO_FLAGS , &sci_error);
-
-    if(sci_error != SCI_ERR_OK) {
-        printf("SCI_MAP_CTL: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }*/
 
     iface->eps += 1;    
     DEBUG_PRINT("EP connected to segment %d at node %d\n",  self->remote_segment_id, self->remote_node_id);
@@ -271,9 +252,9 @@ ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
 {
 
     uct_sci_ep_t* ep       = ucs_derived_of(tl_ep, uct_sci_ep_t);
-    sci_packet_t* packet; 
+    uct_sci_am_hdr_t* packet; 
     uct_sci_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_sci_iface_t);
-    sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
+    uct_sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
     uint32_t offset = 0; 
     
     if (ep->seq - ctl->ack >= iface->queue_size) {
@@ -285,7 +266,7 @@ ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
     ctl->status = 1;
     packet->am_id = id;
     packet->length = length + sizeof(header);
-    uct_am_short_fill_data(ep->buf + offset + sizeof(sci_packet_t), header, payload, length, UCS_ARCH_MEMCPY_NT_DEST);
+    uct_am_short_fill_data(ep->buf + offset + sizeof(uct_sci_am_hdr_t), header, payload, length, UCS_ARCH_MEMCPY_NT_DEST);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);    
     packet->status = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
@@ -306,11 +287,10 @@ ssize_t uct_sci_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
                              uct_pack_callback_t pack_cb, void *arg,
                              unsigned flags)
 {
-    //TODO bcopy    
     uct_sci_ep_t*    ep    = ucs_derived_of(tl_ep, uct_sci_ep_t);
-    sci_packet_t*  packet;
+    uct_sci_am_hdr_t*  packet;
     uct_sci_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_sci_iface_t);
-    sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
+    uct_sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
     ssize_t length         = 0;
     uint32_t offset        = 0;
 
@@ -323,7 +303,7 @@ ssize_t uct_sci_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
     packet = ep->buf + offset;
 
     ctl->status = 1;
-    length              = pack_cb((void*) packet + sizeof(sci_packet_t),  arg);
+    length              = pack_cb((void*) packet + sizeof(uct_sci_am_hdr_t),  arg);
     packet->am_id       = id;
     packet->length      = length;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
@@ -343,11 +323,11 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
 
     uct_sci_ep_t* ep            = ucs_derived_of(uct_ep, uct_sci_ep_t);
     uct_sci_iface_t* iface      = ucs_derived_of(uct_ep->iface, uct_sci_iface_t);
-    sci_packet_t* sci_header; 
+    uct_sci_am_hdr_t* sci_header; 
     void* tx                    = iface->dma_buf;
-    sci_packet_t* tx_pack       = (sci_packet_t*) tx;
+    uct_sci_am_hdr_t* tx_pack       = (uct_sci_am_hdr_t*) tx;
     size_t iov_total_len        = uct_iov_total_length(iov, iovcnt);
-    sci_ctl_t* ctl              = iface->ctls + ep->ctl_offset;
+    uct_sci_ctl_t* ctl              = iface->ctls + ep->ctl_offset;
     size_t bytes_copied;
     ucs_iov_iter_t uct_iov_iter;
     sci_error_t sci_error;
@@ -358,8 +338,6 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
         return UCS_ERR_NO_RESOURCE;
     }
 
-    //printf("1 %zd\n", iface->send_size);
-
     ctl->status = 1;
 
     offset = ep->send_size * (ep->seq % ep->queue_size);
@@ -368,47 +346,38 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
     sci_header = ep->buf + offset;
 
 
-    UCT_CHECK_LENGTH(header_length + iov_total_len + sizeof(sci_packet_t), 0 , iface->send_size, "am_zcopy");
+    UCT_CHECK_LENGTH(header_length + iov_total_len + sizeof(uct_sci_am_hdr_t), 0 , iface->send_size, "am_zcopy");
     UCT_CHECK_AM_ID(id);
     /* Convert the iov into a contiguous buffer */
     ucs_iov_iter_init(&uct_iov_iter);
 
-    //printf("2.2\n");
-
-    bytes_copied = uct_iov_to_buffer(iov, iovcnt, &uct_iov_iter, tx + sizeof(sci_packet_t) + header_length, iface->send_size);
+    bytes_copied = uct_iov_to_buffer(iov, iovcnt, &uct_iov_iter, tx + sizeof(uct_sci_am_hdr_t) + header_length, iface->send_size);
 
     if(bytes_copied != iov_total_len) {
         /* Might wanna replace this with an assert */
         printf("PANIK\n");
     }
 
-    //printf("2.5\n");
-
     /* Set header values */
     tx_pack->am_id = id;
     tx_pack->length = iov_total_len + header_length;
 
-        //printf("3\n");
-
-
     if (header_length != 0)
     {
-        memcpy(tx + sizeof(sci_packet_t), header, header_length);
+        memcpy(tx + sizeof(uct_sci_am_hdr_t), header, header_length);
     }
     
     SCIStartDmaTransfer(iface->dma_queue, iface->dma_segment, ep->remote_segment, 
-                        0, iov_total_len + header_length + SCI_PACKET_SIZE, offset,
-                        SCI_NO_CALLBACK, NULL, SCI_NO_FLAGS, &sci_error);
+                        0, iov_total_len + header_length + sizeof(uct_sci_am_hdr_t), offset,
+                        UCT_SCI_NO_CALLBACK, NULL, UCT_SCI_NO_FLAGS, &sci_error);
     
 
     if(sci_error != SCI_ERR_OK) {
         printf("DMA Transfer Error: %s\n", SCIGetErrorString(sci_error));
     }
 
-    //printf("4\n");
+    //SCIWaitForDMAQueue(iface->dma_queue, SCI_INFINITE_TIMEOUT, UCT_SCI_NO_FLAGS, &sci_error);
 
-
-    //SCIWaitForDMAQueue(iface->dma_queue, SCI_INFINITE_TIMEOUT, SCI_NO_FLAGS, &sci_error);
     ep->seq++;
     sci_header->status = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
