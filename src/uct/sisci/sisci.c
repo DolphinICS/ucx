@@ -426,7 +426,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         self->sci_cds[i].last_ack = 0;
     }
 
-    /*----------------- DMA starts here ---------------*/
+    /* --- Initialize DMA related resources --- */
     ucs_error = uct_sci_helper_create_segment(
         sci_md->sci_virtual_device,
         &self->dma_segment,
@@ -451,7 +451,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         return UCS_ERR_NO_RESOURCE;
     } 
 
-    /*------------------------- INTERRUPTS --------------------------------- */
+    /* --- Initialize data interrupts for managing incoming connections --- */
     SCICreateDataInterrupt(
         sci_md->sci_virtual_device,
         &self->interrupt,
@@ -502,12 +502,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
     pthread_mutex_destroy(&self->lock);
 
 
-    /* DMA */
-
-    SCIUnmapSegment(self->dma_map, UCT_SCI_NO_FLAGS, &sci_error);
-    SCIRemoveSegment(self->dma_segment, SCI_FLAG_FORCE_REMOVE, &sci_error);
+    /* Clean up DMA related resources */
+    uct_sci_helper_remove_segment(&self->dma_segment, &self->dma_map);
     SCIRemoveDMAQueue(self->dma_queue, UCT_SCI_NO_FLAGS, &sci_error);
-
     if(sci_error != SCI_ERR_OK) {
         printf("IFACE CLOSE, Failed to remove dma queue: %s\n", SCIGetErrorString(sci_error));
     }
@@ -530,39 +527,11 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
     
     }
 
-
     /* RX  */
-
-    SCIUnmapSegment(self->local_map, 0, &sci_error);
-
-    SCISetSegmentUnavailable(self->local_segment,0,UCT_SCI_NO_FLAGS,&sci_error);
-
-    if (sci_error != SCI_ERR_OK) { 
-            printf("SCI_SET_RX_UNAVAILABLE: %s\n", SCIGetErrorString(sci_error));
-    }
-
-    SCIRemoveSegment(self->local_segment, SCI_FLAG_FORCE_REMOVE , &sci_error);
-
-    if (sci_error != SCI_ERR_OK) { 
-            printf("SCI_REMOVE_RX: %s\n", SCIGetErrorString(sci_error));
-    }
+    uct_sci_helper_remove_seg_set_unavail(&self->local_segment, &self->local_map);
 
     /* CTL */
-
-    SCIUnmapSegment(self->ctl_map, 0, &sci_error);
-
-    SCISetSegmentUnavailable(self->ctl_segment,0,UCT_SCI_NO_FLAGS,&sci_error);
-
-    if (sci_error != SCI_ERR_OK) { 
-            printf("SCI_SET_CTL_UNAVAILABLE: %s\n", SCIGetErrorString(sci_error));
-    }
-
-    SCIRemoveSegment(self->ctl_segment, UCT_SCI_NO_FLAGS , &sci_error);
-
-    if (sci_error != SCI_ERR_OK) { 
-            printf("SCI_REMOVE_CTL: %s\n", SCIGetErrorString(sci_error));
-    }
-
+    uct_sci_helper_remove_seg_set_unavail(&self->ctl_segment, &self->ctl_map);
 
     /* Closing device descriptors used for connections */
     SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);
