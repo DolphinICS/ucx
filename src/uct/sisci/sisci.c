@@ -8,7 +8,6 @@
 #include "sisci.h"
 #include "sisci_ep.h"
 #include "sisci_iface.h" //TODO, is this needed?
-//#include "sci_iface.c"
 
 
 /* Forward declarations */
@@ -62,13 +61,13 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
 sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interrupt, void* data, unsigned int length, sci_error_t sci_error) {
     sci_remote_data_interrupt_t ans_interrupt;
     //sci_error_t sci_error;
-    con_ans_t   answer;
-    conn_req_t* request = (conn_req_t*) data;
+    uct_sci_conn_ans_t   answer;
+    uct_sci_conn_req_t* request = (uct_sci_conn_req_t*) data;
     uct_sci_iface_t* iface = (uct_sci_iface_t*) arg;
     uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t); 
     size_t i;
 
-    //printf("%d expected %zd ret_int %d  ret_node %d \n", length, sizeof(conn_req_t), request->node_id, request->interrupt);
+    //printf("%d expected %zd ret_int %d  ret_node %d \n", length, sizeof(uct_sci_conn_req_t), request->node_id, request->interrupt);
     //printf("%d callback started \n", getpid());
 
 
@@ -103,7 +102,7 @@ sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interru
     answer.send_size  = iface->send_size;
     answer.queue_size = iface->queue_size;
 
-    SCITriggerDataInterrupt(ans_interrupt, (void *) &answer, sizeof(answer), SCI_NO_FLAGS, &sci_error);
+    SCITriggerDataInterrupt(ans_interrupt, (void *) &answer, sizeof(answer), UCT_SCI_NO_FLAGS, &sci_error);
 
     if(sci_error != SCI_ERR_OK) {
         printf("SCI Trigger Interrupt: %s/n", SCIGetErrorString(sci_error));
@@ -114,14 +113,14 @@ sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interru
     do {
         DEBUG_PRINT("waiting to connect to ctl %s\n", SCIGetErrorString(sci_error));
         SCIConnectSegment(iface->vdev_ctl, &iface->sci_cds[i].ctl_segment, request->node_id, request->ctl_id, 
-                ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
+                UCT_SCI_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
         
     } while (sci_error != SCI_ERR_OK);
 
 
     //printf("cd ctl offset %d \n", request->ctl_offset);
-    iface->sci_cds[i].ctl_buf = (sci_ctl_t *) SCIMapRemoteSegment(iface->sci_cds[i].ctl_segment, &iface->sci_cds[i].ctl_map, request->ctl_offset, 
-                                                                  sizeof(sci_ctl_t), NULL, 0, &sci_error);
+    iface->sci_cds[i].ctl_buf = (uct_sci_ctl_t *) SCIMapRemoteSegment(iface->sci_cds[i].ctl_segment, &iface->sci_cds[i].ctl_map, request->ctl_offset, 
+                                                                  sizeof(uct_sci_ctl_t), NULL, 0, &sci_error);
 
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_MAP_REM_SEG: %s\n", SCIGetErrorString(sci_error));
@@ -130,7 +129,7 @@ sci_callback_action_t conn_handler(void* arg, sci_local_data_interrupt_t interru
 
     iface->sci_cds[i].status = 1;
     /* NOTE: does not return any error messages of any kind */
-    SCIDisconnectDataInterrupt(ans_interrupt, SCI_NO_FLAGS, &sci_error);
+    SCIDisconnectDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
 
    //printf("%d callback done \n", getpid());
     return SCI_CALLBACK_CONTINUE;
@@ -238,7 +237,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     self->ctl_id      = ucs_generate_uuid(trash);
     self->send_size   = config->send_size; //this is probbably arbitrary, and could be higher. 2^16 was just selected for looks
     self->eps         = 0;
-    self->max_eps     = MIN(SCI_MAX_EPS, config->max_eps);
+    self->max_eps     = MIN(UCT_SCI_MAX_EPS, config->max_eps);
     self->connections = 0;
     self->queue_size  = config->queue_size;
 
@@ -282,7 +281,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     /*    ctl segment    */
     
-    SCICreateSegment(sci_md->sci_virtual_device, &self->ctl_segment, self->ctl_id, sizeof(sci_ctl_t) * self->max_eps, NULL, NULL, 0, &sci_error);
+    SCICreateSegment(sci_md->sci_virtual_device, &self->ctl_segment, self->ctl_id, sizeof(uct_sci_ctl_t) * self->max_eps, NULL, NULL, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_CREATE_CTL_SEGMENT: %s\n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
@@ -300,7 +299,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         return UCS_ERR_NO_RESOURCE;
     }
 
-    self->ctls = (void*) SCIMapLocalSegment(self->ctl_segment, &self->ctl_map, 0, sizeof(sci_ctl_t) * self->max_eps, NULL, SCI_NO_FLAGS, &sci_error);
+    self->ctls = (void*) SCIMapLocalSegment(self->ctl_segment, &self->ctl_map, 0, sizeof(uct_sci_ctl_t) * self->max_eps, NULL, UCT_SCI_NO_FLAGS, &sci_error);
 
     if(sci_error != SCI_ERR_OK) {
         printf("DMA ctl segment: %s \n", SCIGetErrorString(sci_error));
@@ -320,13 +319,13 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         self->sci_cds[i].size = self->send_size * self->queue_size;
         self->sci_cds[i].offset = i * self->send_size * self->queue_size; 
         self->sci_cds[i].cd_buf = (void*) self->tx_buf + self->sci_cds[i].offset;
-        self->sci_cds[i].packet = (sci_packet_t*) self->sci_cds[i].cd_buf;
+        self->sci_cds[i].packet = (uct_sci_am_hdr_t*) self->sci_cds[i].cd_buf;
         self->sci_cds[i].last_ack = 0;
     }
 
     /*----------------- DMA starts here ---------------*/
     /*TODO: add a reasonable number of max entries for SCICreateDMAQueue instead of 5.*/
-    SCICreateDMAQueue(sci_md->sci_virtual_device, &self->dma_queue, 0, 10, SCI_NO_FLAGS, &sci_error);
+    SCICreateDMAQueue(sci_md->sci_virtual_device, &self->dma_queue, 0, 10, UCT_SCI_NO_FLAGS, &sci_error);
 
     if(sci_error != SCI_ERR_OK) {
         printf("CreateDMAQueue: %s \n", SCIGetErrorString(sci_error));
@@ -334,21 +333,21 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     } 
 
     dma_seg_id = ucs_generate_uuid(trash);
-    SCICreateSegment(sci_md->sci_virtual_device, &self->dma_segment, dma_seg_id, self->send_size, NULL, NULL, SCI_NO_FLAGS, &sci_error);
+    SCICreateSegment(sci_md->sci_virtual_device, &self->dma_segment, dma_seg_id, self->send_size, NULL, NULL, UCT_SCI_NO_FLAGS, &sci_error);
 
     if(sci_error != SCI_ERR_OK) {
         printf("DMA create segment: %s \n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     } 
 
-    SCIPrepareSegment(self->dma_segment, 0, SCI_NO_FLAGS, &sci_error);
+    SCIPrepareSegment(self->dma_segment, 0, UCT_SCI_NO_FLAGS, &sci_error);
 
     if(sci_error != SCI_ERR_OK) {
         printf("DMA prepare segment: %s \n", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     } 
 
-    self->dma_buf = SCIMapLocalSegment(self->dma_segment, &self->dma_map, 0, self->send_size, NULL, SCI_NO_FLAGS, &sci_error);
+    self->dma_buf = SCIMapLocalSegment(self->dma_segment, &self->dma_map, 0, self->send_size, NULL, UCT_SCI_NO_FLAGS, &sci_error);
 
     if(sci_error != SCI_ERR_OK) {
         printf("DMA map segment: %s \n", SCIGetErrorString(sci_error));
@@ -411,9 +410,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
 
     /* DMA */
 
-    SCIUnmapSegment(self->dma_map, SCI_NO_FLAGS, &sci_error);
+    SCIUnmapSegment(self->dma_map, UCT_SCI_NO_FLAGS, &sci_error);
     SCIRemoveSegment(self->dma_segment, SCI_FLAG_FORCE_REMOVE, &sci_error);
-    SCIRemoveDMAQueue(self->dma_queue, SCI_NO_FLAGS, &sci_error);
+    SCIRemoveDMAQueue(self->dma_queue, UCT_SCI_NO_FLAGS, &sci_error);
 
     if(sci_error != SCI_ERR_OK) {
         printf("IFACE CLOSE, Failed to remove dma queue: %s\n", SCIGetErrorString(sci_error));
@@ -442,7 +441,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
 
     SCIUnmapSegment(self->local_map, 0, &sci_error);
 
-    SCISetSegmentUnavailable(self->local_segment,0,SCI_NO_FLAGS,&sci_error);
+    SCISetSegmentUnavailable(self->local_segment,0,UCT_SCI_NO_FLAGS,&sci_error);
 
     if (sci_error != SCI_ERR_OK) { 
             printf("SCI_SET_RX_UNAVAILABLE: %s\n", SCIGetErrorString(sci_error));
@@ -458,13 +457,13 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
 
     SCIUnmapSegment(self->ctl_map, 0, &sci_error);
 
-    SCISetSegmentUnavailable(self->ctl_segment,0,SCI_NO_FLAGS,&sci_error);
+    SCISetSegmentUnavailable(self->ctl_segment,0,UCT_SCI_NO_FLAGS,&sci_error);
 
     if (sci_error != SCI_ERR_OK) { 
             printf("SCI_SET_CTL_UNAVAILABLE: %s\n", SCIGetErrorString(sci_error));
     }
 
-    SCIRemoveSegment(self->ctl_segment, SCI_NO_FLAGS , &sci_error);
+    SCIRemoveSegment(self->ctl_segment, UCT_SCI_NO_FLAGS , &sci_error);
 
     if (sci_error != SCI_ERR_OK) { 
             printf("SCI_REMOVE_CTL: %s\n", SCIGetErrorString(sci_error));
@@ -472,8 +471,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
 
 
     /* Closing device descriptors used for connections */
-    SCIClose(self->vdev_ctl, SCI_NO_FLAGS, &sci_error);
-    SCIClose(self->vdev_ep, SCI_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_ep, UCT_SCI_NO_FLAGS, &sci_error);
 }
 
 
@@ -564,27 +563,13 @@ typedef struct uct_sci_alloc_handle {
     size_t length;
 } uct_sci_alloc_handle_t;
 
-
-// static sci_desc_t              sd;
-// static sci_local_segment_t     localSegment;
-// static sci_map_t               localMap;
-// // static unsigned int            localNodeId;
-// // static unsigned int            localSegmentId;
-// static sci_map_t               localMap;
-
 static ucs_status_t
 uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
                         ucs_memory_type_t mem_type, unsigned flags,
                         const char *alloc_name, uct_mem_h *memh_p)
 {
-    // sci_error_t sci_error;
-
-    // ucs_status_t status;
-    // ucs_log_level_t log_level;
     uct_sci_alloc_handle_t *alloc_handle;
 
-
-    // printf("uct_sci_mem_alloc running!\n");
     alloc_handle = ucs_malloc(sizeof(*alloc_handle),
                               "uct_sci_mem_alloc");
     if (NULL == alloc_handle) {
@@ -599,38 +584,6 @@ uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
         return UCS_ERR_NO_MEMORY;
     }
 
-    // SCIOpen(&sd, 0, &sci_error);
-    // if (sci_error != SCI_ERR_OK) {
-    //     printf("uct_sci_mem_alloc, SCIOpen: %s\n", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_MEMORY;
-    // }
-
-    // SCICreateSegment(sd, &localSegment, 0x123, *length_p, NULL, NULL, 0, &sci_error);
-    // if (sci_error != SCI_ERR_OK) { 
-    //     printf("uct_sci_mem_alloc, SCICreateSegment: %s\n", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_MEMORY;
-    // }
-
-    // SCIPrepareSegment(localSegment, 0, 0, &sci_error);
-    // if (sci_error != SCI_ERR_OK) { 
-    //     printf("uct_sci_mem_alloc, SCIPrepareSegment: %s\n", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_MEMORY;
-
-    // }
-
-    // SCISetSegmentAvailable(localSegment, 0, 0, &sci_error);
-    // if (sci_error != SCI_ERR_OK) { 
-    //     printf("uct_sci_mem_alloc, SCISetSegmentAvailable: %s\n", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_MEMORY;
-    // }
-
-    // alloc_handle->ptr = SCIMapLocalSegment(localSegment, &localMap, 0, *length_p, NULL, SCI_NO_FLAGS, &sci_error);
-    // if(sci_error != SCI_ERR_OK) {
-    //     printf("uct_sci_mem_alloc, SCIMapLocalSegment: %s\n", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_MEMORY;
-    // } 
-
-
     alloc_handle->length = *length_p;
 
     *memh_p    = alloc_handle;
@@ -640,22 +593,9 @@ uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
 
 static ucs_status_t uct_sci_mem_free(uct_md_h md, uct_mem_h memh)
 {
-    // sci_error_t sci_error;
-
     uct_sci_alloc_handle_t *alloc_handle = (uct_sci_alloc_handle_t*) memh;
-
-    // printf("uct_sci_mem_free running!\n");
-
     free(alloc_handle->ptr);
-
     ucs_free(alloc_handle);
-
-    // SCISetSegmentUnavailable(localSegment, 0, SCI_NO_FLAGS, &sci_error);
-    // SCIUnmapSegment(localMap,SCI_NO_FLAGS,&sci_error);
-    // SCIRemoveSegment(localSegment,SCI_NO_FLAGS,&sci_error);
-    // SCIClose(sd,SCI_NO_FLAGS,&sci_error);
-    // ucs_free(alloc_handle);
-
     return UCS_OK;
 }
 
@@ -762,12 +702,12 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
     int found_message = 0;
     uint32_t  offset = 0;
     ucs_status_t status;
-    sci_packet_t* packet;
+    uct_sci_am_hdr_t* packet;
 
     retry:
 
     for (size_t i = 0; i < iface->connections; i++) {
-        sci_cd_t* cd = &iface->sci_cds[i];
+        uct_sci_conn_desc_t* cd = &iface->sci_cds[i];
         
         if(cd->status != 1) {
             continue;
@@ -780,7 +720,7 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
             continue;
         }
         
-        status = uct_iface_invoke_am(&iface->super, packet->am_id, cd->cd_buf + offset + sizeof(sci_packet_t), packet->length,0);
+        status = uct_iface_invoke_am(&iface->super, packet->am_id, cd->cd_buf + offset + sizeof(uct_sci_am_hdr_t), packet->length,0);
     
         if(status == UCS_INPROGRESS) {
             DEBUG_PRINT("UCS_IN_PROGRESS\n");
@@ -840,21 +780,19 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
                              //UCT_IFACE_FLAG_EVENT_RECV_SIG;
 
     attr->device_addr_len  = sizeof(uct_sci_device_addr_t);
-    attr->ep_addr_len      = sizeof(uct_sicsci_ep_addr_t);
+    attr->ep_addr_len      = sizeof(uct_sci_ep_addr_t);
     attr->iface_addr_len   = sizeof(uct_sci_iface_addr_t);
     
-    //TODO: sane numbers, no lies.
+    /* TODO: Change all these numbers to things that make sense */
+    
     /* AM flags - TODO: these might need to be fine tuned at a later stage */
     attr->cap.am.max_short = iface->send_size;
     attr->cap.am.max_bcopy = 2048;
     attr->cap.am.min_zcopy = 32768;
     attr->cap.am.max_zcopy = iface->send_size;
 
-
-    /*TODO Sane numbers, and not guesses for fun.*/
     attr->cap.am.max_iov   = 10;
     attr->cap.am.max_hdr   = 100;
-
 
     attr->latency                 = ucs_linear_func_make(0, 0);;
     attr->bandwidth.dedicated     = 10 * UCS_MBYTE;
@@ -872,7 +810,6 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
         iface_query_printed = 1;
     }
     return UCS_OK;
-    //return UCS_ERR_NOT_IMPLEMENTED;
 }
 
 
