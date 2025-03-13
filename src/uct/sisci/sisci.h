@@ -93,7 +93,7 @@ typedef struct {
     unsigned int segment_id;
     unsigned int offset;
     unsigned int send_size;
-    unsigned int queue_size;
+    unsigned int packet_queue_len;
 } uct_sci_conn_ans_t;
 
 
@@ -103,7 +103,7 @@ typedef struct {
     uct_iface_config_t    super;
     size_t                send_size;      /* Maximal send size */
     unsigned int          max_eps;
-    unsigned int          queue_size;
+    unsigned int          packet_queue_len;
 
 } uct_sci_iface_config_t;
 
@@ -118,7 +118,6 @@ typedef struct {
 typedef struct {
     uct_base_iface_t            super;
     unsigned int                segment_id;           /* Unique identifier for the instance */
-    unsigned int                interrupt_id;
     unsigned int                device_addr; //nodeID
     size_t                      send_size;    /* Maximum size for payload */
     unsigned int                max_eps;
@@ -131,10 +130,10 @@ typedef struct {
     sci_map_t                   dma_map;
     uct_sci_conn_desc_t                    sci_cds[UCT_SCI_MAX_EPS];
     sci_local_data_interrupt_t  interrupt; 
-    unsigned int                interruptNO;
+    unsigned int                interrupt_no;
     void*                       tx_buf;
     void*                       dma_buf;
-    uint32_t                    queue_size;
+    uint32_t                    packet_queue_len;
 
     /*      ctl segment, used for control during runtime between processes  */
     sci_desc_t                  vdev_ep; //Vdev used for outgoing eps
