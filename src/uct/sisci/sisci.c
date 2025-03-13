@@ -231,17 +231,17 @@ ucs_status_t uct_sci_helper_create_segment(
  * @param[in] segment_map 
  */
 void uct_sci_helper_remove_segment(
-    sci_local_segment_t *segment,
-    sci_map_t *segment_map)
+    sci_local_segment_t segment,
+    sci_map_t segment_map)
 {
     sci_error_t sci_error;
 
-    SCIUnmapSegment(*segment_map, 0, &sci_error);
+    SCIUnmapSegment(segment_map, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_warn("Failed to unmap segment\n");
     }
 
-    SCIRemoveSegment(*segment, SCI_FLAG_FORCE_REMOVE , &sci_error);
+    SCIRemoveSegment(segment, SCI_FLAG_FORCE_REMOVE , &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_warn("Failed to remove segment\n");
     }
@@ -275,7 +275,7 @@ ucs_status_t uct_sci_helper_create_seg_set_avail(
         SCISetSegmentAvailable(*segment, 0, 0, &sci_error);
         if (sci_error != SCI_ERR_OK) { 
             ucs_error("Failed to set segment as available");
-            uct_sci_helper_remove_segment(segment, segment_map);
+            uct_sci_helper_remove_segment(*segment, *segment_map);
             return UCS_ERR_NO_RESOURCE;
         }
     }
@@ -295,11 +295,11 @@ ucs_status_t uct_sci_helper_create_seg_set_avail(
  * @param[in] segment_map 
  */
 void uct_sci_helper_remove_seg_set_unavail(
-    sci_local_segment_t *segment,
-    sci_map_t *segment_map)
+    sci_local_segment_t segment,
+    sci_map_t segment_map)
 {
     sci_error_t sci_error;
-    SCISetSegmentUnavailable(*segment, 0, UCT_SCI_NO_FLAGS, &sci_error);
+    SCISetSegmentUnavailable(segment, 0, UCT_SCI_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_warn("Failed to set segment unavailable\n");
     }
@@ -503,7 +503,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
 
 
     /* Clean up DMA related resources */
-    uct_sci_helper_remove_segment(&self->dma_segment, &self->dma_map);
+    uct_sci_helper_remove_segment(self->dma_segment, self->dma_map);
     SCIRemoveDMAQueue(self->dma_queue, UCT_SCI_NO_FLAGS, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("IFACE CLOSE, Failed to remove dma queue: %s\n", SCIGetErrorString(sci_error));
@@ -528,10 +528,10 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
     }
 
     /* RX  */
-    uct_sci_helper_remove_seg_set_unavail(&self->local_segment, &self->local_map);
+    uct_sci_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
 
     /* CTL */
-    uct_sci_helper_remove_seg_set_unavail(&self->ctl_segment, &self->ctl_map);
+    uct_sci_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_map);
 
     /* Closing device descriptors used for connections */
     SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);

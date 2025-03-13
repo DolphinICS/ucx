@@ -108,7 +108,7 @@ typedef struct {
 } uct_sci_iface_config_t;
 
 typedef struct {
-    uct_sci_am_hdr_t                super;     /* UCT TCP AM header */
+    uct_sci_am_hdr_t              super;     /* UCT TCP AM header */
     uct_completion_t              *comp;     /* Local UCT completion object */
     size_t                        iov_index; /* Current IOV index */
     size_t                        iov_cnt;   /* Number of IOVs that should be sent */
@@ -128,7 +128,7 @@ typedef struct {
     sci_dma_queue_t             dma_queue;
     sci_local_segment_t         dma_segment;
     sci_map_t                   dma_map;
-    uct_sci_conn_desc_t                    sci_cds[UCT_SCI_MAX_EPS];
+    uct_sci_conn_desc_t         sci_cds[UCT_SCI_MAX_EPS];
     sci_local_data_interrupt_t  interrupt; 
     unsigned int                interrupt_no;
     void*                       tx_buf;
