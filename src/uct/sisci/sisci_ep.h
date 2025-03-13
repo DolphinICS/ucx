@@ -18,7 +18,7 @@ typedef struct {
     sci_remote_segment_t    remote_segment;
     sci_map_t               remote_map;
     unsigned int            send_size;
-    unsigned int            queue_size;
+    unsigned int            packet_queue_len;
     unsigned int            offset;
     unsigned int            ctl_offset;
     unsigned int            remote_node_id;

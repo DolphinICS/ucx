@@ -107,10 +107,10 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
     self->remote_segment_id = answer.segment_id;
     self->offset            = answer.offset;
     self->send_size         = answer.send_size;
-    self->queue_size        = answer.queue_size;
+    self->packet_queue_len        = answer.packet_queue_len;
     self->ctl_offset        = iface->eps * sizeof(uct_sci_ctl_t);
     /* quick fix for weird behaviour when queue size was 1...*/
-    self->seq               = self->queue_size > 1 ? 1 : 0;
+    self->seq               = self->packet_queue_len > 1 ? 1 : 0;
 
 
     /*  Clean up for connection.  */
@@ -134,7 +134,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params) {
 
     } while (sci_error != SCI_ERR_OK);
 
-    self->buf = (void *) SCIMapRemoteSegment(self->remote_segment, &self->remote_map, self->offset, iface->send_size * self->queue_size, NULL, 0, &sci_error);
+    self->buf = (void *) SCIMapRemoteSegment(self->remote_segment, &self->remote_map, self->offset, iface->send_size * self->packet_queue_len, NULL, 0, &sci_error);
 
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_MAP_REM_SEG: %s\n", SCIGetErrorString(sci_error));
@@ -257,11 +257,11 @@ ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
     uct_sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
     uint32_t offset = 0; 
     
-    if (ep->seq - ctl->ack >= iface->queue_size) {
+    if (ep->seq - ctl->ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
         
-    offset = ep->send_size * (ep->seq % ep->queue_size);
+    offset = ep->send_size * (ep->seq % ep->packet_queue_len);
     packet = ep->buf + offset;
     ctl->status = 1;
     packet->am_id = id;
@@ -294,12 +294,12 @@ ssize_t uct_sci_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
     ssize_t length         = 0;
     uint32_t offset        = 0;
 
-    if(ep->seq - ctl->ack >= iface->queue_size) {
+    if(ep->seq - ctl->ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 
 
-    offset = ep->send_size * (ep->seq % ep->queue_size);
+    offset = ep->send_size * (ep->seq % ep->packet_queue_len);
     packet = ep->buf + offset;
 
     ctl->status = 1;
@@ -334,13 +334,13 @@ ucs_status_t uct_sci_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id, const void *header
     uint32_t offset;
 
 
-    if(ep->seq - ctl->ack >= iface->queue_size) {
+    if(ep->seq - ctl->ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 
     ctl->status = 1;
 
-    offset = ep->send_size * (ep->seq % ep->queue_size);
+    offset = ep->send_size * (ep->seq % ep->packet_queue_len);
     
     
     sci_header = ep->buf + offset;
