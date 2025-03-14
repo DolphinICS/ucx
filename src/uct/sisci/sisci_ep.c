@@ -7,16 +7,14 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
 {   
     sci_error_t sci_error;
     
-    SCIUnmapSegment(self->remote_map, 0, &sci_error);
-    
     self->buf = NULL;
-
+    
+    SCIUnmapSegment(self->remote_map, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_UNMAP_SEGMENT: %s\n", SCIGetErrorString(sci_error));
     }
     
     SCIDisconnectSegment(self->remote_segment, 0, &sci_error);
-
     if (sci_error != SCI_ERR_OK) { 
         printf("SCI_DISCONNECT_SEGMENT: %s\n", SCIGetErrorString(sci_error));
     }
@@ -506,8 +504,13 @@ ucs_status_t uct_sci_ep_am_zcopy(
         UCT_SCI_NO_FLAGS,
         &sci_error);
     if(sci_error != SCI_ERR_OK) {
-        printf("DMA Transfer Error: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCIStartDmaTransfer failed: %s", SCIGetErrorString(sci_error));
     }
+
+    // SCIWaitForDMAQueue(iface->dma_queue, SCI_INFINITE_TIMEOUT, UCT_SCI_NO_FLAGS, &sci_error);
+    // if(sci_error != SCI_ERR_OK) {
+    //     ucs_error("SCIWaitForDMAQueue failed: %s", SCIGetErrorString(sci_error));
+    // }
         
     /* Need to wait for transfer to finish first? */
     packet_am_hdr = (uct_sci_am_hdr_t*)&ep->buf[packet_buf_offset];
