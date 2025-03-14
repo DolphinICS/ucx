@@ -857,18 +857,29 @@ void uct_sci_iface_progress_enable(uct_iface_h iface, unsigned flags) {
     DEBUG_PRINT("Progress Enabled\n");
 }
 
-unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
-    uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
-    int       count  = 0;
-    int found_message = 0;
-    uint32_t  offset = 0;
-    ucs_status_t status;
+/**
+ * @brief 
+ * @param[inout] iface input is 
+ *                       - iface->packet_size_bytes
+ *                       - iface->packet_queue_len
+ *                       - iface->sci_cds[i].last_ack
+ *                     output is
+ *                       - iface->sci_cds[i].ctl_buf->status
+ *                       - iface->sci_cds[i].ctl_buf->ack
+ *                       - iface->sci_cds[i].ctl_buf->last_ack
+ *                       - packet stored in iface->ci_cds[i].ctl_buf + some offset
+ * 
+ * @return Number of messages received
+ */
+static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
+    uint32_t offset = 0;
+    ucs_status_t ucs_ret;
+    unsigned count = 0;
     uct_sci_am_hdr_t* packet;
-
-    retry:
+    uct_sci_conn_desc_t* cd;
 
     for (size_t i = 0; i < iface->connections; i++) {
-        uct_sci_conn_desc_t* cd = &iface->sci_cds[i];
+        cd = &iface->sci_cds[i];
         
         if(cd->status != 1) {
             continue;
@@ -881,35 +892,52 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
             continue;
         }
         
-        status = uct_iface_invoke_am(&iface->super, packet->am_id, cd->cd_buf + offset + sizeof(uct_sci_am_hdr_t), packet->length,0);
+        ucs_ret = uct_iface_invoke_am(
+            &iface->super,
+            packet->am_id,
+            cd->cd_buf + offset + sizeof(uct_sci_am_hdr_t),
+            packet->length,
+            0);
     
-        if(status == UCS_INPROGRESS) {
-            DEBUG_PRINT("UCS_IN_PROGRESS\n");
+        if(ucs_ret == UCS_INPROGRESS) {
+            ucs_debug("uct_sci_iface_progress_aux in progress");
+            continue;
+        }
+
+        if(ucs_ret != UCS_OK) {
+            ucs_error("uct_sci_iface_progress_aux returned error %d", ucs_ret);
+            continue;
         }
         
-        if(status == UCS_OK) {
-            packet->status = 0;
-            cd->ctl_buf->status = 0;
-            cd->ctl_buf->ack = cd->last_ack + 1; 
-            SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
-            cd->last_ack++;
-            found_message = 1;
-        }
+        
+        packet->status = 0;
+        cd->ctl_buf->status = 0;
+        cd->ctl_buf->ack = cd->last_ack + 1; 
+        SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
-        else {
-            printf("something went wrong %d\n", status);
-        }
-
-        ++count;
-                
+        cd->last_ack++;
+        count++;                
     }
 
-    if (found_message) {
-        found_message = 0;
-        goto retry;
-    }
-    
     return count;
+}
+
+/**
+ * @brief 
+ * @param[inout] tl_iface
+ * @return 
+ */
+unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
+    uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
+    unsigned total_count = 0;
+    unsigned partial_count;
+
+    do {
+        partial_count = uct_sci_iface_progress_aux(iface);
+        total_count += partial_count;
+    } while (partial_count != 0);
+    
+    return total_count;
 }
 
 static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *attr)
