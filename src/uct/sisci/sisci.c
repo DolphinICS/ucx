@@ -233,8 +233,6 @@ static sci_callback_action_t uct_sci_conn_handler(
     return SCI_CALLBACK_CONTINUE;
 }
 
-int iface_query_printed = 0;
-
 static int
 uct_sisci_ipc_iface_is_reachable_v2(const uct_iface_h tl_iface,
                                    const uct_iface_is_reachable_params_t *params)
@@ -946,15 +944,6 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
 
     uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
 
-    if (!iface_query_printed) {
-        DEBUG_PRINT("iface querried\n");
-    }
-
-    /*  
-        https://github.com/openucx/ucx/issues/6879
-        According to this, we should call uct_base_iface_query()
-    */
-
     uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);   
     
     /* These flags advertises the functionality of our transport. We currently only support active message  */
@@ -989,15 +978,6 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
     attr->overhead                = 10e-9;
     attr->priority                = 0;
 
-    
-
-    /*
-        Iface gets queried multiple times so we had to disallow more than one debug print : )
-    */
-    if(!iface_query_printed) {
-        DEBUG_PRINT("max_eps: %zd iface->attr->cap.flags: %ld event_flags-> %ld\n",attr->max_num_eps, attr->cap.flags, attr->cap.event_flags);
-        iface_query_printed = 1;
-    }
     return UCS_OK;
 }
 
