@@ -23,7 +23,7 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
 
     {"SEND_SIZE", "16k",
      "Size of copy-out buffer",
-     ucs_offsetof(uct_sci_iface_config_t, send_size), UCS_CONFIG_TYPE_MEMUNITS},
+     ucs_offsetof(uct_sci_iface_config_t, packet_size_bytes), UCS_CONFIG_TYPE_MEMUNITS},
 
     {
         "MAX_EPS", "24", "Max EPs for SCI tl",
@@ -129,7 +129,7 @@ static int uct_sci_send_answer_to_request(
     answer.node_id    = iface->device_addr;
     answer.segment_id = iface->segment_id;
     answer.offset     = sci_cd->offset;
-    answer.send_size  = iface->send_size;
+    answer.packet_size_bytes  = iface->packet_size_bytes;
     answer.packet_queue_len = iface->packet_queue_len;
     
     SCITriggerDataInterrupt(ans_interrupt, (void *) &answer, sizeof(answer), UCT_SCI_NO_FLAGS, &sci_error);
@@ -465,11 +465,11 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         printf("SCI_IFACE_INIT: %s\n", SCIGetErrorString(sci_error));
     } 
 
-    DEBUG_PRINT("CONFIG\n\tSEND_SIZE: %zd \n\tMAX_EPS: %u\n", config->send_size, config->max_eps);
+    DEBUG_PRINT("CONFIG\n\tSEND_SIZE: %zd \n\tMAX_EPS: %u\n", config->packet_size_bytes, config->max_eps);
     
     /* uct_sci_iface_t *self */
     self->device_addr = nodeID;
-    self->send_size   = config->send_size;
+    self->packet_size_bytes   = config->packet_size_bytes;
     self->eps         = 0;
     self->max_eps     = MIN(UCT_SCI_MAX_EPS, config->max_eps);
     self->connections = 0;
@@ -488,7 +488,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     }     
 
     /*  recv segment    */
-    recv_segment_size = self->send_size * self->max_eps * self->packet_queue_len;
+    recv_segment_size = self->packet_size_bytes * self->max_eps * self->packet_queue_len;
     ucs_error = uct_sci_helper_create_seg_set_avail(
         sci_md->sci_virtual_device,
         &self->local_segment,
@@ -517,8 +517,8 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     for(i = 0; i < self->max_eps; i++) {
         self->sci_cds[i].status = 0;
-        self->sci_cds[i].size = self->send_size * self->packet_queue_len;
-        self->sci_cds[i].offset = i * self->send_size * self->packet_queue_len; 
+        self->sci_cds[i].size = self->packet_size_bytes * self->packet_queue_len;
+        self->sci_cds[i].offset = i * self->packet_size_bytes * self->packet_queue_len; 
         self->sci_cds[i].cd_buf = (void*) self->tx_buf + self->sci_cds[i].offset;
         self->sci_cds[i].packet = (uct_sci_am_hdr_t*) self->sci_cds[i].cd_buf;
         self->sci_cds[i].last_ack = 0;
@@ -529,7 +529,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         sci_md->sci_virtual_device,
         &self->dma_segment,
         &self->dma_map,
-        self->send_size,
+        self->packet_size_bytes,
         &dma_seg_id,
         &self->dma_buf);
     if (ucs_error != UCS_OK) {
@@ -565,7 +565,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     }
 
     /*Need to find out how mpool works and how it is used by the underlying systems in ucx*/
-    /*status = uct_iface_param_am_alignment(params, self->send_size, 0, 0,
+    /*status = uct_iface_param_am_alignment(params, self->packet_size_bytes, 0, 0,
                                           &alignment, &align_offset);
 
 
@@ -574,7 +574,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         return status;
     }*/
 
-    DEBUG_PRINT("iface_addr: %d dev_addr: %d segment_size %zd\n", self->interrupt_no, self->device_addr, self->send_size);
+    DEBUG_PRINT("iface_addr: %d dev_addr: %d segment_size %zd\n", self->interrupt_no, self->device_addr, self->packet_size_bytes);
     return UCS_OK;
 }
 
@@ -815,7 +815,7 @@ int uct_sci_iface_is_reachable(const uct_iface_h tl_iface,
         uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
         uct_sci_device_addr_t* sci_dev_addr = (uct_sci_device_addr_t *) dev_addr;
         uct_sci_iface_addr_t*  sci_iface_addr = (uct_sci_iface_addr_t*) iface_addr;
-        DEBUG_PRINT("FROM if_addr: %d dev_addr: %d  TO: iface_addr: %d dev_addr: %d \n",iface->interrupt_no, iface->device_addr,  sci_iface_addr->segment_id, sci_dev_addr->node_id);
+        DEBUG_PRINT("FROM if_addr: %d dev_addr: %d  TO: iface_addr: %d dev_addr: %d \n",iface->interrupt_no, iface->device_addr,  sci_iface_addr->interrupt_no, sci_dev_addr->node_id);
     #endif
 
     return 1;
@@ -845,7 +845,7 @@ ucs_status_t uct_sci_iface_get_address(uct_iface_h tl_iface,
     
     uct_sci_iface_addr_t* iface_addr = (uct_sci_iface_addr_t *) addr;
     
-    iface_addr->segment_id = iface->interrupt_no;
+    iface_addr->interrupt_no = iface->interrupt_no;
     
     DEBUG_PRINT("uct_iface_get_address()\n");
     return UCS_OK;
@@ -874,7 +874,7 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
             continue;
         }
 
-        offset = iface->send_size * ((cd->last_ack + 1) % iface->packet_queue_len);
+        offset = iface->packet_size_bytes * ((cd->last_ack + 1) % iface->packet_queue_len);
         packet = cd->cd_buf + offset; 
         
         if (packet->status != 1) {
@@ -947,10 +947,10 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
     /* TODO: Change all these numbers to things that make sense */
     
     /* AM flags - TODO: these might need to be fine tuned at a later stage */
-    attr->cap.am.max_short = iface->send_size;
+    attr->cap.am.max_short = iface->packet_size_bytes;
     attr->cap.am.max_bcopy = 2048;
     attr->cap.am.min_zcopy = 32768;
-    attr->cap.am.max_zcopy = iface->send_size;
+    attr->cap.am.max_zcopy = iface->packet_size_bytes;
 
     attr->cap.am.max_iov   = 10;
     attr->cap.am.max_hdr   = 100;
