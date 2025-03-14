@@ -17,7 +17,7 @@ typedef struct {
     uct_base_ep_t           super;
     sci_remote_segment_t    remote_segment;
     sci_map_t               remote_map;
-    unsigned int            send_size;
+    unsigned int            packet_size_bytes;
     unsigned int            packet_queue_len;
     unsigned int            offset;
     unsigned int            ctl_offset;

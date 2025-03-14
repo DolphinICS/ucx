@@ -34,7 +34,7 @@
 #endif
 
 typedef struct {
-    unsigned int segment_id; /* Listening port of iface */
+    unsigned int interrupt_no; /* Listening port of iface */
 } UCS_S_PACKED uct_sci_iface_addr_t;
 
 typedef struct {
@@ -92,7 +92,7 @@ typedef struct {
     unsigned int node_id;
     unsigned int segment_id;
     unsigned int offset;
-    unsigned int send_size;
+    unsigned int packet_size_bytes;
     unsigned int packet_queue_len;
 } uct_sci_conn_ans_t;
 
@@ -101,7 +101,7 @@ void sci_testing();
 
 typedef struct {
     uct_iface_config_t    super;
-    size_t                send_size;      /* Maximal send size */
+    size_t                packet_size_bytes;      /* Maximal send size */
     unsigned int          max_eps;
     unsigned int          packet_queue_len;
 
@@ -119,7 +119,7 @@ typedef struct {
     uct_base_iface_t            super;
     unsigned int                segment_id;           /* Unique identifier for the instance */
     unsigned int                device_addr; //nodeID
-    size_t                      send_size;    /* Maximum size for payload */
+    size_t                      packet_size_bytes;    /* Maximum size for payload */
     unsigned int                max_eps;
     //ucs_mpool_t                 msg_mp;       /* Messages memory pool */
     void*                       recv_buffer;
