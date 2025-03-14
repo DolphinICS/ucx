@@ -23,7 +23,7 @@ typedef struct {
     unsigned int            ctl_offset;
     unsigned int            remote_node_id;
     unsigned int            remote_segment_id;
-    void *                  buf;
+    uint8_t*                buf;
     uint32_t                seq;
     //sci_map_t               ctl_map;
     //uct_sci_ctl_t*              sci_ctl;              
