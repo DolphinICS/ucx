@@ -41,16 +41,13 @@ typedef struct {
     unsigned int node_id;
 } UCS_S_PACKED uct_sci_device_addr_t;
 
-
 typedef struct {
-    unsigned int ctl_status;
     uint32_t     ack;
 } uct_sci_ctl_t;
 
-
 typedef struct {
     uint8_t     am_id;
-    uint8_t     am_status;
+    uint8_t     am_message_posted;
     unsigned    am_length;
 } UCS_S_PACKED uct_sci_am_hdr_t;
 

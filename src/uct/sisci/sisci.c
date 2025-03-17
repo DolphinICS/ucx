@@ -704,7 +704,7 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
         offset = iface->packet_size_bytes * ((cd->last_ack + 1) % iface->packet_queue_len);
         packet = cd->cd_buf + offset; 
         
-        if (packet->am_status != 1) {
+        if (packet->am_message_posted != 1) {
             continue;
         }
         
@@ -725,9 +725,7 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
             continue;
         }
         
-        
-        packet->am_status = 0;
-        cd->ctl_buf->ctl_status = 0;
+        packet->am_message_posted = 0;
         cd->ctl_buf->ack = cd->last_ack + 1; 
         SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 

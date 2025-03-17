@@ -317,7 +317,6 @@ ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
         
     packet_buf_offset = ep->packet_size_bytes * (ep->seq % ep->packet_queue_len);
     packet_am_hdr = (uct_sci_am_hdr_t*) &ep->buf[packet_buf_offset];
-    ctl->ctl_status = 1;
     packet_am_hdr->am_id = id;
     packet_am_hdr->am_length = length + sizeof(header);
 
@@ -325,7 +324,7 @@ ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
 
     uct_am_short_fill_data(&ep->buf[send_start_buf_offset], header, payload, length, UCS_ARCH_MEMCPY_NT_DEST);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);    
-    packet_am_hdr->am_status = 1;
+    packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     ep->seq++;
     DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d SEQ:%d\n", ep->remote_segment_id, ep->remote_node_id, id, packet_am_hdr->length, ep->seq);
@@ -371,8 +370,6 @@ ssize_t uct_sci_ep_am_bcopy(
     packet_buf_offset = ep->packet_size_bytes * (ep->seq % ep->packet_queue_len);
     packet_am_hdr = (uct_sci_am_hdr_t*) &ep->buf[packet_buf_offset];
     
-    ctl->ctl_status = 1;
-    
     send_start_buf_offset = packet_buf_offset + sizeof(uct_sci_am_hdr_t);
     
     /* This is where the sending of the real data happends */
@@ -382,7 +379,7 @@ ssize_t uct_sci_ep_am_bcopy(
     packet_am_hdr->am_id = id;
     packet_am_hdr->am_length = length;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
-    packet_am_hdr->am_status = 1;
+    packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     ep->seq++;
 
@@ -476,8 +473,6 @@ ucs_status_t uct_sci_ep_am_zcopy(
         return UCS_ERR_NO_RESOURCE;
     }
 
-    ctl->ctl_status = 1;
-
     bytes_to_send = iov_total_len + header_length + sizeof(uct_sci_am_hdr_t);
     UCT_CHECK_LENGTH(bytes_to_send, 0 , iface->packet_size_bytes, "am_zcopy");
     UCT_CHECK_AM_ID(id);
@@ -517,7 +512,7 @@ ucs_status_t uct_sci_ep_am_zcopy(
     /* Need to wait for transfer to finish first? */
     packet_am_hdr = (uct_sci_am_hdr_t*)&ep->buf[packet_buf_offset];
     ep->seq++;
-    packet_am_hdr->am_status = 1;
+    packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d \n", ep->remote_segment_id, ep->remote_node_id, id, packet_am_hdr->length);
