@@ -144,40 +144,6 @@ static int uct_sci_send_answer_to_request(
 }
 
 /**
- * @brief Connect to remote endpoint's control buffer
- * 
- * @details helper function to uct_sci_conn_handler.
- * 
- * @param[in] iface
- * @return 
- */
-static int uct_sci_connect_control_buffer(
-    uct_sci_iface_t* iface,
-    uct_sci_conn_req_t* request,
-    uct_sci_conn_desc_t *sci_cd)
-{
-    sci_error_t sci_error;
-    do {
-        DEBUG_PRINT("waiting to connect to ctl %s\n", SCIGetErrorString(sci_error));
-        SCIConnectSegment(iface->vdev_ctl, &sci_cd->ctl_segment, request->node_id, request->ctl_id, 
-                UCT_SCI_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
-        
-    } while (sci_error != SCI_ERR_OK);
-
-    sci_cd->ctl_buf = (uct_sci_ctl_t *) SCIMapRemoteSegment(sci_cd->ctl_segment, &sci_cd->ctl_map, request->ctl_offset, 
-                                                                  sizeof(uct_sci_ctl_t), NULL, 0, &sci_error);
-
-    if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_MAP_REM_SEG: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }
-
-    /* todo, do error checking */
-    return 0;
-}
-
-
-/**
  * @brief This function handles incoming connection requests and assigns a sci file descriptor to that connection.
  * Then it replies with information back to the connecting request to enable the incoming conneciton to connect and offset correctly
  * into the iface's recv buffer. The iface also connects to the connectors control block, so we can signal it when we are ready to recv data.
@@ -222,7 +188,16 @@ static sci_callback_action_t uct_sci_conn_handler(
         return SCI_CALLBACK_CONTINUE;
     }
 
-    ret = uct_sci_connect_control_buffer(iface, request, sci_cd);
+    /* Connect to remote endpoint's control buffer */
+    ret = uct_sci_connect_segment(
+        iface->vdev_ctl,
+        request->ctl_offset,
+        sizeof(uct_sci_ctl_t),
+        request->node_id,
+        request->ctl_id,
+        &sci_cd->ctl_segment,
+        &sci_cd->ctl_map,
+        (void **)&sci_cd->ctl_buf);
     if (ret != 0) {
         ucs_error("Failed to connect to remote control buffer");
         uct_sci_ureserve_control_descriptor(iface, sci_cd_index);
@@ -271,6 +246,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     unsigned int nodeID;
     unsigned int adapterID = 0;
     unsigned int flags = 0;
+    int ret;
     ssize_t i = 0;
     sci_error_t sci_error;
     unsigned dma_seg_id;
@@ -280,7 +256,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     size_t recv_segment_size;
     size_t control_segment_size;
-    ucs_status_t ucs_error;
 
     UCT_CHECK_PARAM(params->field_mask & UCT_IFACE_PARAM_FIELD_OPEN_MODE,
                     "UCT_IFACE_PARAM_FIELD_OPEN_MODE is not defined");
@@ -341,28 +316,28 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     /*  recv segment    */
     recv_segment_size = self->packet_size_bytes * self->max_eps * self->packet_queue_len;
-    ucs_error = uct_sci_helper_create_seg_set_avail(
+    ret = uct_sci_helper_create_seg_set_avail(
         sci_md->sci_virtual_device,
         &self->local_segment,
         &self->local_map,
         recv_segment_size,
         &self->segment_id,
         &self->tx_buf);
-    if (ucs_error != UCS_OK) {
+    if (ret != 0) {
         ucs_error("Failed to set up receive segment");
         return UCS_ERR_NO_RESOURCE;
     }
 
     /* ctl segment */
     control_segment_size = sizeof(uct_sci_ctl_t) * self->max_eps;
-    ucs_error = uct_sci_helper_create_seg_set_avail(
+    ret = uct_sci_helper_create_seg_set_avail(
         sci_md->sci_virtual_device,
         &self->ctl_segment,
         &self->ctl_map,
         control_segment_size,
         &self->ctl_id,
         &self->ctls);
-    if (ucs_error != UCS_OK) {
+    if (ret != 0) {
         ucs_error("Failed to set up receive segment");
         return UCS_ERR_NO_RESOURCE;
     }
@@ -377,14 +352,14 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     }
 
     /* --- Initialize DMA related resources --- */
-    ucs_error = uct_sci_helper_create_segment(
+    ret = uct_sci_helper_create_segment(
         sci_md->sci_virtual_device,
         &self->dma_segment,
         &self->dma_map,
         self->packet_size_bytes,
         &dma_seg_id,
         &self->dma_buf);
-    if (ucs_error != UCS_OK) {
+    if (ret != 0) {
         ucs_error("Failed to set up receive segment");
         return UCS_ERR_NO_RESOURCE;
     }
@@ -459,21 +434,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
         printf("IFACE CLOSE, Failed to remove dma queue: %s\n", SCIGetErrorString(sci_error));
     }
 
-    // TODO: THIS!
     for(ssize_t i = 0; i < self->connections; i++) {
         self->sci_cds[i].status = 3;
-        
-        SCIUnmapSegment(self->sci_cds[i].ctl_map, 0, &sci_error);
-    
-        if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_UNMAP_SEGMENT: %s\n", SCIGetErrorString(sci_error));
-        }
-
-        SCIDisconnectSegment(self->sci_cds[i].ctl_segment, 0, &sci_error);
-
-        if (sci_error != SCI_ERR_OK) { 
-            printf("SCI_DISCONNECT_SEGMENT: %s\n", SCIGetErrorString(sci_error));
-        }
+        uct_sci_disconnect_segment(self->sci_cds[i].ctl_segment, self->sci_cds[i].ctl_map);
     
     }
 
@@ -845,7 +808,7 @@ static ucs_status_t uct_sci_md_rkey_unpack(uct_component_t *component,
      * Need rkey == 0 due to work with same process to reuse uct_base_[put|get|atomic]*
      */
     DEBUG_PRINT("uct_sci_md_rkey_unpack()");
-    printf("uct_sci_md_rkey_unpack\n");
+    // printf("uct_sci_md_rkey_unpack\n");
     *rkey_p   = 0;
     *handle_p = NULL;
     return UCS_OK;

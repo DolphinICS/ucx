@@ -1,5 +1,8 @@
 #include "sisci_helper_funcs.h"
 
+/* To get ucs print outs */
+#include <ucs/type/status.h>
+
 /**
  * @brief Creates, prepares and maps a local sisci segment. Gets sisci to
  *        automatically assign a segment ID that is unique to this node.
@@ -11,7 +14,7 @@
  * @param[out] buf 
  * @return 
  */
-ucs_status_t uct_sci_helper_create_segment(
+int uct_sci_helper_create_segment(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
@@ -32,15 +35,15 @@ ucs_status_t uct_sci_helper_create_segment(
         SCI_FLAG_AUTO_ID,
         &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-            printf("SCI_CREATE_RECV_SEGMENT: %s\n", SCIGetErrorString(sci_error));
-            return UCS_ERR_NO_RESOURCE;
+        ucs_error("SCICreateSegment failed: %s", SCIGetErrorString(sci_error));
+        return -1;
     }
 
     SCIPrepareSegment(*segment, UCT_SCI_LOCAL_ADAPTER_NO, UCT_SCI_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_PREPARE_SEGMENT: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCIPrepareSegment failed: %s", SCIGetErrorString(sci_error));
         SCIRemoveSegment(*segment, UCT_SCI_NO_FLAGS , &sci_error);
-        return UCS_ERR_NO_RESOURCE;
+        return -1;
     }
 
     *buf = SCIMapLocalSegment(
@@ -52,14 +55,14 @@ ucs_status_t uct_sci_helper_create_segment(
         UCT_SCI_NO_FLAGS,
         &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_MAP_LOCAL_SEG: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCIMapLocalSegment failed: %s", SCIGetErrorString(sci_error));
         SCIRemoveSegment(*segment, UCT_SCI_NO_FLAGS , &sci_error);
-        return UCS_ERR_NO_RESOURCE;
+        return -1;
     }
 
     *segment_id = SCIGetLocalSegmentId(*segment);
 
-    return UCS_OK;
+    return 0;
 }
 
 /**
@@ -78,12 +81,12 @@ void uct_sci_helper_remove_segment(
 
     SCIUnmapSegment(segment_map, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_warn("Failed to unmap segment\n");
+        ucs_warn("SCIUnmapSegment failed: %s\n", SCIGetErrorString(sci_error));
     }
 
     SCIRemoveSegment(segment, SCI_FLAG_FORCE_REMOVE , &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_warn("Failed to remove segment\n");
+        ucs_warn("SCIRemoveSegment failed: %s\n", SCIGetErrorString(sci_error));
     }
 }
 
@@ -99,7 +102,7 @@ void uct_sci_helper_remove_segment(
  * @param[out] buf 
  * @return 
  */
-ucs_status_t uct_sci_helper_create_seg_set_avail(
+int uct_sci_helper_create_seg_set_avail(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
@@ -107,20 +110,20 @@ ucs_status_t uct_sci_helper_create_seg_set_avail(
     unsigned int *segment_id,
     void **buf)
 {
-    ucs_status_t ret;
     sci_error_t sci_error;
+    int ret;
     
     ret = uct_sci_helper_create_segment(sd, segment, segment_map, segment_size, segment_id, buf);
-    if (ret == UCS_OK) {
+    if (ret == 0) {
         SCISetSegmentAvailable(*segment, 0, 0, &sci_error);
         if (sci_error != SCI_ERR_OK) { 
-            ucs_error("Failed to set segment as available");
+            ucs_error("SCISetSegmentAvailable failed: %s", SCIGetErrorString(sci_error));
             uct_sci_helper_remove_segment(*segment, *segment_map);
-            return UCS_ERR_NO_RESOURCE;
+            return -1;
         }
     }
 
-    return UCS_OK;
+    return 0;
 }
 
 /**
@@ -141,7 +144,65 @@ void uct_sci_helper_remove_seg_set_unavail(
     sci_error_t sci_error;
     SCISetSegmentUnavailable(segment, 0, UCT_SCI_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_warn("Failed to set segment unavailable\n");
+        ucs_warn("SCISetSegmentUnavailable failed: %s", SCIGetErrorString(sci_error));
     }
     uct_sci_helper_remove_segment(segment, segment_map);
+}
+
+int uct_sci_connect_segment(
+    sci_desc_t sd,
+    size_t offset,
+    size_t segment_size,
+    unsigned int node_id,
+    unsigned int segment_id,
+    sci_remote_segment_t *segment,
+    sci_map_t *segment_map,
+    void **buf)
+{
+    sci_error_t sci_error;
+    do {
+        SCIConnectSegment(sd,
+            segment,
+            node_id,
+            segment_id,
+            UCT_SCI_LOCAL_ADAPTER_NO,
+            UCT_SCI_NO_CALLBACK,
+            NULL,
+            0,
+            UCT_SCI_NO_FLAGS,
+            &sci_error);
+    } while (sci_error != SCI_ERR_OK);
+
+    /* Todo: maybe not discard volatile property? */
+    *buf = (void *)SCIMapRemoteSegment(
+        *segment,
+        segment_map,
+        offset,
+        segment_size,
+        NULL,
+        0,
+        &sci_error);
+    if (sci_error != SCI_ERR_OK) { 
+        ucs_warn("SCIMapRemoteSegment failed: %s", SCIGetErrorString(sci_error));
+        return -1;
+    }
+
+    return 0;
+}
+
+void uct_sci_disconnect_segment(
+    sci_remote_segment_t segment,
+    sci_map_t segment_map)
+{
+    sci_error_t sci_error;
+    SCIUnmapSegment(segment_map, 0, &sci_error);
+    if (sci_error != SCI_ERR_OK) { 
+        ucs_warn("SCIUnmapSegment failed: %s", SCIGetErrorString(sci_error));
+    }
+    
+    SCIDisconnectSegment(segment, 0, &sci_error);
+    if (sci_error != SCI_ERR_OK) { 
+        ucs_warn("SCIDisconnectSegment failed: %s", SCIGetErrorString(sci_error));
+    }
+
 }

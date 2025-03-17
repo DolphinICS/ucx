@@ -1,8 +1,6 @@
 #ifndef UCT_SISCI_HELPER_FUNCS_H
 #define UCT_SISCI_HELPER_FUNCS_H
 
-#include <ucs/type/status.h>
-
 #include "sisci.h"
 
 /**
@@ -16,7 +14,7 @@
  * @param[out] buf 
  * @return 
  */
-ucs_status_t uct_sci_helper_create_segment(
+int uct_sci_helper_create_segment(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
@@ -30,7 +28,6 @@ ucs_status_t uct_sci_helper_create_segment(
  * @details Unmaps and removes local segment set up by uct_sci_helper_create_segment.
  * 
  * @param[in] segment 
- * @param[in] segment_map 
  */
 void uct_sci_helper_remove_segment(
     sci_local_segment_t segment,
@@ -48,7 +45,7 @@ void uct_sci_helper_remove_segment(
  * @param[out] buf 
  * @return 
  */
-ucs_status_t uct_sci_helper_create_seg_set_avail(
+int uct_sci_helper_create_seg_set_avail(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
@@ -71,5 +68,39 @@ void uct_sci_helper_remove_seg_set_unavail(
     sci_local_segment_t segment,
     sci_map_t segment_map);
 
+/**
+ * @brief Connects to and maps remote sisci segment.
+ * 
+ * @note Tries to connect in a loop until it succeeds.
+ * 
+ * @param[in] sd 
+ * @param[in] offset 
+ * @param[in] segment_size 
+ * @param[in] node_id 
+ * @param[in] segment_id 
+ * @param[out] segment 
+ * @param[out] segment_map 
+ * @param[out] buf 
+ * @return 
+ */
+int uct_sci_connect_segment(
+    sci_desc_t sd,
+    size_t offset,
+    size_t segment_size,
+    unsigned int node_id,
+    unsigned int segment_id,
+    sci_remote_segment_t *segment,
+    sci_map_t *segment_map,
+    void **buf);
+
+/**
+ * @brief Unmaps and disconnects from remote segment segment.
+ *        (Reverses what is done in uct_sci_connect_segment)
+ * @param[in] segment 
+ * @param[in] segment_map 
+ */
+void uct_sci_disconnect_segment(
+    sci_remote_segment_t segment,
+    sci_map_t segment_map);
 
 #endif
