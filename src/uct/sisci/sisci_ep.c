@@ -38,7 +38,6 @@ static ucs_status_t uct_sci_ep_send_conn_request(
 
     //printf("%d connected to remote interrupt!, ret_int %d\n", getpid(),local_interrupt_no);
     //printf("size of answer %zd size of struct answer %zd\n", sizeof(answer), sizeof(uct_sci_conn_ans_t));
-    request.status     = 1;
     request.interrupt  = local_interrupt_no;
     request.node_id    = iface->device_addr;
     request.ctl_offset = iface->eps * sizeof(uct_sci_ctl_t);

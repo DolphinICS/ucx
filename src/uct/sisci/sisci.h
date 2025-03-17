@@ -54,10 +54,6 @@ typedef struct {
     unsigned    length;
 } UCS_S_PACKED uct_sci_am_hdr_t;
 
-// typedef enum {
-//     UCT_SCI_BLABLA,
-// } blabla_t
-
 typedef enum {
     UCT_SCI_CD_AVAILABLE,
     UCT_SCI_CD_RESERVED,
@@ -90,7 +86,6 @@ typedef struct {
 } uct_sci_conn_desc_t;
 
 typedef struct {
-    uint8_t status;
     int     node_id;
     int     interrupt;
     int     ctl_id;
@@ -98,7 +93,6 @@ typedef struct {
 } uct_sci_conn_req_t;
 
 typedef struct {
-    uint8_t      status;
     unsigned int node_id;
     unsigned int segment_id;
     unsigned int offset;
