@@ -43,15 +43,15 @@ typedef struct {
 
 
 typedef struct {
-    unsigned int status;
+    unsigned int ctl_status;
     uint32_t     ack;
 } uct_sci_ctl_t;
 
 
 typedef struct {
-    uint8_t     status;
     uint8_t     am_id;
-    unsigned    length;
+    uint8_t     am_status;
+    unsigned    am_length;
 } UCS_S_PACKED uct_sci_am_hdr_t;
 
 typedef enum {

@@ -304,10 +304,10 @@ ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
                                   const void *payload, unsigned length)
 {
 
-    uct_sci_ep_t* ep       = ucs_derived_of(tl_ep, uct_sci_ep_t);
+    uct_sci_ep_t* ep = ucs_derived_of(tl_ep, uct_sci_ep_t);
     uct_sci_am_hdr_t* packet_am_hdr; 
     uct_sci_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_sci_iface_t);
-    uct_sci_ctl_t* ctl         = iface->ctls + ep->ctl_offset;
+    uct_sci_ctl_t* ctl = iface->ctls + ep->ctl_offset;
     uint32_t packet_buf_offset;
     uint32_t send_start_buf_offset;
     
@@ -317,15 +317,15 @@ ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
         
     packet_buf_offset = ep->packet_size_bytes * (ep->seq % ep->packet_queue_len);
     packet_am_hdr = (uct_sci_am_hdr_t*) &ep->buf[packet_buf_offset];
-    ctl->status = 1;
+    ctl->ctl_status = 1;
     packet_am_hdr->am_id = id;
-    packet_am_hdr->length = length + sizeof(header);
+    packet_am_hdr->am_length = length + sizeof(header);
 
     send_start_buf_offset = packet_buf_offset + sizeof(uct_sci_am_hdr_t);
 
     uct_am_short_fill_data(&ep->buf[send_start_buf_offset], header, payload, length, UCS_ARCH_MEMCPY_NT_DEST);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);    
-    packet_am_hdr->status = 1;
+    packet_am_hdr->am_status = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     ep->seq++;
     DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d SEQ:%d\n", ep->remote_segment_id, ep->remote_node_id, id, packet_am_hdr->length, ep->seq);
@@ -371,7 +371,7 @@ ssize_t uct_sci_ep_am_bcopy(
     packet_buf_offset = ep->packet_size_bytes * (ep->seq % ep->packet_queue_len);
     packet_am_hdr = (uct_sci_am_hdr_t*) &ep->buf[packet_buf_offset];
     
-    ctl->status = 1;
+    ctl->ctl_status = 1;
     
     send_start_buf_offset = packet_buf_offset + sizeof(uct_sci_am_hdr_t);
     
@@ -380,13 +380,13 @@ ssize_t uct_sci_ep_am_bcopy(
 
     /* Update meta information */
     packet_am_hdr->am_id = id;
-    packet_am_hdr->length = length;
+    packet_am_hdr->am_length = length;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
-    packet_am_hdr->status = 1;
+    packet_am_hdr->am_status = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     ep->seq++;
 
-    DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d \n", ep->remote_segment_id, ep->remote_node_id, id, packet_am_hdr->length);
+    DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d \n", ep->remote_segment_id, ep->remote_node_id, id, packet_am_hdr->am_length);
 
     return length;
 }
@@ -420,7 +420,7 @@ static void uct_sci_fill_buffer_with_packet(
     
     /* Set uct_sci packet prefix values, stored directly into the DMA buffer ready for sending */
     tx_packet_am_hdr->am_id = id;
-    tx_packet_am_hdr->length = iov_total_len + header_length;
+    tx_packet_am_hdr->am_length = iov_total_len + header_length;
     
     /* Copy the uct header to the transfer buffer after prefix. Copied after uct_sci packet prefix*/
     if (header_length != 0) {
@@ -476,7 +476,7 @@ ucs_status_t uct_sci_ep_am_zcopy(
         return UCS_ERR_NO_RESOURCE;
     }
 
-    ctl->status = 1;
+    ctl->ctl_status = 1;
 
     bytes_to_send = iov_total_len + header_length + sizeof(uct_sci_am_hdr_t);
     UCT_CHECK_LENGTH(bytes_to_send, 0 , iface->packet_size_bytes, "am_zcopy");
@@ -517,7 +517,7 @@ ucs_status_t uct_sci_ep_am_zcopy(
     /* Need to wait for transfer to finish first? */
     packet_am_hdr = (uct_sci_am_hdr_t*)&ep->buf[packet_buf_offset];
     ep->seq++;
-    packet_am_hdr->status = 1;
+    packet_am_hdr->am_status = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d \n", ep->remote_segment_id, ep->remote_node_id, id, packet_am_hdr->length);

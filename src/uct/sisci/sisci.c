@@ -704,7 +704,7 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
         offset = iface->packet_size_bytes * ((cd->last_ack + 1) % iface->packet_queue_len);
         packet = cd->cd_buf + offset; 
         
-        if (packet->status != 1) {
+        if (packet->am_status != 1) {
             continue;
         }
         
@@ -712,7 +712,7 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
             &iface->super,
             packet->am_id,
             cd->cd_buf + offset + sizeof(uct_sci_am_hdr_t),
-            packet->length,
+            packet->am_length,
             0);
     
         if(ucs_ret == UCS_INPROGRESS) {
@@ -726,8 +726,8 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
         }
         
         
-        packet->status = 0;
-        cd->ctl_buf->status = 0;
+        packet->am_status = 0;
+        cd->ctl_buf->ctl_status = 0;
         cd->ctl_buf->ack = cd->last_ack + 1; 
         SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
