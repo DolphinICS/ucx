@@ -65,7 +65,7 @@ static int uct_sci_reserve_control_descriptor(uct_sci_iface_t* iface, unsigned i
     /* Find free sci_cd in iface sci_cd list */
     for (i = 0; i < iface->max_eps; i++)
     {
-        if(iface->sci_cds[i].status == 0) {
+        if(iface->sci_cds[i].cd_status == UCT_SCI_CD_AVAILABLE) {
             break;
         }
     }
@@ -73,7 +73,7 @@ static int uct_sci_reserve_control_descriptor(uct_sci_iface_t* iface, unsigned i
     if (i < iface->max_eps) {
         /* Success: reserve sci_cd */
         *cd_index = i;
-        iface->sci_cds[i].status = 2;
+        iface->sci_cds[i].cd_status = UCT_SCI_CD_RESERVED;
         iface->connections++;
     } else {
         rc = -1;
@@ -97,7 +97,7 @@ static void uct_sci_ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned
 {
     pthread_mutex_lock(&iface->lock);
 
-    iface->sci_cds[cd_index].status = 0;
+    iface->sci_cds[cd_index].cd_status = UCT_SCI_CD_AVAILABLE;
     iface->connections--;
 
     pthread_mutex_unlock(&iface->lock);
@@ -204,7 +204,7 @@ static sci_callback_action_t uct_sci_conn_handler(
         return SCI_CALLBACK_CONTINUE;
     }
             
-    sci_cd->status = 1;
+    sci_cd->cd_status = UCT_SCI_CD_READY;
     return SCI_CALLBACK_CONTINUE;
 }
 
@@ -343,7 +343,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     }
 
     for(i = 0; i < self->max_eps; i++) {
-        self->sci_cds[i].status = 0;
+        self->sci_cds[i].cd_status = UCT_SCI_CD_AVAILABLE;
         self->sci_cds[i].size = self->packet_size_bytes * self->packet_queue_len;
         self->sci_cds[i].offset = i * self->packet_size_bytes * self->packet_queue_len; 
         self->sci_cds[i].cd_buf = (void*) self->tx_buf + self->sci_cds[i].offset;
@@ -435,9 +435,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
     }
 
     for(ssize_t i = 0; i < self->connections; i++) {
-        self->sci_cds[i].status = 3;
+        self->sci_cds[i].cd_status = UCT_SCI_CD_RESERVED;
         uct_sci_disconnect_segment(self->sci_cds[i].ctl_segment, self->sci_cds[i].ctl_map);
-    
+        self->sci_cds[i].cd_status = UCT_SCI_CD_AVAILABLE;
     }
 
     /* RX  */
@@ -696,7 +696,8 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
     for (size_t i = 0; i < iface->connections; i++) {
         cd = &iface->sci_cds[i];
         
-        if(cd->status != 1) {
+        /* Skip this cd if it does not correspond to a valid connection */
+        if(cd->cd_status != UCT_SCI_CD_READY) {
             continue;
         }
 

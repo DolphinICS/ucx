@@ -54,6 +54,16 @@ typedef struct {
     unsigned    length;
 } UCS_S_PACKED uct_sci_am_hdr_t;
 
+// typedef enum {
+//     UCT_SCI_BLABLA,
+// } blabla_t
+
+typedef enum {
+    UCT_SCI_CD_AVAILABLE,
+    UCT_SCI_CD_RESERVED,
+    UCT_SCI_CD_READY,
+} conn_desc_status_t;
+
 /*
  * Connection Descriptor,
  *  
@@ -62,7 +72,7 @@ typedef struct {
  * into the global offset.
  */
 typedef struct {
-    int                     status; /* taken | available | ready |  */
+    conn_desc_status_t      cd_status;
     int                     size;   /* size */
     int                     remote_node;
     uint32_t                last_ack;
