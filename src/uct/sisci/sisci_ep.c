@@ -2,23 +2,12 @@
 
 #include "sisci_ep.h"
 #include "sisci_iface.h"
+#include "sisci_helper_funcs.h"
 
 static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
 {   
-    sci_error_t sci_error;
-    
     self->buf = NULL;
-    
-    SCIUnmapSegment(self->remote_map, 0, &sci_error);
-    if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_UNMAP_SEGMENT: %s\n", SCIGetErrorString(sci_error));
-    }
-    
-    SCIDisconnectSegment(self->remote_segment, 0, &sci_error);
-    if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_DISCONNECT_SEGMENT: %s\n", SCIGetErrorString(sci_error));
-    }
-    
+    uct_sci_disconnect_segment(self->remote_segment, self->remote_map);
     DEBUG_PRINT("ep deleted segment_id %d node_id %d\n", self->remote_segment_id, self->remote_node_id);
 }
 
@@ -134,11 +123,11 @@ static ucs_status_t uct_sci_ep_send_recv_conn_request(
 
 static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
 {
-    sci_error_t sci_error;
     ucs_status_t ucs_ret;
     uct_sci_iface_addr_t* iface_addr =  (uct_sci_iface_addr_t*) params->iface_addr;
     uct_sci_device_addr_t* dev_addr = (uct_sci_device_addr_t*) params->dev_addr;
     uct_sci_conn_ans_t answer;
+    int ret;
 
     unsigned int remote_interrupt_no;
     unsigned int node_id;
@@ -171,18 +160,32 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
     /* quick fix for weird behaviour when queue size was 1...*/
     self->seq               = self->packet_queue_len > 1 ? 1 : 0;
 
-    do {
-        DEBUG_PRINT("waiting to connect %d %s\n", sci_error,  SCIGetErrorString(sci_error));
-        
-        SCIConnectSegment(iface->vdev_ep, &self->remote_segment, self->remote_node_id, self->remote_segment_id, 
-                    UCT_SCI_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
-    } while (sci_error != SCI_ERR_OK);
-
-    self->buf = (uint8_t *) SCIMapRemoteSegment(self->remote_segment, &self->remote_map, self->offset, iface->packet_size_bytes * self->packet_queue_len, NULL, 0, &sci_error);
-    if (sci_error != SCI_ERR_OK) { 
-        ucs_error("SCI_MAP_REM_SEG: %s", SCIGetErrorString(sci_error));
+    ret = uct_sci_connect_segment(
+        iface->vdev_ep,
+        self->offset,
+        iface->packet_size_bytes * self->packet_queue_len,
+        self->remote_node_id,
+        self->remote_segment_id,
+        &self->remote_segment,
+        &self->remote_map,
+        (void *)&self->buf);
+    if (ret != UCS_OK) {
+        ucs_error("Endpoint failed to connect and map to remote sisci segment");
         return UCS_ERR_NO_RESOURCE;
     }
+    
+    // do {
+    //     DEBUG_PRINT("waiting to connect %d %s\n", sci_error,  SCIGetErrorString(sci_error));
+        
+    //     SCIConnectSegment(iface->vdev_ep, &self->remote_segment, self->remote_node_id, self->remote_segment_id, 
+    //                 UCT_SCI_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
+    // } while (sci_error != SCI_ERR_OK);
+
+    // self->buf = (uint8_t *) SCIMapRemoteSegment(self->remote_segment, &self->remote_map, self->offset, iface->packet_size_bytes * self->packet_queue_len, NULL, 0, &sci_error);
+    // if (sci_error != SCI_ERR_OK) { 
+    //     ucs_error("SCI_MAP_REM_SEG: %s", SCIGetErrorString(sci_error));
+    //     return UCS_ERR_NO_RESOURCE;
+    // }
 
     iface->eps += 1;    
     DEBUG_PRINT("EP connected to segment %d at node %d\n",  self->remote_segment_id, self->remote_node_id);
