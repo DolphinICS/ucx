@@ -41,18 +41,21 @@ typedef struct {
     unsigned int node_id;
 } UCS_S_PACKED uct_sci_device_addr_t;
 
-
 typedef struct {
-    unsigned int status;
     uint32_t     ack;
 } uct_sci_ctl_t;
 
-
 typedef struct {
-    uint8_t     status;
     uint8_t     am_id;
-    unsigned    length;
+    uint8_t     am_message_posted;
+    unsigned    am_length;
 } UCS_S_PACKED uct_sci_am_hdr_t;
+
+typedef enum {
+    UCT_SCI_CD_AVAILABLE,
+    UCT_SCI_CD_RESERVED,
+    UCT_SCI_CD_READY,
+} conn_desc_status_t;
 
 /*
  * Connection Descriptor,
@@ -62,7 +65,7 @@ typedef struct {
  * into the global offset.
  */
 typedef struct {
-    int                     status; /* taken | available | ready |  */
+    conn_desc_status_t      cd_status;
     int                     size;   /* size */
     int                     remote_node;
     uint32_t                last_ack;
@@ -80,7 +83,6 @@ typedef struct {
 } uct_sci_conn_desc_t;
 
 typedef struct {
-    uint8_t status;
     int     node_id;
     int     interrupt;
     int     ctl_id;
@@ -88,7 +90,6 @@ typedef struct {
 } uct_sci_conn_req_t;
 
 typedef struct {
-    uint8_t      status;
     unsigned int node_id;
     unsigned int segment_id;
     unsigned int offset;
