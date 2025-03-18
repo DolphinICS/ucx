@@ -91,7 +91,7 @@ int uct_sci_connect_segment(
     unsigned int segment_id,
     sci_remote_segment_t *segment,
     sci_map_t *segment_map,
-    void **buf);
+    volatile void **buf);
 
 /**
  * @brief Unmaps and disconnects from remote segment segment.
