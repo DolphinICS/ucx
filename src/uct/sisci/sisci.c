@@ -272,7 +272,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     if (pthread_mutex_init(&self->lock, NULL) != 0) {
         printf("\n mutex init failed\n");
-        return UCS_ERR_NO_RESOURCE;
+        goto err;
     }
 
     UCS_CLASS_CALL_SUPER_INIT(
@@ -304,14 +304,14 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     SCIOpen(&self->vdev_ep, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_OPEN_EP_VDEVS: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
+        ucs_error("SCIOpen: %s\n", SCIGetErrorString(sci_error));
+        goto err_destroy_mutex;
     }
 
     SCIOpen(&self->vdev_ctl, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_OPEN_EP_VDEVS: %s\n", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
+        ucs_error("SCIOpen: %s\n", SCIGetErrorString(sci_error));
+        goto err_free_vdev_ep;
     }     
 
     /*  recv segment    */
@@ -325,7 +325,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         &self->tx_buf);
     if (ret != 0) {
         ucs_error("Failed to set up receive segment");
-        return UCS_ERR_NO_RESOURCE;
+        goto err_free_vdev_ctl;
     }
 
     /* ctl segment */
@@ -339,7 +339,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         &self->ctls);
     if (ret != 0) {
         ucs_error("Failed to set up receive segment");
-        return UCS_ERR_NO_RESOURCE;
+        goto err_remove_ctl_seg;
     }
 
     for(i = 0; i < self->max_eps; i++) {
@@ -361,7 +361,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         &self->dma_buf);
     if (ret != 0) {
         ucs_error("Failed to set up receive segment");
-        return UCS_ERR_NO_RESOURCE;
+        goto err_remove_recv_seg;
     }
 
     SCICreateDMAQueue(
@@ -373,7 +373,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         &sci_error);
     if(sci_error != SCI_ERR_OK) {
         ucs_error("CreateDMAQueue: %s", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
+        goto err_remove_dma_seg;
     } 
 
     /* --- Initialize data interrupts for managing incoming connections --- */
@@ -388,7 +388,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         &sci_error);
     if(sci_error != SCI_ERR_OK) {
         ucs_error("SCICreateDataInterrupt: %s", SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
+        goto err_remove_dma_queue;
     }
 
     /*Need to find out how mpool works and how it is used by the underlying systems in ucx*/
@@ -403,6 +403,26 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     DEBUG_PRINT("iface_addr: %d dev_addr: %d segment_size %zd\n", self->interrupt_no, self->device_addr, self->packet_size_bytes);
     return UCS_OK;
+
+err_remove_dma_queue:
+    SCIRemoveDMAQueue(self->dma_queue, UCT_SCI_NO_FLAGS, &sci_error);
+    if(sci_error != SCI_ERR_OK) {
+        printf("SCIRemoveDMAQueue failed: %s\n", SCIGetErrorString(sci_error));
+    }
+err_remove_dma_seg:
+    uct_sci_helper_remove_segment(self->dma_segment, self->dma_map);
+err_remove_recv_seg:
+    uct_sci_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
+err_remove_ctl_seg:
+    uct_sci_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_map);
+err_free_vdev_ctl:
+    SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);
+err_free_vdev_ep:
+    SCIClose(self->vdev_ep, UCT_SCI_NO_FLAGS, &sci_error);
+err_destroy_mutex:
+    pthread_mutex_destroy(&self->lock);
+err:
+    return UCS_ERR_NO_RESOURCE;
 }
 
 
@@ -413,32 +433,38 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
 static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
 {
-    /* 
-        TODO: Add proper cleanup for iface, i.e free resources that were allocated on init. 
-    */
     sci_error_t sci_error;
     
     DEBUG_PRINT("closed iface\n");
 
+    /* Cleanup for uct_sci_iface_progress_enable */
     uct_base_iface_progress_disable(&self->super.super,
                                     UCT_PROGRESS_SEND |
                                     UCT_PROGRESS_RECV);
+    
+    /* Remove data interrupt used for connection handling. This was set up in
+     * init, but it makes sense to clean it up before disconnecting from segments.
+     * Since removing this data interrupt effectively stops any new connections
+     * from being set up. */
+    SCIRemoveDataInterrupt(self->interrupt, UCT_SCI_NO_FLAGS, &sci_error);
 
-    pthread_mutex_destroy(&self->lock);
-
-
-    /* Clean up DMA related resources */
-    uct_sci_helper_remove_segment(self->dma_segment, self->dma_map);
-    SCIRemoveDMAQueue(self->dma_queue, UCT_SCI_NO_FLAGS, &sci_error);
-    if(sci_error != SCI_ERR_OK) {
-        printf("IFACE CLOSE, Failed to remove dma queue: %s\n", SCIGetErrorString(sci_error));
-    }
-
+    /* Remove connections set up by connection handler uct_sci_conn_handler for
+     * any connections initiated by a remote endpoint */
     for(ssize_t i = 0; i < self->connections; i++) {
         self->sci_cds[i].cd_status = UCT_SCI_CD_RESERVED;
         uct_sci_disconnect_segment(self->sci_cds[i].ctl_segment, self->sci_cds[i].ctl_map);
         self->sci_cds[i].cd_status = UCT_SCI_CD_AVAILABLE;
     }
+    
+    /* ----  Remove other resources set up on init --- */
+
+    /* Clean up DMA related resources */
+    SCIRemoveDMAQueue(self->dma_queue, UCT_SCI_NO_FLAGS, &sci_error);
+    if(sci_error != SCI_ERR_OK) {
+        printf("IFACE CLOSE, Failed to remove dma queue: %s\n", SCIGetErrorString(sci_error));
+    }
+    uct_sci_helper_remove_segment(self->dma_segment, self->dma_map);
+
 
     /* RX  */
     uct_sci_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
@@ -449,6 +475,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
     /* Closing device descriptors used for connections */
     SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_ep, UCT_SCI_NO_FLAGS, &sci_error);
+
+    pthread_mutex_destroy(&self->lock);
 }
 
 
