@@ -36,8 +36,6 @@ static ucs_status_t uct_sci_ep_send_conn_request(
         SCIConnectDataInterrupt(sci_virtual_device, &req_interrupt, node_id, 0, remote_interrupt_no, 0, 0, &sci_error);
     } while (sci_error != SCI_ERR_OK);
 
-    //printf("%d connected to remote interrupt!, ret_int %d\n", getpid(),local_interrupt_no);
-    //printf("size of answer %zd size of struct answer %zd\n", sizeof(answer), sizeof(uct_sci_conn_ans_t));
     request.interrupt  = local_interrupt_no;
     request.node_id    = iface->device_addr;
     request.ctl_offset = iface->eps * sizeof(uct_sci_ctl_t);
@@ -488,6 +486,7 @@ ucs_status_t uct_sci_ep_am_zcopy(
         tx_buf);
     
     packet_buf_offset = ep->packet_size_bytes * (ep->seq % ep->packet_queue_len);
+
     /* Send all the data  */
     SCIStartDmaTransfer(
         iface->dma_queue,
@@ -500,16 +499,18 @@ ucs_status_t uct_sci_ep_am_zcopy(
         NULL,
         UCT_SCI_NO_FLAGS,
         &sci_error);
-    if(sci_error != SCI_ERR_OK) {
+    if (ucs_unlikely(sci_error != SCI_ERR_OK)) {
         ucs_error("SCIStartDmaTransfer failed: %s", SCIGetErrorString(sci_error));
+        return UCS_ERR_IO_ERROR;
+    }
+    
+    SCIWaitForDMAQueue(iface->dma_queue, SCI_INFINITE_TIMEOUT, UCT_SCI_NO_FLAGS, &sci_error);
+    if(ucs_unlikely(sci_error != SCI_ERR_OK)) {
+        ucs_error("SCIWaitForDMAQueue failed: %s", SCIGetErrorString(sci_error));
+        return UCS_ERR_IO_ERROR;
     }
 
-    // SCIWaitForDMAQueue(iface->dma_queue, SCI_INFINITE_TIMEOUT, UCT_SCI_NO_FLAGS, &sci_error);
-    // if(sci_error != SCI_ERR_OK) {
-    //     ucs_error("SCIWaitForDMAQueue failed: %s", SCIGetErrorString(sci_error));
-    // }
-        
-    /* Need to wait for transfer to finish first? */
+    /* Notify other side that a message has been posted */
     packet_am_hdr = (uct_sci_am_hdr_t*)&ep->buf[packet_buf_offset];
     ep->seq++;
     packet_am_hdr->am_message_posted = 1;
