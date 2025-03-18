@@ -15,17 +15,17 @@ typedef struct {
 
 typedef struct {
     uct_base_ep_t           super;
+    unsigned int            remote_seg_id;
     sci_remote_segment_t    remote_segment;
-    sci_map_t               remote_map;
+    sci_map_t               remote_seg_map;
+    uint8_t*                remote_seg_buffer;
     unsigned int            packet_size_bytes;
     unsigned int            packet_queue_len;
-    unsigned int            offset;
-    unsigned int            ctl_offset;
+    unsigned int            ep_conn_offset; /* Should be ep_conn_index * (packet_size_bytes * packet_queue_len) */
+    unsigned int            ep_conn_index;
     unsigned int            remote_node_id;
-    unsigned int            remote_segment_id;
-    uint8_t*                buf;
-    uint32_t                seq;
-    //sci_map_t               ctl_map;
+    uint32_t                ep_conn_seq_num;
+    //sci_map_t               ctl_segment_map;
     //uct_sci_ctl_t*              sci_ctl;              
 } uct_sci_ep_t;
 

@@ -42,7 +42,7 @@ typedef struct {
 } UCS_S_PACKED uct_sci_device_addr_t;
 
 typedef struct {
-    uint32_t     ack;
+    uint32_t     ep_conn_ack;
 } uct_sci_ctl_t;
 
 typedef struct {
@@ -68,31 +68,31 @@ typedef struct {
     conn_desc_status_t      cd_status;
     int                     size;   /* size */
     int                     remote_node;
-    uint32_t                last_ack;
+    uint32_t                ep_conn_last_ack;
     
     /*        rx info          */
-    uint32_t                offset; /* start of our map in the global segment */
+    uint32_t                ep_conn_offset; /* start of our map in the global segment */
     void*                   cd_buf;
     uct_sci_am_hdr_t*       packet;
     
     /*    Control info        */
-    uint32_t                ctl_id;
+    uint32_t                ctl_segment_id;
     sci_remote_segment_t    ctl_segment;
-    sci_map_t               ctl_map;
+    sci_map_t               ctl_segment_map;
     uct_sci_ctl_t*          ctl_buf;
 } uct_sci_conn_desc_t;
 
 typedef struct {
     int     node_id;
     int     interrupt;
-    int     ctl_id;
-    int     ctl_offset;
+    int     ctl_segment_id;
+    int     ep_conn_index;
 } uct_sci_conn_req_t;
 
 typedef struct {
     unsigned int node_id;
     unsigned int segment_id;
-    unsigned int offset;
+    unsigned int ep_conn_offset;
     unsigned int packet_size_bytes;
     unsigned int packet_queue_len;
 } uct_sci_conn_ans_t;
@@ -129,23 +129,22 @@ typedef struct {
     sci_dma_queue_t             dma_queue;
     sci_local_segment_t         dma_segment;
     sci_map_t                   dma_map;
+    void*                       dma_buffer; /* Move up to DMA etc */
     uct_sci_conn_desc_t         sci_cds[UCT_SCI_MAX_EPS];
     sci_local_data_interrupt_t  interrupt; 
     unsigned int                interrupt_no;
-    void*                       tx_buf;
-    void*                       dma_buf;
     uint32_t                    packet_queue_len;
 
     /*      ctl segment, used for control during runtime between processes  */
     sci_desc_t                  vdev_ep; //Vdev used for outgoing eps
     sci_desc_t                  vdev_ctl; //vdev used for control
     pthread_mutex_t             lock;
-    unsigned int                eps;
-    unsigned int                ctl_id;
+    unsigned int                eps_init_cnt;
+    unsigned int                ctl_segment_id;
     unsigned int                connections;
     sci_local_segment_t         ctl_segment;
-    sci_map_t                   ctl_map;
-    void*                       ctls;
+    sci_map_t                   ctl_segment_map;
+    uct_sci_ctl_t*              ctls;
 } uct_sci_iface_t;
 
 ucs_status_t uct_sci_query_tl_devices(uct_md_h md, uct_tl_device_resource_t **tl_devices_p,
@@ -167,14 +166,7 @@ ucs_status_t uct_sci_ep_fence(uct_ep_t *tl_ep, unsigned flags);
 typedef struct uct_sci_md {
     uct_md_t super;
     size_t   num_devices; /* Number of devices to create */
-
-    unsigned int segment_id;
-    size_t segment_size;
-    unsigned int localAdapterNo;
-
     sci_desc_t sci_virtual_device;
-    sci_local_segment_t local_segment;
-    
 } uct_sci_md_t;
 
 
@@ -184,8 +176,6 @@ typedef struct uct_sci_md {
 typedef struct uct_sci_md_config {
     uct_md_config_t super;
     size_t          num_devices; /* Number of devices to create */
-    size_t          segment_size;
-    size_t          segment_id;
 } uct_sci_md_config_t;
 
 

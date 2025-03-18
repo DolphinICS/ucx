@@ -40,7 +40,6 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
     {NULL}
 };
 
-
 /*Forward declaration of the md config table*/
 /*static ucs_config_field_t uct_sci_md_config_table[] = {
     NULL
@@ -128,7 +127,7 @@ static int uct_sci_send_answer_to_request(
 
     answer.node_id    = iface->device_addr;
     answer.segment_id = iface->segment_id;
-    answer.offset     = sci_cd->offset;
+    answer.ep_conn_offset     = sci_cd->ep_conn_offset;
     answer.packet_size_bytes  = iface->packet_size_bytes;
     answer.packet_queue_len = iface->packet_queue_len;
     
@@ -191,13 +190,13 @@ static sci_callback_action_t uct_sci_conn_handler(
     /* Connect to remote endpoint's control buffer */
     ret = uct_sci_connect_segment(
         iface->vdev_ctl,
-        request->ctl_offset,
+        request->ep_conn_index * sizeof(uct_sci_ctl_t),
         sizeof(uct_sci_ctl_t),
         request->node_id,
-        request->ctl_id,
+        request->ctl_segment_id,
         &sci_cd->ctl_segment,
-        &sci_cd->ctl_map,
-        (void **)&sci_cd->ctl_buf);
+        &sci_cd->ctl_segment_map,
+        (volatile void **)&sci_cd->ctl_buf);
     if (ret != 0) {
         ucs_error("Failed to connect to remote control buffer");
         uct_sci_ureserve_control_descriptor(iface, sci_cd_index);
@@ -296,9 +295,9 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     
     /* uct_sci_iface_t *self */
     self->device_addr = nodeID;
-    self->packet_size_bytes   = config->packet_size_bytes;
-    self->eps         = 0;
-    self->max_eps     = MIN(UCT_SCI_MAX_EPS, config->max_eps);
+    self->packet_size_bytes = config->packet_size_bytes;
+    self->eps_init_cnt = 0;
+    self->max_eps = MIN(UCT_SCI_MAX_EPS, config->max_eps);
     self->connections = 0;
     self->packet_queue_len  = config->packet_queue_len;
 
@@ -322,7 +321,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         &self->local_map,
         recv_segment_size,
         &self->segment_id,
-        &self->tx_buf);
+        &self->recv_buffer);
     if (ret != 0) {
         ucs_error("Failed to set up receive segment");
         goto err_free_vdev_ctl;
@@ -333,10 +332,10 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     ret = uct_sci_helper_create_seg_set_avail(
         sci_md->sci_virtual_device,
         &self->ctl_segment,
-        &self->ctl_map,
+        &self->ctl_segment_map,
         control_segment_size,
-        &self->ctl_id,
-        &self->ctls);
+        &self->ctl_segment_id,
+        (void**)&self->ctls);
     if (ret != 0) {
         ucs_error("Failed to set up receive segment");
         goto err_remove_ctl_seg;
@@ -345,10 +344,10 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     for(i = 0; i < self->max_eps; i++) {
         self->sci_cds[i].cd_status = UCT_SCI_CD_AVAILABLE;
         self->sci_cds[i].size = self->packet_size_bytes * self->packet_queue_len;
-        self->sci_cds[i].offset = i * self->packet_size_bytes * self->packet_queue_len; 
-        self->sci_cds[i].cd_buf = (void*) self->tx_buf + self->sci_cds[i].offset;
+        self->sci_cds[i].ep_conn_offset = i * self->packet_size_bytes * self->packet_queue_len; 
+        self->sci_cds[i].cd_buf = (void*) self->recv_buffer + self->sci_cds[i].ep_conn_offset;
         self->sci_cds[i].packet = (uct_sci_am_hdr_t*) self->sci_cds[i].cd_buf;
-        self->sci_cds[i].last_ack = 0;
+        self->sci_cds[i].ep_conn_last_ack = 0;
     }
 
     /* --- Initialize DMA related resources --- */
@@ -358,7 +357,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         &self->dma_map,
         self->packet_size_bytes,
         &dma_seg_id,
-        &self->dma_buf);
+        &self->dma_buffer);
     if (ret != 0) {
         ucs_error("Failed to set up receive segment");
         goto err_remove_recv_seg;
@@ -414,7 +413,7 @@ err_remove_dma_seg:
 err_remove_recv_seg:
     uct_sci_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
 err_remove_ctl_seg:
-    uct_sci_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_map);
+    uct_sci_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
 err_free_vdev_ctl:
     SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);
 err_free_vdev_ep:
@@ -452,7 +451,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
      * any connections initiated by a remote endpoint */
     for(ssize_t i = 0; i < self->connections; i++) {
         self->sci_cds[i].cd_status = UCT_SCI_CD_RESERVED;
-        uct_sci_disconnect_segment(self->sci_cds[i].ctl_segment, self->sci_cds[i].ctl_map);
+        uct_sci_disconnect_segment(self->sci_cds[i].ctl_segment, self->sci_cds[i].ctl_segment_map);
         self->sci_cds[i].cd_status = UCT_SCI_CD_AVAILABLE;
     }
     
@@ -470,7 +469,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
     uct_sci_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
 
     /* CTL */
-    uct_sci_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_map);
+    uct_sci_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
 
     /* Closing device descriptors used for connections */
     SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);
@@ -620,29 +619,22 @@ static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_n
         .detect_memory_type = ucs_empty_function_return_unsupported
     };
 
-    //create sci memory domain struct
+    /* create sci memory domain struct */
     static uct_sci_md_t md;
     sci_error_t errors;
     SCIOpen(&md.sci_virtual_device, 0, &errors);
-
-
-    if (errors != SCI_ERR_OK)
-        {
-            printf("md_open error: %s/n", SCIGetErrorString(errors));
-            return UCS_ERR_NO_RESOURCE;
-        }
+    if (errors != SCI_ERR_OK) {
+        ucs_error("SCIOpen: %s/n", SCIGetErrorString(errors));
+        return UCS_ERR_NO_RESOURCE;
+    }
     
 
     md.super.ops       = &md_ops;
     md.super.component = &uct_sci_component;
-    //md.super.component->name = "sci"
     md.num_devices     = md_config->num_devices;
-    md.segment_id = 11;
     
     *md_p = &md.super;
     md_name = "sci";
-
-    //uct_md_h = sci_md;
 
     DEBUG_PRINT("md opened \n");
     return UCS_OK;
@@ -668,7 +660,6 @@ int uct_sci_iface_is_reachable(const uct_iface_h tl_iface,
 
 ucs_status_t uct_sci_get_device_address(uct_iface_h iface, uct_device_addr_t *addr) {
     uct_sci_iface_t* sci_iface = ucs_derived_of(iface, uct_sci_iface_t);
-    //uct_sci_md_t* md =  ucs_derived_of(sci_iface->super.md, uct_sci_md_t);  UNUSED
     uct_sci_device_addr_t* sci_addr = (uct_sci_device_addr_t *) addr;
     sci_addr->node_id = sci_iface->device_addr;
     DEBUG_PRINT("segment_id %d node_id %d\n", sci_iface->segment_id, sci_iface->device_addr);
@@ -705,17 +696,17 @@ void uct_sci_iface_progress_enable(uct_iface_h iface, unsigned flags) {
  * @param[inout] iface input is 
  *                       - iface->packet_size_bytes
  *                       - iface->packet_queue_len
- *                       - iface->sci_cds[i].last_ack
+ *                       - iface->sci_cds[i].ep_conn_last_ack
  *                     output is
  *                       - iface->sci_cds[i].ctl_buf->status
- *                       - iface->sci_cds[i].ctl_buf->ack
- *                       - iface->sci_cds[i].ctl_buf->last_ack
+ *                       - iface->sci_cds[i].ctl_buf->ep_conn_ack
+ *                       - iface->sci_cds[i].ctl_buf->ep_conn_last_ack
  *                       - packet stored in iface->ci_cds[i].ctl_buf + some offset
  * 
  * @return Number of messages received
  */
 static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
-    uint32_t offset = 0;
+    uint32_t packet_offset = 0;
     ucs_status_t ucs_ret;
     unsigned count = 0;
     uct_sci_am_hdr_t* packet;
@@ -729,8 +720,8 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
             continue;
         }
 
-        offset = iface->packet_size_bytes * ((cd->last_ack + 1) % iface->packet_queue_len);
-        packet = cd->cd_buf + offset; 
+        packet_offset = iface->packet_size_bytes * ((cd->ep_conn_last_ack + 1) % iface->packet_queue_len);
+        packet = cd->cd_buf + packet_offset; 
         
         if (packet->am_message_posted != 1) {
             continue;
@@ -739,7 +730,7 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
         ucs_ret = uct_iface_invoke_am(
             &iface->super,
             packet->am_id,
-            cd->cd_buf + offset + sizeof(uct_sci_am_hdr_t),
+            cd->cd_buf + packet_offset + sizeof(uct_sci_am_hdr_t),
             packet->am_length,
             0);
     
@@ -754,10 +745,12 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
         }
         
         packet->am_message_posted = 0;
-        cd->ctl_buf->ack = cd->last_ack + 1; 
+        /* Increment ack count and send it over to the remote endpoint */
+        /* TODO: Is this always single threaded? Should there be a lock? Atomic add? */
+        cd->ep_conn_last_ack++;
+        cd->ctl_buf->ep_conn_ack = cd->ep_conn_last_ack; 
         SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
-        cd->last_ack++;
         count++;                
     }
 
@@ -835,7 +828,6 @@ static ucs_status_t uct_sci_md_rkey_unpack(uct_component_t *component,
      * Need rkey == 0 due to work with same process to reuse uct_base_[put|get|atomic]*
      */
     DEBUG_PRINT("uct_sci_md_rkey_unpack()");
-    // printf("uct_sci_md_rkey_unpack\n");
     *rkey_p   = 0;
     *handle_p = NULL;
     return UCS_OK;

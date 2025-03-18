@@ -6,9 +6,9 @@
 
 static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
 {   
-    self->buf = NULL;
-    uct_sci_disconnect_segment(self->remote_segment, self->remote_map);
-    DEBUG_PRINT("ep deleted segment_id %d node_id %d\n", self->remote_segment_id, self->remote_node_id);
+    self->remote_seg_buffer = NULL;
+    uct_sci_disconnect_segment(self->remote_segment, self->remote_seg_map);
+    DEBUG_PRINT("ep deleted segment_id %d node_id %d\n", self->remote_seg_id, self->remote_node_id);
 }
 
 
@@ -17,18 +17,15 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
  * @param[in] iface 
  * @param[in] node_id 
  * @param[in] remote_interrupt_no 
- * @param[in] local_interrupt_no 
  * @return 
  */
 static ucs_status_t uct_sci_ep_send_conn_request(
-    uct_sci_iface_t* iface,
+    uct_sci_conn_req_t request,
     unsigned int node_id,
     unsigned int remote_interrupt_no,
-    unsigned int local_interrupt_no,
     sci_desc_t sci_virtual_device)
 {
     sci_error_t sci_error;
-    uct_sci_conn_req_t request;
     sci_remote_data_interrupt_t req_interrupt;
     int rc = UCS_OK;
 
@@ -36,11 +33,7 @@ static ucs_status_t uct_sci_ep_send_conn_request(
         SCIConnectDataInterrupt(sci_virtual_device, &req_interrupt, node_id, 0, remote_interrupt_no, 0, 0, &sci_error);
     } while (sci_error != SCI_ERR_OK);
 
-    request.interrupt  = local_interrupt_no;
-    request.node_id    = iface->device_addr;
-    request.ctl_offset = iface->eps * sizeof(uct_sci_ctl_t);
-    request.ctl_id     = iface->ctl_id;
-
+    request.interrupt  = request.interrupt;
     SCITriggerDataInterrupt(req_interrupt, (void *) &request, sizeof(request), UCT_SCI_NO_FLAGS, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
@@ -59,21 +52,20 @@ static ucs_status_t uct_sci_ep_send_conn_request(
 
 /**
  * @brief 
- * @param[in] iface 
+ * @param[in] request 
  * @param[in] node_id 
  * @param[in] remote_interrupt_no 
  * @param[in] sci_virtual_device 
  * @param[out] answer 
  */
 static ucs_status_t uct_sci_ep_send_recv_conn_request(
-    uct_sci_iface_t* iface,
+    uct_sci_conn_req_t request,
     unsigned int node_id,
     unsigned int remote_interrupt_no,
     sci_desc_t sci_virtual_device,
     uct_sci_conn_ans_t *answer)
 {
     sci_error_t sci_error;
-    unsigned int local_interrupt_no;
     ucs_status_t ucs_ret;
     sci_local_data_interrupt_t ans_interrupt;
     unsigned int ans_size = (unsigned int) sizeof(uct_sci_conn_ans_t);
@@ -87,7 +79,7 @@ static ucs_status_t uct_sci_ep_send_recv_conn_request(
         sci_virtual_device,
         &ans_interrupt,
         UCT_SCI_LOCAL_ADAPTER_NO,
-        &local_interrupt_no,  
+        &request.interrupt,  
         NULL,
         NULL,
         UCT_SCI_NO_FLAGS,
@@ -101,7 +93,7 @@ static ucs_status_t uct_sci_ep_send_recv_conn_request(
      * Send connection request to the server. This will trigger a callback on
      * the other side, and that callback will get back to us and send us an
      * answer to our connection request. */
-    ucs_ret = uct_sci_ep_send_conn_request(iface, node_id, remote_interrupt_no, local_interrupt_no, sci_virtual_device);
+    ucs_ret = uct_sci_ep_send_conn_request(request, node_id, remote_interrupt_no, sci_virtual_device);
     if (ucs_ret != UCS_OK) {
         return ucs_ret;
     }
@@ -125,6 +117,8 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
     uct_sci_device_addr_t* dev_addr = (uct_sci_device_addr_t*) params->dev_addr;
     uct_sci_conn_ans_t answer;
     int ret;
+    unsigned int ep_conn_index;
+    uct_sci_conn_req_t request;
 
     unsigned int remote_interrupt_no;
     unsigned int node_id;
@@ -142,50 +136,58 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
     
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super); //segfaults without this line, probably has something to do with the stats member...
 
-    ucs_ret = uct_sci_ep_send_recv_conn_request(iface, node_id, remote_interrupt_no, md->sci_virtual_device, &answer);
+    ep_conn_index = iface->eps_init_cnt;
+    iface->eps_init_cnt++;
+
+    request.node_id = iface->device_addr;
+    request.ep_conn_index = ep_conn_index;
+    request.ctl_segment_id = iface->ctl_segment_id;
+
+    ucs_ret = uct_sci_ep_send_recv_conn_request(request, node_id, remote_interrupt_no, md->sci_virtual_device, &answer);
     if (ucs_ret != UCS_OK) {
         return ucs_ret;
     }
     
     /* uct_sci_ep_t *self */
-    self->remote_node_id    = answer.node_id;
-    self->remote_segment_id = answer.segment_id;
-    self->offset            = answer.offset;
+    self->remote_node_id = answer.node_id;
+    self->remote_seg_id = answer.segment_id;
+    self->ep_conn_offset  = answer.ep_conn_offset;
     self->packet_size_bytes = answer.packet_size_bytes;
     self->packet_queue_len  = answer.packet_queue_len;
-    self->ctl_offset        = iface->eps * sizeof(uct_sci_ctl_t);
+    /* If multiple processes can run this function simultaneously, then this should be protected with a lock */
+    self->ep_conn_index = ep_conn_index;
     /* quick fix for weird behaviour when queue size was 1...*/
-    self->seq               = self->packet_queue_len > 1 ? 1 : 0;
+    self->ep_conn_seq_num               = self->packet_queue_len > 1 ? 1 : 0;
 
     ret = uct_sci_connect_segment(
         iface->vdev_ep,
-        self->offset,
+        self->ep_conn_offset,
         iface->packet_size_bytes * self->packet_queue_len,
         self->remote_node_id,
-        self->remote_segment_id,
+        self->remote_seg_id,
         &self->remote_segment,
-        &self->remote_map,
-        (void *)&self->buf);
+        &self->remote_seg_map,
+        (volatile void**)&self->remote_seg_buffer);
     if (ret != UCS_OK) {
         ucs_error("Endpoint failed to connect and map to remote sisci segment");
+        iface->eps_init_cnt--;
         return UCS_ERR_NO_RESOURCE;
     }
     
     // do {
     //     DEBUG_PRINT("waiting to connect %d %s\n", sci_error,  SCIGetErrorString(sci_error));
         
-    //     SCIConnectSegment(iface->vdev_ep, &self->remote_segment, self->remote_node_id, self->remote_segment_id, 
+    //     SCIConnectSegment(iface->vdev_ep, &self->remote_segment, self->remote_node_id, self->remote_seg_id, 
     //                 UCT_SCI_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
     // } while (sci_error != SCI_ERR_OK);
 
-    // self->buf = (uint8_t *) SCIMapRemoteSegment(self->remote_segment, &self->remote_map, self->offset, iface->packet_size_bytes * self->packet_queue_len, NULL, 0, &sci_error);
+    // self->buf = (uint8_t *) SCIMapRemoteSegment(self->remote_segment, &self->remote_seg_map, self->ep_conn_offset, iface->packet_size_bytes * self->packet_queue_len, NULL, 0, &sci_error);
     // if (sci_error != SCI_ERR_OK) { 
     //     ucs_error("SCI_MAP_REM_SEG: %s", SCIGetErrorString(sci_error));
     //     return UCS_ERR_NO_RESOURCE;
     // }
 
-    iface->eps += 1;    
-    DEBUG_PRINT("EP connected to segment %d at node %d\n",  self->remote_segment_id, self->remote_node_id);
+    DEBUG_PRINT("EP connected to segment %d at node %d\n",  self->remote_seg_id, self->remote_node_id);
     return UCS_OK;
 }
 
@@ -305,27 +307,26 @@ ucs_status_t uct_sci_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
     uct_sci_ep_t* ep = ucs_derived_of(tl_ep, uct_sci_ep_t);
     uct_sci_am_hdr_t* packet_am_hdr; 
     uct_sci_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_sci_iface_t);
-    uct_sci_ctl_t* ctl = iface->ctls + ep->ctl_offset;
+    uct_sci_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
     uint32_t packet_buf_offset;
     uint32_t send_start_buf_offset;
     
-    if (ep->seq - ctl->ack >= iface->packet_queue_len) {
+    if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
         
-    packet_buf_offset = ep->packet_size_bytes * (ep->seq % ep->packet_queue_len);
-    packet_am_hdr = (uct_sci_am_hdr_t*) &ep->buf[packet_buf_offset];
+    packet_buf_offset = ep->packet_size_bytes * (ep->ep_conn_seq_num % ep->packet_queue_len);
+    packet_am_hdr = (uct_sci_am_hdr_t*) &ep->remote_seg_buffer[packet_buf_offset];
     packet_am_hdr->am_id = id;
     packet_am_hdr->am_length = length + sizeof(header);
 
     send_start_buf_offset = packet_buf_offset + sizeof(uct_sci_am_hdr_t);
 
-    uct_am_short_fill_data(&ep->buf[send_start_buf_offset], header, payload, length, UCS_ARCH_MEMCPY_NT_DEST);
-    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);    
+    uct_am_short_fill_data(&ep->remote_seg_buffer[send_start_buf_offset], header, payload, length, UCS_ARCH_MEMCPY_NT_DEST);
     packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
-    ep->seq++;
-    DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d SEQ:%d\n", ep->remote_segment_id, ep->remote_node_id, id, packet_am_hdr->length, ep->seq);
+    ep->ep_conn_seq_num++;
+    DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d ep_conn_seq_num:%d\n", ep->remote_seg_id, ep->remote_node_id, id, packet_am_hdr->length, ep->ep_conn_seq_num);
     return UCS_OK;
 }
 
@@ -356,32 +357,31 @@ ssize_t uct_sci_ep_am_bcopy(
     uct_sci_ep_t* ep = ucs_derived_of(tl_ep, uct_sci_ep_t);
     uct_sci_am_hdr_t* packet_am_hdr;
     uct_sci_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_sci_iface_t);
-    uct_sci_ctl_t* ctl = iface->ctls + ep->ctl_offset;
+    uct_sci_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
     ssize_t length;
     uint32_t packet_buf_offset;
     uint32_t send_start_buf_offset;
 
-    if(ep->seq - ctl->ack >= iface->packet_queue_len) {
+    if(ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 
-    packet_buf_offset = ep->packet_size_bytes * (ep->seq % ep->packet_queue_len);
-    packet_am_hdr = (uct_sci_am_hdr_t*) &ep->buf[packet_buf_offset];
+    packet_buf_offset = ep->packet_size_bytes * (ep->ep_conn_seq_num % ep->packet_queue_len);
+    packet_am_hdr = (uct_sci_am_hdr_t*) &ep->remote_seg_buffer[packet_buf_offset];
     
     send_start_buf_offset = packet_buf_offset + sizeof(uct_sci_am_hdr_t);
     
     /* This is where the sending of the real data happends */
-    length = pack_cb(&ep->buf[send_start_buf_offset],  arg);
+    length = pack_cb(&ep->remote_seg_buffer[send_start_buf_offset],  arg);
 
     /* Update meta information */
     packet_am_hdr->am_id = id;
     packet_am_hdr->am_length = length;
-    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
-    ep->seq++;
+    ep->ep_conn_seq_num++;
 
-    DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d \n", ep->remote_segment_id, ep->remote_node_id, id, packet_am_hdr->am_length);
+    DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d \n", ep->remote_seg_id, ep->remote_node_id, id, packet_am_hdr->am_length);
 
     return length;
 }
@@ -394,7 +394,7 @@ ssize_t uct_sci_ep_am_bcopy(
  * @param[in] iov 
  * @param[in] iovcnt
  * @param[in] bytes_to_send
- * @param[out] tx_buf 
+ * @param[out] packet_buffer 
  */
 static void uct_sci_fill_buffer_with_packet(
     const void *header,
@@ -404,22 +404,22 @@ static void uct_sci_fill_buffer_with_packet(
     size_t iovcnt,
     size_t iov_total_len,
     size_t bytes_to_send,
-    uint8_t* tx_buf)
+    uint8_t* packet_buffer)
 {
     size_t bytes_copied;
     ucs_iov_iter_t uct_iov_iter;
-    uct_sci_am_hdr_t* tx_packet_am_hdr = (uct_sci_am_hdr_t*) tx_buf;
+    uct_sci_am_hdr_t* packet_am_hdr = (uct_sci_am_hdr_t*) packet_buffer;
 
     /* Convert the iov into a contiguous buffer */
     ucs_iov_iter_init(&uct_iov_iter);
     
     /* Set uct_sci packet prefix values, stored directly into the DMA buffer ready for sending */
-    tx_packet_am_hdr->am_id = id;
-    tx_packet_am_hdr->am_length = iov_total_len + header_length;
+    packet_am_hdr->am_id = id;
+    packet_am_hdr->am_length = iov_total_len + header_length;
     
     /* Copy the uct header to the transfer buffer after prefix. Copied after uct_sci packet prefix*/
     if (header_length != 0) {
-        memcpy(&tx_buf[sizeof(uct_sci_am_hdr_t)], header, header_length);
+        memcpy(&packet_buffer[sizeof(uct_sci_am_hdr_t)], header, header_length);
     }
     
     /* Copy package from iov to the the DMA buffer. The rest of the data, after uct_sci packet prefix, and uct header */
@@ -427,7 +427,7 @@ static void uct_sci_fill_buffer_with_packet(
         iov,
         iovcnt,
         &uct_iov_iter,
-        &tx_buf[sizeof(uct_sci_am_hdr_t) + header_length],
+        &packet_buffer[sizeof(uct_sci_am_hdr_t) + header_length],
         bytes_to_send);
     assert(bytes_copied != iov_total_len);
 }
@@ -458,16 +458,14 @@ ucs_status_t uct_sci_ep_am_zcopy(
     uct_sci_ep_t* ep = ucs_derived_of(uct_ep, uct_sci_ep_t);
     uct_sci_iface_t* iface = ucs_derived_of(uct_ep->iface, uct_sci_iface_t);
     uct_sci_am_hdr_t* packet_am_hdr; 
-    uct_sci_ctl_t* ctl = iface->ctls + ep->ctl_offset;
+    uct_sci_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
     uint32_t packet_buf_offset;
     size_t bytes_to_send;
     sci_error_t sci_error;
 
-    uint8_t* tx_buf = iface->dma_buf;
-
     size_t iov_total_len = uct_iov_total_length(iov, iovcnt);
     
-    if(ep->seq - ctl->ack >= iface->packet_queue_len) {
+    if(ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -483,9 +481,9 @@ ucs_status_t uct_sci_ep_am_zcopy(
         iovcnt,
         iov_total_len,
         bytes_to_send,
-        tx_buf);
+        iface->dma_buffer);
     
-    packet_buf_offset = ep->packet_size_bytes * (ep->seq % ep->packet_queue_len);
+    packet_buf_offset = ep->packet_size_bytes * (ep->ep_conn_seq_num % ep->packet_queue_len);
 
     /* Send all the data  */
     SCIStartDmaTransfer(
@@ -511,12 +509,12 @@ ucs_status_t uct_sci_ep_am_zcopy(
     }
 
     /* Notify other side that a message has been posted */
-    packet_am_hdr = (uct_sci_am_hdr_t*)&ep->buf[packet_buf_offset];
-    ep->seq++;
+    packet_am_hdr = (uct_sci_am_hdr_t*)&ep->remote_seg_buffer[packet_buf_offset];
+    ep->ep_conn_seq_num++;
     packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
-    DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d \n", ep->remote_segment_id, ep->remote_node_id, id, packet_am_hdr->length);
+    DEBUG_PRINT("EP_SEG %d EP_NOD %d AM_ID %d size %d \n", ep->remote_seg_id, ep->remote_node_id, id, packet_am_hdr->length);
 
     return UCS_OK;    
 }

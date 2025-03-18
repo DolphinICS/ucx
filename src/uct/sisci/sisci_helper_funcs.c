@@ -157,7 +157,7 @@ int uct_sci_connect_segment(
     unsigned int segment_id,
     sci_remote_segment_t *segment,
     sci_map_t *segment_map,
-    void **buf)
+    volatile void **buf)
 {
     sci_error_t sci_error;
     do {
@@ -174,7 +174,7 @@ int uct_sci_connect_segment(
     } while (sci_error != SCI_ERR_OK);
 
     /* Todo: maybe not discard volatile property? */
-    *buf = (void *)SCIMapRemoteSegment(
+    *buf = SCIMapRemoteSegment(
         *segment,
         segment_map,
         offset,
@@ -183,6 +183,7 @@ int uct_sci_connect_segment(
         0,
         &sci_error);
     if (sci_error != SCI_ERR_OK) { 
+        SCIDisconnectSegment(*segment, 0, &sci_error);
         ucs_warn("SCIMapRemoteSegment failed: %s", SCIGetErrorString(sci_error));
         return -1;
     }
