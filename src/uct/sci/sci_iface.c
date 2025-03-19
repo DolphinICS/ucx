@@ -5,10 +5,9 @@
 
 #include "stdio.h"
 
-#include "sisci.h"
-#include "sisci_ep.h"
-#include "sisci_iface.h" //TODO, is this needed?
-#include "sisci_helper_funcs.h"
+#include "sci_iface.h"
+#include "sci_ep.h"
+#include "sci_sisci_helper.h"
 
 /* Forward declarations */
 static uct_iface_ops_t uct_sci_iface_ops;

@@ -1,10 +1,10 @@
-#ifndef UCT_SISCI_EP_H
-#define UCT_SISCI_EP_H
+#ifndef UCT_SCI_EP_H
+#define UCT_SCI_EP_H
 
 #include <stdio.h>
 
 #include <uct/base/uct_iface.h>
-#include "sisci.h"
+#include "sci_iface.h"
 
 
 

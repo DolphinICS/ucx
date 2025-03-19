@@ -10,7 +10,7 @@
 DIS_HOME = /opt/DIS
 INCLUDE  = -I$(DIS_HOME)/include -I$(DIS_HOME)/include/dis -I $(DIS_HOME)/src/include
 
-SUBDIRS = . cuda ib rocm sm ugni ze sisci
+SUBDIRS = . cuda ib rocm sm ugni ze sci
 
 lib_LTLIBRARIES    = libuct.la
 libuct_la_CFLAGS   = $(BASE_CFLAGS) $(LT_CFLAGS) $(INCLUDE) -D_REENTRANT
@@ -48,10 +48,9 @@ noinst_HEADERS = \
 	tcp/tcp_sockcm.h \
 	tcp/tcp_listener.h \
 	tcp/tcp_sockcm_ep.h \
-	sisci/sisci.h \
-	sisci/sisci_ep.h \
-	sisci/sisci_iface.h \
-	sisci/sisci_helper_funcs.h
+	sci/sci_iface.h \
+	sci/sci_ep.h \
+	sci/sci_sisci_helper.h
 
 
 libuct_la_SOURCES = \
@@ -84,11 +83,10 @@ libuct_la_SOURCES = \
 	tcp/tcp_sockcm.c \
 	tcp/tcp_listener.c \
 	tcp/tcp_sockcm_ep.c \
-	sisci/sisci.c \
-	sisci/sisci_ep.c \
-	sisci/sisci_iface.c \
-	sisci/sisci_md.c \
-	sisci/sisci_helper_funcs.c
+	sci/sci_iface.c \
+	sci/sci_ep.c \
+	sci/sci_md.c \
+	sci/sci_sisci_helper.c
 
 PKG_CONFIG_NAME=uct
 
