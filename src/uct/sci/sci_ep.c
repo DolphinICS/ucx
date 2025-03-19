@@ -1,8 +1,7 @@
 
 
-#include "sisci_ep.h"
-#include "sisci_iface.h"
-#include "sisci_helper_funcs.h"
+#include "sci_ep.h"
+#include "sci_sisci_helper.h"
 
 static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
 {   

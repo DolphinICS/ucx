@@ -1,14 +1,12 @@
-#ifndef UCT_SISCI_H
-#define UCT_SISCI_H
+#ifndef UCT_SCI_IFACE_H
+#define UCT_SCI_IFACE_H
 
 #include "pthread.h"
-
 
 #include <uct/base/uct_iface.h>
 #include <uct/base/uct_md.h>
 #include <ucs/sys/iovec.h>
 #include <uct/base/uct_iov.inl>
-
 
 #include <sisci_error.h> //TODO
 #include <sisci_api.h>
@@ -21,7 +19,6 @@
 #define UCT_SCI_NO_CALLBACK 0
 #define UCT_SCI_MAX_EPS 28
 
-#define SISCI_STATUS_WRITING_DONE 1
 #define SCI_PACKET_SIZE sizeof(uct_sci_am_hdr_t)
 
 #define DEBUG 0

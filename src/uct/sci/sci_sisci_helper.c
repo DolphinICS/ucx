@@ -1,4 +1,4 @@
-#include "sisci_helper_funcs.h"
+#include "sci_sisci_helper.h"
 
 /* To get ucs print outs */
 #include <ucs/type/status.h>

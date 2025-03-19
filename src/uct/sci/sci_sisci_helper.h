@@ -1,7 +1,7 @@
-#ifndef UCT_SISCI_HELPER_FUNCS_H
-#define UCT_SISCI_HELPER_FUNCS_H
+#ifndef UCT_SCI_SISCI_HELPER_H
+#define UCT_SCI_SISCI_HELPER_H
 
-#include "sisci.h"
+#include "sci_iface.h"
 
 /**
  * @brief Creates, prepares and maps a local sisci segment. Gets sisci to
