@@ -11,8 +11,10 @@ libuct_sci_la_LDFLAGS  = -version-info $(SOVERSION)
 
 noinst_HEADERS = \
 	sci_iface.h \
+	sci_md.h \
 	sci_ep.h 
 
 libuct_sci_la_SOURCES =  \
 	sci_iface.c \
+	sci_md.c \
 	sci_ep.c

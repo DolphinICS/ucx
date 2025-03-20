@@ -50,6 +50,7 @@ noinst_HEADERS = \
 	tcp/tcp_sockcm_ep.h \
 	sci/sci_iface.h \
 	sci/sci_ep.h \
+	sci/sci_md.h \
 	sci/sci_sisci_helper.h
 
 

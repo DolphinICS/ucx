@@ -4,22 +4,16 @@
 #include "pthread.h"
 
 #include <uct/base/uct_iface.h>
-#include <uct/base/uct_md.h>
-#include <ucs/sys/iovec.h>
-#include <uct/base/uct_iov.inl>
 
 #include <sisci_error.h> //TODO
 #include <sisci_api.h>
 
 #define UCT_SCI_NAME "sci"
-#define UCT_SCI_CONFIG_PREFIX "SCI_"
 
 #define UCT_SCI_LOCAL_ADAPTER_NO 0
 #define UCT_SCI_NO_FLAGS 0
 #define UCT_SCI_NO_CALLBACK 0
 #define UCT_SCI_MAX_EPS 28
-
-#define SCI_PACKET_SIZE sizeof(uct_sci_am_hdr_t)
 
 #define DEBUG 0
 
@@ -143,38 +137,6 @@ typedef struct {
     sci_map_t                   ctl_segment_map;
     uct_sci_ctl_t*              ctls;
 } uct_sci_iface_t;
-
-ucs_status_t uct_sci_query_tl_devices(uct_md_h md, uct_tl_device_resource_t **tl_devices_p,
-                             unsigned *num_tl_devices_p);
-
-int uct_sci_iface_is_reachable(const uct_iface_h tl_iface, const uct_device_addr_t *dev_addr,
-                              const uct_iface_addr_t *iface_addr);
-
-ucs_status_t uct_sci_iface_fence(uct_iface_t *tl_iface, unsigned flags);
-
-size_t uct_sci_iface_get_device_addr_len();
-
-ucs_status_t uct_sci_ep_fence(uct_ep_t *tl_ep, unsigned flags);
-
-
-/**
- * @brief self device MD descriptor
- */
-typedef struct uct_sci_md {
-    uct_md_t super;
-    size_t   num_devices; /* Number of devices to create */
-    sci_desc_t sci_virtual_device;
-} uct_sci_md_t;
-
-
-/**
- * @brief self device MD configuration
- */
-typedef struct uct_sci_md_config {
-    uct_md_config_t super;
-    size_t          num_devices; /* Number of devices to create */
-} uct_sci_md_config_t;
-
 
 
 
