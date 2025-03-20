@@ -5,6 +5,7 @@
 
 #include "stdio.h"
 
+#include "sci_md.h"
 #include "sci_iface.h"
 #include "sci_ep.h"
 #include "sci_sisci_helper.h"
@@ -494,7 +495,7 @@ static ucs_status_t uct_sci_query_devices(uct_md_h md,
     return status; 
 }
 
-int uct_sci_iface_is_reachable(const uct_iface_h tl_iface,
+static int uct_sci_iface_is_reachable(const uct_iface_h tl_iface,
                                        const uct_device_addr_t *dev_addr,
                                        const uct_iface_addr_t *iface_addr)
 {
@@ -699,6 +700,8 @@ static uct_iface_ops_t uct_sci_iface_ops = {
 };
 
 extern uct_component_t uct_sci_component;
+
+#define UCT_SCI_CONFIG_PREFIX "SCI_"
 
 /**
  * @brief Construct a new uct tl define object

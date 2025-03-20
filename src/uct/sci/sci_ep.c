@@ -1,7 +1,10 @@
 
 
+#include <uct/base/uct_iov.inl>
+
 #include "sci_ep.h"
 #include "sci_sisci_helper.h"
+#include "sci_md.h"
 
 static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
 {   

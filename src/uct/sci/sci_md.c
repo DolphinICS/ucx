@@ -6,10 +6,17 @@
 #include "stdio.h"
 
 #include "sci_iface.h"
-#include "sci_ep.h"
-#include "sci_sisci_helper.h"
+#include "sci_md.h"
 
 uct_component_t uct_sci_component;
+
+/**
+ * @brief self device MD configuration
+ */
+typedef struct uct_sci_md_config {
+    uct_md_config_t super;
+    size_t          num_devices; /* Number of devices to create */
+} uct_sci_md_config_t;
 
 static void uct_sci_md_close(uct_md_h md) {
     uct_sci_md_t * sci_md = ucs_derived_of(md, uct_sci_md_t);
