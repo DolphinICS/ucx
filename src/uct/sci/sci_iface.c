@@ -11,9 +11,6 @@
 
 /* Forward declarations */
 static uct_iface_ops_t uct_sci_iface_ops;
-static uct_component_t uct_sci_component;
-
-
 
 static ucs_config_field_t uct_sci_iface_config_table[] = {
     {"", "MAX_NUM_EPS=16", NULL,
@@ -38,11 +35,6 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
 
     {NULL}
 };
-
-/*Forward declaration of the md config table*/
-/*static ucs_config_field_t uct_sci_md_config_table[] = {
-    NULL
-};*/
 
 /**
  * @brief Reserve a uct_sci control descriptor from the uct_sci_iface's list
@@ -502,160 +494,18 @@ static ucs_status_t uct_sci_query_devices(uct_md_h md,
     return status; 
 }
 
-
-
-
-static ucs_status_t uct_sci_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
-{
-    /* Dummy memory registration provided. No real memory handling exists */
-    attr->flags               = UCT_MD_FLAG_NEED_RKEY | UCT_MD_FLAG_ALLOC; /* TODO ignore rkey in rma/amo ops */
-    attr->max_alloc           = 0;
-    attr->reg_mem_types       = UCS_BIT(UCS_MEMORY_TYPE_HOST);
-    attr->alloc_mem_types     = UCS_BIT(UCS_MEMORY_TYPE_HOST);
-    attr->access_mem_types    = UCS_BIT(UCS_MEMORY_TYPE_HOST);
-    attr->detect_mem_types    = 0;
-    attr->max_reg             = ULONG_MAX;
-    attr->rkey_packed_size        = 0;
-    attr->reg_cost                = ucs_linear_func_make(0, 0);
-    memset(&attr->local_cpus, 0xff, sizeof(attr->local_cpus));
-    return UCS_OK;
-}
-
-static ucs_status_t uct_sci_mem_reg(uct_md_h md, void *address, size_t length,
-                                     const uct_md_mem_reg_params_t *params, uct_mem_h *memh_p)
-{
-
-    DEBUG_PRINT("Empty func\n");
-
-    /* We have to emulate memory registration. Return dummy pointer */
-    *memh_p = (void *) 0xdeadbeef;
-    return UCS_OK;
-}
-
-static ucs_status_t uct_sci_mem_dereg(uct_md_h uct_md,
-                                       const uct_md_mem_dereg_params_t *params)
-{
-    DEBUG_PRINT("Empty func\n");
-    UCT_MD_MEM_DEREG_CHECK_PARAMS(params, 0);
-
-    ucs_assert(params->memh == (void*)0xdeadbeef);
-
-    return UCS_OK;
-}
-
-
-static void uct_sci_md_close(uct_md_h md) {
-    //TODO: Maybe free up all segments or something lmao
-    
-    uct_sci_md_t * sci_md = ucs_derived_of(md, uct_sci_md_t);
-    sci_error_t sci_error;
-    DEBUG_PRINT("md closed\n");
-
-    SCIClose(sci_md->sci_virtual_device, 0 , &sci_error);
-
-    if (sci_error != SCI_ERR_OK)
-        {
-            /*NOTE*/
-            printf("Error closing Virtual_Device error: %s \n", SCIGetErrorString(sci_error));
-        }
-}
-
-typedef struct uct_sci_alloc_handle {
-    void *ptr;
-    size_t length;
-} uct_sci_alloc_handle_t;
-
-static ucs_status_t
-uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
-                        ucs_memory_type_t mem_type, unsigned flags,
-                        const char *alloc_name, uct_mem_h *memh_p)
-{
-    uct_sci_alloc_handle_t *alloc_handle;
-
-    alloc_handle = ucs_malloc(sizeof(*alloc_handle),
-                              "uct_sci_mem_alloc");
-    if (NULL == alloc_handle) {
-        printf("failed to allocate memory for uct_sci_mem_alloc\n");
-        return UCS_ERR_NO_MEMORY;
-    }
-
-    alloc_handle->ptr = malloc(*length_p);
-    if (alloc_handle->ptr == NULL) {
-        printf("uct_sci_mem_alloc, malloc failed\n");
-        ucs_free(alloc_handle);
-        return UCS_ERR_NO_MEMORY;
-    }
-
-    alloc_handle->length = *length_p;
-
-    *memh_p    = alloc_handle;
-    *address_p = (void*)alloc_handle->ptr;
-    return UCS_OK;
-}
-
-static ucs_status_t uct_sci_mem_free(uct_md_h md, uct_mem_h memh)
-{
-    uct_sci_alloc_handle_t *alloc_handle = (uct_sci_alloc_handle_t*) memh;
-    free(alloc_handle->ptr);
-    ucs_free(alloc_handle);
-    return UCS_OK;
-}
-
-static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_name,
-                                     const uct_md_config_t *config, uct_md_h *md_p)
-{
-    /* NOTE   */
-    uct_sci_md_config_t *md_config = ucs_derived_of(config, uct_sci_md_config_t);
-
-    static uct_md_ops_t md_ops = {
-        .close              = uct_sci_md_close, 
-        .query              = uct_sci_md_query,
-        .mem_alloc          = uct_sci_mem_alloc,
-        .mem_free           = uct_sci_mem_free,
-        .mkey_pack          = ucs_empty_function_return_success,
-        .mem_reg            = uct_sci_mem_reg,
-        .mem_dereg          = uct_sci_mem_dereg,
-        .detect_memory_type = ucs_empty_function_return_unsupported
-    };
-
-    /* create sci memory domain struct */
-    static uct_sci_md_t md;
-    sci_error_t errors;
-    SCIOpen(&md.sci_virtual_device, 0, &errors);
-    if (errors != SCI_ERR_OK) {
-        ucs_error("SCIOpen: %s/n", SCIGetErrorString(errors));
-        return UCS_ERR_NO_RESOURCE;
-    }
-    
-
-    md.super.ops       = &md_ops;
-    md.super.component = &uct_sci_component;
-    md.num_devices     = md_config->num_devices;
-    
-    *md_p = &md.super;
-    md_name = "sci";
-
-    DEBUG_PRINT("md opened \n");
-    return UCS_OK;
-}
-
 int uct_sci_iface_is_reachable(const uct_iface_h tl_iface,
                                        const uct_device_addr_t *dev_addr,
                                        const uct_iface_addr_t *iface_addr)
 {
-   /*NOTE We have no good way to actually check if given address is reachable, so we just return 1*/
-    
     #if DEBUG > 0
         uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
         uct_sci_device_addr_t* sci_dev_addr = (uct_sci_device_addr_t *) dev_addr;
         uct_sci_iface_addr_t*  sci_iface_addr = (uct_sci_iface_addr_t*) iface_addr;
         DEBUG_PRINT("FROM if_addr: %d dev_addr: %d  TO: iface_addr: %d dev_addr: %d \n",iface->interrupt_no, iface->device_addr,  sci_iface_addr->interrupt_no, sci_dev_addr->node_id);
     #endif
-
     return 1;
 }
-
-
 
 ucs_status_t uct_sci_get_device_address(uct_iface_h iface, uct_device_addr_t *addr) {
     uct_sci_iface_t* sci_iface = ucs_derived_of(iface, uct_sci_iface_t);
@@ -788,11 +638,7 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
                         UCT_IFACE_FLAG_CB_SYNC          |
                         UCT_IFACE_FLAG_AM_BCOPY         |
                         UCT_IFACE_FLAG_AM_ZCOPY;
-    attr->cap.event_flags  = 0;//UCT_IFACE_FLAG_EVENT_SEND_COMP |
-                             //UCT_IFACE_FLAG_EVENT_RECV      |
-                             //UCT_IFACE_FLAG_EVENT_ASYNC_CB ;
-                             //UCT_IFACE_FLAG_EVENT_RECV_SIG;
-
+    attr->cap.event_flags  = 0;
     attr->device_addr_len  = sizeof(uct_sci_device_addr_t);
     attr->ep_addr_len      = sizeof(uct_sci_ep_addr_t);
     attr->iface_addr_len   = sizeof(uct_sci_iface_addr_t);
@@ -817,50 +663,8 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
     return UCS_OK;
 }
 
-
-static ucs_status_t uct_sci_md_rkey_unpack(uct_component_t *component,
-                                            const void *rkey_buffer, uct_rkey_t *rkey_p,
-                                            void **handle_p)
-{
-    /**
-     * Pseudo stub function for the key unpacking
-     * Need rkey == 0 due to work with same process to reuse uct_base_[put|get|atomic]*
-     */
-    DEBUG_PRINT("uct_sci_md_rkey_unpack()");
-    *rkey_p   = 0;
-    *handle_p = NULL;
-    return UCS_OK;
-}
-
-/*
-    TODO: Figure out what to change the commented lines to : )
-*/
-static uct_component_t uct_sci_component = {
-    .query_md_resources = uct_md_query_single_md_resource, 
-    .md_open            = uct_sci_md_open,
-    .cm_open            = ucs_empty_function_return_unsupported, //UCS_CLASS_NEW_FUNC_NAME(uct_tcp_sockcm_t), //change me
-    .rkey_unpack        = uct_sci_md_rkey_unpack, //change me
-    .rkey_ptr           = ucs_empty_function_return_unsupported, //change me 
-    .rkey_release       = ucs_empty_function_return_success, //change me
-    .name               = UCT_SCI_NAME, //change me
-    .md_config          = UCT_MD_DEFAULT_CONFIG_INITIALIZER,
-    /*.md_config          = {
-        .name           = "Self memory domain",
-        .prefix         = "sci_",
-        .table          = uct_sci_md_config_table,
-        .size           = sizeof(uct_sci_md_config_t),
-    },*/
-    .tl_list            = UCT_COMPONENT_TL_LIST_INITIALIZER(&uct_sci_component),
-    .flags              = 0, //UCT_COMPONENT_FLAG_CM,
-    .md_vfs_init        = (uct_component_md_vfs_init_func_t)ucs_empty_function
-};
-UCT_COMPONENT_REGISTER(&uct_sci_component)
-
-
 //the functions of the functionality that we support.
 static uct_iface_ops_t uct_sci_iface_ops = {
-     
-
     .ep_put_short             = uct_sci_ep_put_short,     // not implemented yet
     .ep_put_bcopy             = uct_sci_ep_put_bcopy,     // not implemented yet
     .ep_get_bcopy             = uct_sci_ep_get_bcopy,     // not implemented yet
@@ -874,15 +678,15 @@ static uct_iface_ops_t uct_sci_iface_ops = {
     .ep_atomic_cswap32        = uct_sci_ep_atomic_cswap32,// not implemented yet
     .ep_atomic32_post         = uct_sci_ep_atomic32_post, // not implemented yet
     .ep_atomic32_fetch        = uct_sci_ep_atomic32_fetch,// not implemented yet
-    .ep_flush                 = uct_base_ep_flush,        // maybe TODO, trenger vi å endre dette
-    .ep_fence                 = uct_base_ep_fence,        // covered av uct base
+    .ep_flush                 = uct_base_ep_flush,        // May need to change
+    .ep_fence                 = uct_base_ep_fence,        // covered by uct base
     .ep_check                 = ucs_empty_function_return_success,        //covered 
     .ep_pending_add           = ucs_empty_function_return_busy,           //covered
     .ep_pending_purge         = ucs_empty_function,                       //covered
     .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_sci_ep_t),    // implemented
     .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_sci_ep_t), // implemented
-    .iface_flush              = uct_base_iface_flush,                     //covered av uct base
-    .iface_fence              = uct_base_iface_fence,                     // covered av uct base
+    .iface_flush              = uct_base_iface_flush,                     //covered by uct base
+    .iface_fence              = uct_base_iface_fence,                     // covered by uct base
     .iface_progress_enable    = uct_sci_iface_progress_enable,            // covered
     .iface_progress_disable   = uct_base_iface_progress_disable,          // covered
     .iface_progress           = uct_sci_iface_progress,                   // implemented
@@ -894,6 +698,7 @@ static uct_iface_ops_t uct_sci_iface_ops = {
     .iface_is_reachable       = uct_sci_iface_is_reachable                   // implemented
 };
 
+extern uct_component_t uct_sci_component;
 
 /**
  * @brief Construct a new uct tl define object
@@ -906,14 +711,14 @@ static uct_iface_ops_t uct_sci_iface_ops = {
  *  type of config table
  */
 UCT_TL_DEFINE(&uct_sci_component, sci, uct_sci_query_devices, uct_sci_iface_t,
-              UCT_SCI_CONFIG_PREFIX, uct_sci_iface_config_table, uct_sci_iface_config_t);
+    UCT_SCI_CONFIG_PREFIX, uct_sci_iface_config_table, uct_sci_iface_config_t);
+
 
 UCS_STATIC_INIT
 {
     sci_error_t sci_error;
     SCIInitialize(0,&sci_error);
-    if (sci_error != SCI_ERR_OK)
-    {
+    if (sci_error != SCI_ERR_OK) {
         ucs_error("SCIInitialize error: %s", SCIGetErrorString(sci_error));
     }
 }
