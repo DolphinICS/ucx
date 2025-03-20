@@ -9,27 +9,7 @@
 #include "sci_ep.h"
 #include "sci_sisci_helper.h"
 
-ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_name,
-    const uct_md_config_t *config, uct_md_h *md_p);
-
-ucs_status_t uct_sci_md_rkey_unpack(uct_component_t *component,
-    const void *rkey_buffer, uct_rkey_t *rkey_p,
-    void **handle_p);
-
-uct_component_t uct_sci_component = {
-    .query_md_resources = uct_md_query_single_md_resource, 
-    .md_open            = uct_sci_md_open,
-    .cm_open            = ucs_empty_function_return_unsupported, //UCS_CLASS_NEW_FUNC_NAME(uct_tcp_sockcm_t), //change me
-    .rkey_unpack        = uct_sci_md_rkey_unpack, //change me
-    .rkey_ptr           = ucs_empty_function_return_unsupported, //change me 
-    .rkey_release       = ucs_empty_function_return_success, //change me
-    .name               = UCT_SCI_NAME, //change me
-    .md_config          = UCT_MD_DEFAULT_CONFIG_INITIALIZER,
-    .tl_list            = UCT_COMPONENT_TL_LIST_INITIALIZER(&uct_sci_component),
-    .flags              = 0,
-    .md_vfs_init        = (uct_component_md_vfs_init_func_t)ucs_empty_function
-};
-UCT_COMPONENT_REGISTER(&uct_sci_component)
+uct_component_t uct_sci_component;
 
 static void uct_sci_md_close(uct_md_h md) {
     uct_sci_md_t * sci_md = ucs_derived_of(md, uct_sci_md_t);
@@ -121,7 +101,21 @@ static ucs_status_t uct_sci_mem_dereg(uct_md_h uct_md,
     return UCS_OK;
 }
 
-ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_name,
+static ucs_status_t uct_sci_md_rkey_unpack(uct_component_t *component,
+    const void *rkey_buffer, uct_rkey_t *rkey_p,
+    void **handle_p)
+{
+    /**
+    * Pseudo stub function for the key unpacking
+    * Need rkey == 0 due to work with same process to reuse uct_base_[put|get|atomic]*
+    */
+    DEBUG_PRINT("uct_sci_md_rkey_unpack()");
+    *rkey_p   = 0;
+    *handle_p = NULL;
+    return UCS_OK;
+}
+
+static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_name,
                                      const uct_md_config_t *config, uct_md_h *md_p)
 {
     uct_sci_md_config_t *md_config = ucs_derived_of(config, uct_sci_md_config_t);
@@ -146,7 +140,6 @@ ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_name,
         return UCS_ERR_NO_RESOURCE;
     }
     
-
     md.super.ops       = &md_ops;
     md.super.component = &uct_sci_component;
     md.num_devices     = md_config->num_devices;
@@ -158,16 +151,17 @@ ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_name,
     return UCS_OK;
 }
 
-ucs_status_t uct_sci_md_rkey_unpack(uct_component_t *component,
-                                            const void *rkey_buffer, uct_rkey_t *rkey_p,
-                                            void **handle_p)
-{
-    /**
-     * Pseudo stub function for the key unpacking
-     * Need rkey == 0 due to work with same process to reuse uct_base_[put|get|atomic]*
-     */
-    DEBUG_PRINT("uct_sci_md_rkey_unpack()");
-    *rkey_p   = 0;
-    *handle_p = NULL;
-    return UCS_OK;
-}
+uct_component_t uct_sci_component = {
+    .query_md_resources = uct_md_query_single_md_resource, 
+    .md_open            = uct_sci_md_open,
+    .cm_open            = ucs_empty_function_return_unsupported, //UCS_CLASS_NEW_FUNC_NAME(uct_tcp_sockcm_t), //change me
+    .rkey_unpack        = uct_sci_md_rkey_unpack, //change me
+    .rkey_ptr           = ucs_empty_function_return_unsupported, //change me 
+    .rkey_release       = ucs_empty_function_return_success, //change me
+    .name               = UCT_SCI_NAME, //change me
+    .md_config          = UCT_MD_DEFAULT_CONFIG_INITIALIZER,
+    .tl_list            = UCT_COMPONENT_TL_LIST_INITIALIZER(&uct_sci_component),
+    .flags              = 0,
+    .md_vfs_init        = (uct_component_md_vfs_init_func_t)ucs_empty_function
+};
+UCT_COMPONENT_REGISTER(&uct_sci_component)
