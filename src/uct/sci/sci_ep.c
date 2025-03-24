@@ -152,18 +152,17 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
     uct_sci_conn_req_t request;
 
     unsigned int remote_interrupt_no;
-    unsigned int node_id;
     uct_sci_iface_t* iface = ucs_derived_of(params->iface, uct_sci_iface_t);
     uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t);
 
     UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS(params);
 
     remote_interrupt_no = (unsigned int) iface_addr->interrupt_no;
-    node_id = (unsigned int) dev_addr->node_id;
+    self->remote_node_id = (unsigned int) dev_addr->node_id;
 
     ucs_debug("EP created remote_interrupt_no %d node_id %d\n",
         remote_interrupt_no,
-        node_id);
+        self->remote_node_id);
 
     self->super.super.iface = params->iface;
     
@@ -174,13 +173,13 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
     ep_conn_index = iface->eps_init_cnt;
     iface->eps_init_cnt++;
 
-    request.node_id = iface->device_addr;
+    request.node_id = iface->device_addr; /* send local node ID */
     request.ep_conn_index = ep_conn_index;
     request.ctl_segment_id = iface->ctl_segment_id;
 
     ucs_ret = uct_sci_ep_send_recv_conn_request(
         request,
-        node_id,
+        self->remote_node_id,
         remote_interrupt_no,
         md->sci_virtual_device,
         &answer);
@@ -189,7 +188,6 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
     }
     
     /* uct_sci_ep_t *self */
-    self->remote_node_id = answer.node_id;
     self->remote_seg_id = answer.segment_id;
     self->ep_conn_offset  = answer.ep_conn_offset;
     self->packet_size_bytes = answer.packet_size_bytes;

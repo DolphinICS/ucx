@@ -82,7 +82,6 @@ typedef struct {
 } uct_sci_conn_req_t;
 
 typedef struct {
-    unsigned int node_id;
     unsigned int segment_id;
     unsigned int ep_conn_offset;
     unsigned int packet_size_bytes;
