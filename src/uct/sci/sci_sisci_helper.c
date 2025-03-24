@@ -39,7 +39,11 @@ int uct_sci_helper_create_segment(
         return -1;
     }
 
-    SCIPrepareSegment(*segment, UCT_SCI_LOCAL_ADAPTER_NO, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIPrepareSegment(
+        *segment,
+        UCT_SCI_LOCAL_ADAPTER_NO,
+        UCT_SCI_NO_FLAGS,
+        &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         ucs_error("SCIPrepareSegment failed: %s", SCIGetErrorString(sci_error));
         SCIRemoveSegment(*segment, UCT_SCI_NO_FLAGS , &sci_error);
@@ -55,7 +59,8 @@ int uct_sci_helper_create_segment(
         UCT_SCI_NO_FLAGS,
         &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        ucs_error("SCIMapLocalSegment failed: %s", SCIGetErrorString(sci_error));
+        ucs_error("SCIMapLocalSegment failed: %s",
+            SCIGetErrorString(sci_error));
         SCIRemoveSegment(*segment, UCT_SCI_NO_FLAGS , &sci_error);
         return -1;
     }
@@ -68,7 +73,8 @@ int uct_sci_helper_create_segment(
 /**
  * @brief Undos setup by uct_sci_helper_create_segment.
  * 
- * @details Unmaps and removes local segment set up by uct_sci_helper_create_segment.
+ * @details Unmaps and removes local segment set up by
+ *          uct_sci_helper_create_segment.
  * 
  * @param[in] segment 
  * @param[in] segment_map 
@@ -113,11 +119,18 @@ int uct_sci_helper_create_seg_set_avail(
     sci_error_t sci_error;
     int ret;
     
-    ret = uct_sci_helper_create_segment(sd, segment, segment_map, segment_size, segment_id, buf);
+    ret = uct_sci_helper_create_segment(
+        sd,
+        segment,
+        segment_map,
+        segment_size,
+        segment_id,
+        buf);
     if (ret == 0) {
         SCISetSegmentAvailable(*segment, 0, 0, &sci_error);
         if (sci_error != SCI_ERR_OK) { 
-            ucs_error("SCISetSegmentAvailable failed: %s", SCIGetErrorString(sci_error));
+            ucs_error("SCISetSegmentAvailable failed: %s",
+                SCIGetErrorString(sci_error));
             uct_sci_helper_remove_segment(*segment, *segment_map);
             return -1;
         }
@@ -131,7 +144,8 @@ int uct_sci_helper_create_seg_set_avail(
  *        set up by uct_sci_helper_create_segment.
  *        (Undos setup by uct_sci_helper_create_segment)
  *
- * @details Unmaps, removes local segment set up by uct_sci_helper_create_segment.
+ * @details Unmaps, removes local segment set up by
+ *          uct_sci_helper_create_segment.
  *          (after first setting it to unavailable)
  * 
  * @param[in] segment 
@@ -144,7 +158,8 @@ void uct_sci_helper_remove_seg_set_unavail(
     sci_error_t sci_error;
     SCISetSegmentUnavailable(segment, 0, UCT_SCI_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_warn("SCISetSegmentUnavailable failed: %s", SCIGetErrorString(sci_error));
+        ucs_warn("SCISetSegmentUnavailable failed: %s",
+            SCIGetErrorString(sci_error));
     }
     uct_sci_helper_remove_segment(segment, segment_map);
 }
@@ -184,7 +199,8 @@ int uct_sci_connect_segment(
         &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         SCIDisconnectSegment(*segment, 0, &sci_error);
-        ucs_warn("SCIMapRemoteSegment failed: %s", SCIGetErrorString(sci_error));
+        ucs_warn("SCIMapRemoteSegment failed: %s",
+            SCIGetErrorString(sci_error));
         return -1;
     }
 
@@ -203,7 +219,8 @@ void uct_sci_disconnect_segment(
     
     SCIDisconnectSegment(segment, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        ucs_warn("SCIDisconnectSegment failed: %s", SCIGetErrorString(sci_error));
+        ucs_warn("SCIDisconnectSegment failed: %s",
+            SCIGetErrorString(sci_error));
     }
 
 }

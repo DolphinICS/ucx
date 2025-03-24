@@ -20,7 +20,8 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
 
     {"SEND_SIZE", "16k",
      "Size of copy-out buffer",
-     ucs_offsetof(uct_sci_iface_config_t, packet_size_bytes), UCS_CONFIG_TYPE_MEMUNITS},
+     ucs_offsetof(uct_sci_iface_config_t, packet_size_bytes),
+        UCS_CONFIG_TYPE_MEMUNITS},
 
     {
         "MAX_EPS", "24", "Max EPs for SCI tl",
@@ -46,7 +47,9 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
  * 
  * @return 
  */
-static int uct_sci_reserve_control_descriptor(uct_sci_iface_t* iface, unsigned int *cd_index)
+static int uct_sci_reserve_control_descriptor(
+    uct_sci_iface_t* iface,
+    unsigned int *cd_index)
 {
     unsigned int i;
     int rc = 0;
@@ -84,7 +87,9 @@ static int uct_sci_reserve_control_descriptor(uct_sci_iface_t* iface, unsigned i
  * @param[inout] iface 
  * @param[in] cd_index 
  */
-static void uct_sci_ureserve_control_descriptor(uct_sci_iface_t* iface, unsigned int cd_index)
+static void uct_sci_ureserve_control_descriptor(
+    uct_sci_iface_t* iface,
+    unsigned int cd_index)
 {
     pthread_mutex_lock(&iface->lock);
 
@@ -114,7 +119,15 @@ static int uct_sci_send_answer_to_request(
     sci_error_t sci_error;
 
     do {
-        SCIConnectDataInterrupt(sci_virtual_device, &ans_interrupt, request->node_id, 0, request->interrupt, 1000, 0, &sci_error);
+        SCIConnectDataInterrupt(
+            sci_virtual_device,
+            &ans_interrupt,
+            request->node_id,
+            0,
+            request->interrupt,
+            1000,
+            0,
+            &sci_error);
     } while (sci_error != SCI_ERR_OK);
 
     answer.node_id    = iface->device_addr;
@@ -123,7 +136,12 @@ static int uct_sci_send_answer_to_request(
     answer.packet_size_bytes  = iface->packet_size_bytes;
     answer.packet_queue_len = iface->packet_queue_len;
     
-    SCITriggerDataInterrupt(ans_interrupt, (void *) &answer, sizeof(answer), UCT_SCI_NO_FLAGS, &sci_error);
+    SCITriggerDataInterrupt(
+        ans_interrupt,
+        (void *) &answer,
+        sizeof(answer),
+        UCT_SCI_NO_FLAGS,
+        &sci_error);
     if(sci_error != SCI_ERR_OK) {
         ucs_warn("SCI Trigger Interrupt: %s", SCIGetErrorString(sci_error));
     }
@@ -135,9 +153,12 @@ static int uct_sci_send_answer_to_request(
 }
 
 /**
- * @brief This function handles incoming connection requests and assigns a sci file descriptor to that connection.
- * Then it replies with information back to the connecting request to enable the incoming conneciton to connect and offset correctly
- * into the iface's recv buffer. The iface also connects to the connectors control block, so we can signal it when we are ready to recv data.
+ * @brief This function handles incoming connection requests and assigns a
+ * sci file descriptor to that connection. Then it replies with information
+ * back to the connecting request to enable the incoming conneciton to connect
+ * and offset correctly into the iface's recv buffer. The iface also connects
+ * to the connectors control block, so we can signal it when we are ready to
+ * recv data.
  * 
  * @param[in] arg iface 
  * @param[in] interrupt which interrupt was triggered
@@ -200,14 +221,16 @@ static sci_callback_action_t uct_sci_conn_handler(
 }
 
 static int
-uct_sisci_ipc_iface_is_reachable_v2(const uct_iface_h tl_iface,
-                                   const uct_iface_is_reachable_params_t *params)
+uct_sisci_ipc_iface_is_reachable_v2(
+    const uct_iface_h tl_iface,
+    const uct_iface_is_reachable_params_t *params)
 {
     return 0;
 }
 
-int uct_cuda_ipc_ep_is_connected(const uct_ep_h tl_ep,
-                                 const uct_ep_is_connected_params_t *params)
+int uct_cuda_ipc_ep_is_connected(
+    const uct_ep_h tl_ep,
+    const uct_ep_is_connected_params_t *params)
 {
     return 1;
 }
@@ -230,9 +253,12 @@ static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
  * @param params 
  * @param tl_config 
  */
-static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
-                           const uct_iface_params_t *params,
-                           const uct_iface_config_t *tl_config)
+static UCS_CLASS_INIT_FUNC(
+    uct_sci_iface_t,
+    uct_md_h md,
+    uct_worker_h worker,
+    const uct_iface_params_t *params,
+    const uct_iface_config_t *tl_config)
 {
     unsigned int nodeID;
     unsigned int adapterID = 0;
@@ -245,6 +271,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
     uct_sci_iface_config_t* config = ucs_derived_of(tl_config, uct_sci_iface_config_t); 
     uct_sci_md_t * sci_md = ucs_derived_of(md, uct_sci_md_t);
 
+    size_t packet_queue_size_bytes;
     size_t recv_segment_size;
     size_t control_segment_size;
 
@@ -278,13 +305,11 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     //---------- IFACE sci --------------------------
     SCIGetLocalNodeId(adapterID, &nodeID, flags, &sci_error);
-
     if (sci_error != SCI_ERR_OK) { 
-        printf("SCI_IFACE_INIT: %s\n", SCIGetErrorString(sci_error));
-    } 
+        ucs_error("SCI_IFACE_INIT: %s", SCIGetErrorString(sci_error));
+        goto err_destroy_mutex;
+    }
 
-    DEBUG_PRINT("CONFIG\n\tSEND_SIZE: %zd \n\tMAX_EPS: %u\n", config->packet_size_bytes, config->max_eps);
-    
     /* uct_sci_iface_t *self */
     self->device_addr = nodeID;
     self->packet_size_bytes = config->packet_size_bytes;
@@ -295,25 +320,27 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     SCIOpen(&self->vdev_ep, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        ucs_error("SCIOpen: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCIOpen: %s", SCIGetErrorString(sci_error));
         goto err_destroy_mutex;
     }
 
     SCIOpen(&self->vdev_ctl, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        ucs_error("SCIOpen: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCIOpen: %s", SCIGetErrorString(sci_error));
         goto err_free_vdev_ep;
     }     
 
+    packet_queue_size_bytes = self->packet_size_bytes * self->packet_queue_len;
+
     /*  recv segment    */
-    recv_segment_size = self->packet_size_bytes * self->max_eps * self->packet_queue_len;
+    recv_segment_size = self->max_eps * packet_queue_size_bytes;
     ret = uct_sci_helper_create_seg_set_avail(
         sci_md->sci_virtual_device,
         &self->local_segment,
         &self->local_map,
         recv_segment_size,
         &self->segment_id,
-        &self->recv_buffer);
+        (void**)&self->recv_buffer);
     if (ret != 0) {
         ucs_error("Failed to set up receive segment");
         goto err_free_vdev_ctl;
@@ -335,10 +362,11 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
 
     for(i = 0; i < self->max_eps; i++) {
         self->sci_cds[i].cd_status = UCT_SCI_CD_AVAILABLE;
-        self->sci_cds[i].size = self->packet_size_bytes * self->packet_queue_len;
-        self->sci_cds[i].ep_conn_offset = i * self->packet_size_bytes * self->packet_queue_len; 
-        self->sci_cds[i].cd_buf = (void*) self->recv_buffer + self->sci_cds[i].ep_conn_offset;
-        self->sci_cds[i].packet = (uct_sci_am_hdr_t*) self->sci_cds[i].cd_buf;
+        self->sci_cds[i].ep_conn_offset = i * packet_queue_size_bytes; 
+        
+        self->sci_cds[i].packet_queue_buf =
+            &self->recv_buffer[self->sci_cds[i].ep_conn_offset];
+
         self->sci_cds[i].ep_conn_last_ack = 0;
     }
 
@@ -392,7 +420,11 @@ static UCS_CLASS_INIT_FUNC(uct_sci_iface_t, uct_md_h md, uct_worker_h worker,
         return status;
     }*/
 
-    DEBUG_PRINT("iface_addr: %d dev_addr: %d segment_size %zd\n", self->interrupt_no, self->device_addr, self->packet_size_bytes);
+    ucs_debug("iface_addr: %d dev_addr: %d segment_size %zd\n",
+        self->interrupt_no,
+        self->device_addr,
+        self->packet_size_bytes);
+
     return UCS_OK;
 
 err_remove_dma_queue:
@@ -426,24 +458,24 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
 {
     sci_error_t sci_error;
     
-    DEBUG_PRINT("closed iface\n");
-
     /* Cleanup for uct_sci_iface_progress_enable */
     uct_base_iface_progress_disable(&self->super.super,
                                     UCT_PROGRESS_SEND |
                                     UCT_PROGRESS_RECV);
     
     /* Remove data interrupt used for connection handling. This was set up in
-     * init, but it makes sense to clean it up before disconnecting from segments.
-     * Since removing this data interrupt effectively stops any new connections
-     * from being set up. */
+     * init, but it makes sense to clean it up before disconnecting from
+     * segments. Since removing this data interrupt effectively stops any new
+     * connections from being set up. */
     SCIRemoveDataInterrupt(self->interrupt, UCT_SCI_NO_FLAGS, &sci_error);
 
     /* Remove connections set up by connection handler uct_sci_conn_handler for
      * any connections initiated by a remote endpoint */
     for(ssize_t i = 0; i < self->connections; i++) {
         self->sci_cds[i].cd_status = UCT_SCI_CD_RESERVED;
-        uct_sci_disconnect_segment(self->sci_cds[i].ctl_segment, self->sci_cds[i].ctl_segment_map);
+        uct_sci_disconnect_segment(
+            self->sci_cds[i].ctl_segment,
+            self->sci_cds[i].ctl_segment_map);
         self->sci_cds[i].cd_status = UCT_SCI_CD_AVAILABLE;
     }
     
@@ -452,16 +484,20 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
     /* Clean up DMA related resources */
     SCIRemoveDMAQueue(self->dma_queue, UCT_SCI_NO_FLAGS, &sci_error);
     if(sci_error != SCI_ERR_OK) {
-        printf("IFACE CLOSE, Failed to remove dma queue: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCIRemoveDMAQueue: %s", SCIGetErrorString(sci_error));
     }
     uct_sci_helper_remove_segment(self->dma_segment, self->dma_map);
 
 
-    /* RX  */
-    uct_sci_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
+    /* Remove data segment where iface receives packages from endpoint */
+    uct_sci_helper_remove_seg_set_unavail(
+        self->local_segment,
+        self->local_map);
 
-    /* CTL */
-    uct_sci_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
+    /* Remove control segment where iface sends acknowledgements */
+    uct_sci_helper_remove_seg_set_unavail(
+        self->ctl_segment,
+        self->ctl_segment_map);
 
     /* Closing device descriptors used for connections */
     SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);
@@ -476,43 +512,50 @@ UCS_CLASS_DEFINE(uct_sci_iface_t, uct_base_iface_t);
 
 static UCS_CLASS_DEFINE_DELETE_FUNC(uct_sci_iface_t, uct_iface_t);
 
-static UCS_CLASS_DEFINE_NEW_FUNC(uct_sci_iface_t, uct_iface_t, uct_md_h,
-                                 uct_worker_h, const uct_iface_params_t*,
-                                 const uct_iface_config_t*);
+static UCS_CLASS_DEFINE_NEW_FUNC(
+    uct_sci_iface_t,
+    uct_iface_t,
+    uct_md_h,
+    uct_worker_h,
+    const uct_iface_params_t*,
+    const uct_iface_config_t*);
 
 
-static ucs_status_t uct_sci_query_devices(uct_md_h md,
-                                   uct_tl_device_resource_t **devices_p,
-                                   unsigned *num_devices_p)
+static ucs_status_t uct_sci_query_devices(
+    uct_md_h md,
+    uct_tl_device_resource_t **devices_p,
+    unsigned *num_devices_p)
 {
     ucs_status_t status = -1;
        
-    status = uct_single_device_resource(md, UCT_SCI_NAME,
-                                      UCT_DEVICE_TYPE_NET,
-                                      UCS_SYS_DEVICE_ID_UNKNOWN, devices_p,
-                                      num_devices_p);
+    status = uct_single_device_resource(
+        md,
+        UCT_SCI_NAME,
+        UCT_DEVICE_TYPE_NET,
+        UCS_SYS_DEVICE_ID_UNKNOWN,
+        devices_p,
+        num_devices_p);
     
     return status; 
 }
 
-static int uct_sci_iface_is_reachable(const uct_iface_h tl_iface,
-                                       const uct_device_addr_t *dev_addr,
-                                       const uct_iface_addr_t *iface_addr)
+static int uct_sci_iface_is_reachable(
+    const uct_iface_h tl_iface,
+    const uct_device_addr_t *dev_addr,
+    const uct_iface_addr_t *iface_addr)
 {
-    #if DEBUG > 0
-        uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
-        uct_sci_device_addr_t* sci_dev_addr = (uct_sci_device_addr_t *) dev_addr;
-        uct_sci_iface_addr_t*  sci_iface_addr = (uct_sci_iface_addr_t*) iface_addr;
-        DEBUG_PRINT("FROM if_addr: %d dev_addr: %d  TO: iface_addr: %d dev_addr: %d \n",iface->interrupt_no, iface->device_addr,  sci_iface_addr->interrupt_no, sci_dev_addr->node_id);
-    #endif
     return 1;
 }
 
-ucs_status_t uct_sci_get_device_address(uct_iface_h iface, uct_device_addr_t *addr) {
+ucs_status_t uct_sci_get_device_address(
+    uct_iface_h iface,
+    uct_device_addr_t *addr)
+{
     uct_sci_iface_t* sci_iface = ucs_derived_of(iface, uct_sci_iface_t);
     uct_sci_device_addr_t* sci_addr = (uct_sci_device_addr_t *) addr;
+    
     sci_addr->node_id = sci_iface->device_addr;
-    DEBUG_PRINT("segment_id %d node_id %d\n", sci_iface->segment_id, sci_iface->device_addr);
+    
     return UCS_OK;
 }
 
@@ -521,8 +564,9 @@ ucs_status_t uct_sci_get_device_address(uct_iface_h iface, uct_device_addr_t *ad
  * @brief returns the ID used for the connection interrupt
  *  
  */
-ucs_status_t uct_sci_iface_get_address(uct_iface_h tl_iface,
-                                               uct_iface_addr_t *addr)
+ucs_status_t uct_sci_iface_get_address(
+    uct_iface_h tl_iface,
+    uct_iface_addr_t *addr)
 {
     
     uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
@@ -531,36 +575,39 @@ ucs_status_t uct_sci_iface_get_address(uct_iface_h tl_iface,
     
     iface_addr->interrupt_no = iface->interrupt_no;
     
-    DEBUG_PRINT("uct_iface_get_address()\n");
     return UCS_OK;
 }
 
 
 void uct_sci_iface_progress_enable(uct_iface_h iface, unsigned flags) {
     uct_base_iface_progress_enable(iface, flags);
-    DEBUG_PRINT("Progress Enabled\n");
 }
 
 /**
  * @brief 
- * @param[inout] iface input is 
- *                       - iface->packet_size_bytes
- *                       - iface->packet_queue_len
- *                       - iface->sci_cds[i].ep_conn_last_ack
- *                     output is
- *                       - iface->sci_cds[i].ctl_buf->status
- *                       - iface->sci_cds[i].ctl_buf->ep_conn_ack
- *                       - iface->sci_cds[i].ctl_buf->ep_conn_last_ack
- *                       - packet stored in iface->ci_cds[i].ctl_buf + some offset
+ * @param[inout] iface
+ * 
+ * @details
+ *  input fields are 
+ *    - iface->packet_size_bytes
+ *    - iface->packet_queue_len
+ *    - iface->sci_cds[i].ep_conn_last_ack
+ *  output fields are
+ *    - iface->sci_cds[i].ctl_buf->status
+ *    - iface->sci_cds[i].ctl_buf->ep_conn_ack
+ *    - iface->sci_cds[i].ctl_buf->ep_conn_last_ack
+ *    - packet stored in iface->ci_cds[i].ctl_buf + some offset
  * 
  * @return Number of messages received
  */
 static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
     uint32_t packet_offset = 0;
+    uint32_t packet_queue_index = 0;
     ucs_status_t ucs_ret;
     unsigned count = 0;
     uct_sci_am_hdr_t* packet;
     uct_sci_conn_desc_t* cd;
+    void *packet_payload_ptr;
 
     for (size_t i = 0; i < iface->connections; i++) {
         cd = &iface->sci_cds[i];
@@ -570,20 +617,24 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
             continue;
         }
 
-        packet_offset = iface->packet_size_bytes * ((cd->ep_conn_last_ack + 1) % iface->packet_queue_len);
-        packet = cd->cd_buf + packet_offset; 
+        packet_queue_index =
+            ((cd->ep_conn_last_ack + 1) % iface->packet_queue_len);
+        packet_offset = iface->packet_size_bytes * packet_queue_index;
+        packet = (uct_sci_am_hdr_t *)&cd->packet_queue_buf[packet_offset]; 
         
         if (packet->am_message_posted != 1) {
             continue;
         }
         
+        packet_payload_ptr = (void*)
+            &cd->packet_queue_buf[packet_offset + sizeof(uct_sci_am_hdr_t)];
+
         ucs_ret = uct_iface_invoke_am(
             &iface->super,
             packet->am_id,
-            cd->cd_buf + packet_offset + sizeof(uct_sci_am_hdr_t),
+            packet_payload_ptr,
             packet->am_length,
-            0);
-    
+            0);    
         if(ucs_ret == UCS_INPROGRESS) {
             ucs_debug("uct_sci_iface_progress_aux in progress");
             continue;
@@ -596,7 +647,8 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
         
         packet->am_message_posted = 0;
         /* Increment ack count and send it over to the remote endpoint */
-        /* TODO: Is this always single threaded? Should there be a lock? Atomic add? */
+        /* TODO: Is this always single threaded? Should there be a lock?
+         * Atomic add? */
         cd->ep_conn_last_ack++;
         cd->ctl_buf->ep_conn_ack = cd->ep_conn_last_ack; 
         SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
@@ -625,15 +677,16 @@ unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
     return total_count;
 }
 
-static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *attr)
+static ucs_status_t uct_sci_iface_query(
+    uct_iface_h tl_iface,
+    uct_iface_attr_t *attr)
 {
-    
-
     uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
 
     uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);   
     
-    /* These flags advertises the functionality of our transport. We currently only support active message  */
+    /* These flags advertises the functionality of our transport.
+     * We currently only support the active message API  */
     attr->cap.flags =   UCT_IFACE_FLAG_CONNECT_TO_IFACE | 
                         UCT_IFACE_FLAG_AM_SHORT         |
                         UCT_IFACE_FLAG_CB_SYNC          |
@@ -664,39 +717,41 @@ static ucs_status_t uct_sci_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
     return UCS_OK;
 }
 
-//the functions of the functionality that we support.
 static uct_iface_ops_t uct_sci_iface_ops = {
-    .ep_put_short             = uct_sci_ep_put_short,     // not implemented yet
-    .ep_put_bcopy             = uct_sci_ep_put_bcopy,     // not implemented yet
-    .ep_get_bcopy             = uct_sci_ep_get_bcopy,     // not implemented yet
-    .ep_am_short              = uct_sci_ep_am_short,      // implemented
-    .ep_am_short_iov          = uct_sci_ep_am_short_iov,  // not implemented yet
-    .ep_am_bcopy              = uct_sci_ep_am_bcopy,      // implemented
-    .ep_am_zcopy              = uct_sci_ep_am_zcopy,      // implemented
-    .ep_atomic_cswap64        = uct_sci_ep_atomic_cswap64,// not implemented yet
-    .ep_atomic64_post         = uct_sci_ep_atomic64_post, // not implemented yet
-    .ep_atomic64_fetch        = uct_sci_ep_atomic64_fetch,// not implemented yet
-    .ep_atomic_cswap32        = uct_sci_ep_atomic_cswap32,// not implemented yet
-    .ep_atomic32_post         = uct_sci_ep_atomic32_post, // not implemented yet
-    .ep_atomic32_fetch        = uct_sci_ep_atomic32_fetch,// not implemented yet
-    .ep_flush                 = uct_base_ep_flush,        // May need to change
-    .ep_fence                 = uct_base_ep_fence,        // covered by uct base
-    .ep_check                 = ucs_empty_function_return_success,        //covered 
-    .ep_pending_add           = ucs_empty_function_return_busy,           //covered
-    .ep_pending_purge         = ucs_empty_function,                       //covered
-    .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_sci_ep_t),    // implemented
-    .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_sci_ep_t), // implemented
-    .iface_flush              = uct_base_iface_flush,                     //covered by uct base
-    .iface_fence              = uct_base_iface_fence,                     // covered by uct base
-    .iface_progress_enable    = uct_sci_iface_progress_enable,            // covered
-    .iface_progress_disable   = uct_base_iface_progress_disable,          // covered
-    .iface_progress           = uct_sci_iface_progress,                   // implemented
-    .iface_event_arm          = ucs_empty_function_return_success,        // covered
-    .iface_close              = UCS_CLASS_DELETE_FUNC_NAME(uct_sci_iface_t), // implemented
-    .iface_query              = uct_sci_iface_query,                         // implemented
-    .iface_get_device_address = uct_sci_get_device_address,                  // implemented
-    .iface_get_address        = uct_sci_iface_get_address,                   // implemented
-    .iface_is_reachable       = uct_sci_iface_is_reachable                   // implemented
+    .ep_put_short             = uct_sci_ep_put_short, /* Stubbed */
+    .ep_put_bcopy             = uct_sci_ep_put_bcopy, /* Stubbed */
+    .ep_get_bcopy             = uct_sci_ep_get_bcopy, /* Stubbed */
+    
+    .ep_am_short              = uct_sci_ep_am_short,
+    .ep_am_short_iov          = uct_sci_ep_am_short_iov, /* Stubbed */
+    .ep_am_bcopy              = uct_sci_ep_am_bcopy,
+    .ep_am_zcopy              = uct_sci_ep_am_zcopy,
+    
+    .ep_atomic_cswap64        = uct_sci_ep_atomic_cswap64, /* Stubbed */
+    .ep_atomic64_post         = uct_sci_ep_atomic64_post, /* Stubbed */
+    .ep_atomic64_fetch        = uct_sci_ep_atomic64_fetch, /* Stubbed */
+    .ep_atomic_cswap32        = uct_sci_ep_atomic_cswap32, /* Stubbed */
+    .ep_atomic32_post         = uct_sci_ep_atomic32_post, /* Stubbed */
+    .ep_atomic32_fetch        = uct_sci_ep_atomic32_fetch, /* Stubbed */
+
+    .ep_flush                 = uct_base_ep_flush,
+    .ep_fence                 = uct_base_ep_fence,
+    .ep_check                 = ucs_empty_function_return_success,
+    .ep_pending_add           = ucs_empty_function_return_busy,
+    .ep_pending_purge         = ucs_empty_function,
+    .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_sci_ep_t),
+    .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_sci_ep_t),
+    .iface_flush              = uct_base_iface_flush,
+    .iface_fence              = uct_base_iface_fence,
+    .iface_progress_enable    = uct_sci_iface_progress_enable,
+    .iface_progress_disable   = uct_base_iface_progress_disable,
+    .iface_progress           = uct_sci_iface_progress,
+    .iface_event_arm          = ucs_empty_function_return_success,
+    .iface_close              = UCS_CLASS_DELETE_FUNC_NAME(uct_sci_iface_t),
+    .iface_query              = uct_sci_iface_query,
+    .iface_get_device_address = uct_sci_get_device_address,
+    .iface_get_address        = uct_sci_iface_get_address,
+    .iface_is_reachable       = uct_sci_iface_is_reachable
 };
 
 extern uct_component_t uct_sci_component;
@@ -706,15 +761,21 @@ extern uct_component_t uct_sci_component;
 /**
  * @brief Construct a new uct tl define object
  *  component:
- *  tranport name
+ *  transport name
  *  device_query()
  *  iface type
  *  config prefix
  *  config table
  *  type of config table
  */
-UCT_TL_DEFINE(&uct_sci_component, sci, uct_sci_query_devices, uct_sci_iface_t,
-    UCT_SCI_CONFIG_PREFIX, uct_sci_iface_config_table, uct_sci_iface_config_t);
+UCT_TL_DEFINE(
+    &uct_sci_component,
+    sci,
+    uct_sci_query_devices,
+    uct_sci_iface_t,
+    UCT_SCI_CONFIG_PREFIX,
+    uct_sci_iface_config_table,
+    uct_sci_iface_config_t);
 
 
 UCS_STATIC_INIT

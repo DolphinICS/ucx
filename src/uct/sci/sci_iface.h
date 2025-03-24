@@ -15,15 +15,6 @@
 #define UCT_SCI_NO_CALLBACK 0
 #define UCT_SCI_MAX_EPS 28
 
-#define DEBUG 0
-
-#if defined(DEBUG) && DEBUG > 0
- #define DEBUG_PRINT(fmt, args...) fprintf(stdout, "%d: %s:%d:%s(): " fmt, \
-    getpid(), __FILE__, __LINE__, __func__, ##args)
-#else
- #define DEBUG_PRINT(fmt, args...) /* Don't do anything in release builds */
-#endif
-
 typedef struct {
     unsigned int interrupt_no; /* Listening port of iface */
 } UCS_S_PACKED uct_sci_iface_addr_t;
@@ -52,21 +43,31 @@ typedef enum {
  * Connection Descriptor,
  *  
  * Each incoming connection gets assigned a different section of the segment.
- * We are using one large segment, with a single map for this segment. So each cd is given an offset
- * into the global offset.
+ * We are using one large segment, with a single map for this segment. So
+ * each cd is given an offset into the global offset.
  */
 typedef struct {
     conn_desc_status_t      cd_status;
-    int                     size;   /* size */
     int                     remote_node;
     uint32_t                ep_conn_last_ack;
     
-    /*        rx info          */
-    uint32_t                ep_conn_offset; /* start of our map in the global segment */
-    void*                   cd_buf;
-    uct_sci_am_hdr_t*       packet;
+    /* Data transfer (used to send the actual data) */
+
+    /* endpoint's offset into iface's segment
+     * ep_conn_offset = (iface's sci_cd index) * (packet_queue size in bytes)
+     * 
+     * for context, packet queue size in bytes
+     * is (self->packet_size_bytes * self->packet_queue_len)
+     */
+    uint32_t                ep_conn_offset;
     
-    /*    Control info        */
+    /* Buffer with circular buffer made to hold a queue of packets
+     * packet_queue_buf = iface receive buffer + ep_conn_offset
+     */
+    uint8_t*                packet_queue_buf;
+    
+    /* Control segment (used by iface to send signals to endpoints).
+     * Currently, the only signals are ack messages */
     uint32_t                ctl_segment_id;
     sci_remote_segment_t    ctl_segment;
     sci_map_t               ctl_segment_map;
@@ -88,51 +89,71 @@ typedef struct {
     unsigned int packet_queue_len;
 } uct_sci_conn_ans_t;
 
-
-void sci_testing();
-
 typedef struct {
     uct_iface_config_t    super;
-    size_t                packet_size_bytes;      /* Maximal send size */
+    /* Size of packet in bytes (Maximal send size) */
+    size_t                packet_size_bytes;
+    /* Maximum number of endpoints supported by the iface */
     unsigned int          max_eps;
+    /* Number of packets in the packet queue */
     unsigned int          packet_queue_len;
 
 } uct_sci_iface_config_t;
 
 typedef struct {
-    uct_sci_am_hdr_t              super;     /* UCT TCP AM header */
-    uct_completion_t              *comp;     /* Local UCT completion object */
-    size_t                        iov_index; /* Current IOV index */
-    size_t                        iov_cnt;   /* Number of IOVs that should be sent */
-    struct iovec                  iov[0];    /* IOVs that should be sent */
+    /* UCT TCP AM header */
+    uct_sci_am_hdr_t              super;
+    /* Local UCT completion object */
+    uct_completion_t              *comp;
+    /* Current IOV index */
+    size_t                        iov_index;
+    /* Number of IOVs that should be sent */
+    size_t                        iov_cnt;
+    /* IOVs that should be sent */
+    struct iovec                  iov[0];
 } uct_sci_ep_zcopy_tx_t;
 
 typedef struct {
     uct_base_iface_t            super;
-    unsigned int                segment_id;           /* Unique identifier for the instance */
-    unsigned int                device_addr; //nodeID
-    size_t                      packet_size_bytes;    /* Maximum size for payload */
+    /* Unique identifier for the instance */
+    unsigned int                segment_id;
+    /* Node ID */
+    unsigned int                device_addr;
+    /* Maximum size for payload */
+    size_t                      packet_size_bytes;
     unsigned int                max_eps;
-    //ucs_mpool_t                 msg_mp;       /* Messages memory pool */
-    void*                       recv_buffer;
+
+    /* Messages memory pool */
+    //ucs_mpool_t                 msg_mp;
+    
+    uint8_t*                    recv_buffer;
+    
     sci_local_segment_t         local_segment; 
     sci_map_t                   local_map;
+    
     sci_dma_queue_t             dma_queue;
     sci_local_segment_t         dma_segment;
     sci_map_t                   dma_map;
-    void*                       dma_buffer; /* Move up to DMA etc */
+    void*                       dma_buffer;
+
     uct_sci_conn_desc_t         sci_cds[UCT_SCI_MAX_EPS];
+
     sci_local_data_interrupt_t  interrupt; 
     unsigned int                interrupt_no;
+    
     uint32_t                    packet_queue_len;
 
-    /*      ctl segment, used for control during runtime between processes  */
-    sci_desc_t                  vdev_ep; //Vdev used for outgoing eps
-    sci_desc_t                  vdev_ctl; //vdev used for control
+    sci_desc_t                  vdev_ep;
+    sci_desc_t                  vdev_ctl;
+    
     pthread_mutex_t             lock;
+    
     unsigned int                eps_init_cnt;
-    unsigned int                ctl_segment_id;
     unsigned int                connections;
+    
+    /* ctl segment. Used to send signals from iface to endpoint. Currently the
+     * only such signal to go in that direction is the ack counter*/
+    unsigned int                ctl_segment_id;
     sci_local_segment_t         ctl_segment;
     sci_map_t                   ctl_segment_map;
     uct_sci_ctl_t*              ctls;

@@ -21,18 +21,18 @@ typedef struct uct_sci_md_config {
 static void uct_sci_md_close(uct_md_h md) {
     uct_sci_md_t * sci_md = ucs_derived_of(md, uct_sci_md_t);
     sci_error_t sci_error;
-    DEBUG_PRINT("md closed\n");
 
     SCIClose(sci_md->sci_virtual_device, 0 , &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        printf("Error closing Virtual_Device error: %s \n", SCIGetErrorString(sci_error));
+        ucs_error("Error closing Virtual_Device error: %s",
+            SCIGetErrorString(sci_error));
     }
 }
 
 static ucs_status_t uct_sci_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
 {
     /* Dummy memory registration provided. No real memory handling exists */
-    attr->flags               = UCT_MD_FLAG_NEED_RKEY | UCT_MD_FLAG_ALLOC; /* TODO ignore rkey in rma/amo ops */
+    attr->flags               = UCT_MD_FLAG_NEED_RKEY | UCT_MD_FLAG_ALLOC;
     attr->max_alloc           = 0;
     attr->reg_mem_types       = UCS_BIT(UCS_MEMORY_TYPE_HOST);
     attr->alloc_mem_types     = UCS_BIT(UCS_MEMORY_TYPE_HOST);
@@ -50,23 +50,27 @@ typedef struct {
     size_t length;
 } uct_sci_alloc_handle_t;
 
-static ucs_status_t
-uct_sci_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
-                        ucs_memory_type_t mem_type, unsigned flags,
-                        const char *alloc_name, uct_mem_h *memh_p)
+static ucs_status_t uct_sci_mem_alloc(
+    uct_md_h uct_md,
+    size_t *length_p,
+    void **address_p,
+    ucs_memory_type_t mem_type,
+    unsigned flags,
+    const char *alloc_name,
+    uct_mem_h *memh_p)
 {
     uct_sci_alloc_handle_t *alloc_handle;
 
     alloc_handle = ucs_malloc(sizeof(*alloc_handle),
                               "uct_sci_mem_alloc");
     if (NULL == alloc_handle) {
-        printf("failed to allocate memory for uct_sci_mem_alloc\n");
+        ucs_error("failed to allocate memory for uct_sci_mem_alloc");
         return UCS_ERR_NO_MEMORY;
     }
 
     alloc_handle->ptr = malloc(*length_p);
     if (alloc_handle->ptr == NULL) {
-        printf("uct_sci_mem_alloc, malloc failed\n");
+        ucs_error("uct_sci_mem_alloc, malloc failed");
         ucs_free(alloc_handle);
         return UCS_ERR_NO_MEMORY;
     }
@@ -86,21 +90,22 @@ static ucs_status_t uct_sci_mem_free(uct_md_h md, uct_mem_h memh)
     return UCS_OK;
 }
 
-static ucs_status_t uct_sci_mem_reg(uct_md_h md, void *address, size_t length,
-                                     const uct_md_mem_reg_params_t *params, uct_mem_h *memh_p)
+static ucs_status_t uct_sci_mem_reg(
+    uct_md_h md,
+    void *address,
+    size_t length,
+    const uct_md_mem_reg_params_t *params,
+    uct_mem_h *memh_p)
 {
-
-    DEBUG_PRINT("Empty func\n");
-
     /* We have to emulate memory registration. Return dummy pointer */
     *memh_p = (void *) 0xdeadbeef;
     return UCS_OK;
 }
 
-static ucs_status_t uct_sci_mem_dereg(uct_md_h uct_md,
-                                       const uct_md_mem_dereg_params_t *params)
+static ucs_status_t uct_sci_mem_dereg(
+    uct_md_h uct_md,
+    const uct_md_mem_dereg_params_t *params)
 {
-    DEBUG_PRINT("Empty func\n");
     UCT_MD_MEM_DEREG_CHECK_PARAMS(params, 0);
 
     ucs_assert(params->memh == (void*)0xdeadbeef);
@@ -114,18 +119,22 @@ static ucs_status_t uct_sci_md_rkey_unpack(uct_component_t *component,
 {
     /**
     * Pseudo stub function for the key unpacking
-    * Need rkey == 0 due to work with same process to reuse uct_base_[put|get|atomic]*
+    * Need rkey == 0 due to work with same process to reuse
+    * uct_base_[put|get|atomic]*
     */
-    DEBUG_PRINT("uct_sci_md_rkey_unpack()");
     *rkey_p   = 0;
     *handle_p = NULL;
     return UCS_OK;
 }
 
-static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_name,
-                                     const uct_md_config_t *config, uct_md_h *md_p)
+static ucs_status_t uct_sci_md_open(
+    uct_component_t *component,
+    const char *md_name,
+    const uct_md_config_t *config,
+    uct_md_h *md_p)
 {
-    uct_sci_md_config_t *md_config = ucs_derived_of(config, uct_sci_md_config_t);
+    uct_sci_md_config_t *md_config =
+        ucs_derived_of(config, uct_sci_md_config_t);
 
     static uct_md_ops_t md_ops = {
         .close              = uct_sci_md_close, 
@@ -153,19 +162,17 @@ static ucs_status_t uct_sci_md_open(uct_component_t *component, const char *md_n
     
     *md_p = &md.super;
     md_name = "sci";
-
-    DEBUG_PRINT("md opened \n");
     return UCS_OK;
 }
 
 uct_component_t uct_sci_component = {
     .query_md_resources = uct_md_query_single_md_resource, 
     .md_open            = uct_sci_md_open,
-    .cm_open            = ucs_empty_function_return_unsupported, //UCS_CLASS_NEW_FUNC_NAME(uct_tcp_sockcm_t), //change me
-    .rkey_unpack        = uct_sci_md_rkey_unpack, //change me
-    .rkey_ptr           = ucs_empty_function_return_unsupported, //change me 
-    .rkey_release       = ucs_empty_function_return_success, //change me
-    .name               = UCT_SCI_NAME, //change me
+    .cm_open            = ucs_empty_function_return_unsupported,
+    .rkey_unpack        = uct_sci_md_rkey_unpack,
+    .rkey_ptr           = ucs_empty_function_return_unsupported, 
+    .rkey_release       = ucs_empty_function_return_success,
+    .name               = UCT_SCI_NAME,
     .md_config          = UCT_MD_DEFAULT_CONFIG_INITIALIZER,
     .tl_list            = UCT_COMPONENT_TL_LIST_INITIALIZER(&uct_sci_component),
     .flags              = 0,
