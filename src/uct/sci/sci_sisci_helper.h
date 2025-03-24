@@ -25,7 +25,8 @@ int uct_sci_helper_create_segment(
 /**
  * @brief Undos setup by uct_sci_helper_create_segment.
  * 
- * @details Unmaps and removes local segment set up by uct_sci_helper_create_segment.
+ * @details Unmaps and removes local segment set up by
+ * uct_sci_helper_create_segment.
  * 
  * @param[in] segment 
  */
@@ -58,7 +59,8 @@ int uct_sci_helper_create_seg_set_avail(
  *        set up by uct_sci_helper_create_segment.
  *        (Undos setup by uct_sci_helper_create_segment)
  *
- * @details Unmaps, removes local segment set up by uct_sci_helper_create_segment.
+ * @details Unmaps, removes local segment set up by
+ *          uct_sci_helper_create_segment.
  *          (after first setting it to unavailable)
  * 
  * @param[in] segment 
