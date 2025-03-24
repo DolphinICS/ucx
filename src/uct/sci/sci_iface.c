@@ -130,7 +130,6 @@ static int uct_sci_send_answer_to_request(
             &sci_error);
     } while (sci_error != SCI_ERR_OK);
 
-    answer.node_id    = iface->device_addr;
     answer.segment_id = iface->segment_id;
     answer.ep_conn_offset     = sci_cd->ep_conn_offset;
     answer.packet_size_bytes  = iface->packet_size_bytes;
