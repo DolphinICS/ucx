@@ -755,7 +755,7 @@ static uct_iface_ops_t uct_pcie_iface_ops = {
 
 extern uct_component_t uct_pcie_component;
 
-#define UCT_PCIE_CONFIG_PREFIX "SCI_"
+#define UCT_PCIE_CONFIG_PREFIX "PCIE_"
 
 /**
  * @brief Construct a new uct tl define object
