@@ -1,4 +1,4 @@
-#include "sci_sisci_helper.h"
+#include "pcie_sisci_helper.h"
 
 /* To get ucs print outs */
 #include <ucs/type/status.h>
@@ -14,7 +14,7 @@
  * @param[out] buf 
  * @return 
  */
-int uct_sci_helper_create_segment(
+int uct_pcie_helper_create_segment(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
@@ -30,7 +30,7 @@ int uct_sci_helper_create_segment(
         0,  /* segment_id, but by specifying SCI_FLAG_AUTO_ID
              * we are asking sisci to give us an available one from [0,128] */
         segment_size,
-        UCT_SCI_NO_CALLBACK,
+        UCT_PCIE_NO_CALLBACK,
         NULL, /* callbackArg == NULL */
         SCI_FLAG_AUTO_ID,
         &sci_error);
@@ -41,12 +41,12 @@ int uct_sci_helper_create_segment(
 
     SCIPrepareSegment(
         *segment,
-        UCT_SCI_LOCAL_ADAPTER_NO,
-        UCT_SCI_NO_FLAGS,
+        UCT_PCIE_LOCAL_ADAPTER_NO,
+        UCT_PCIE_NO_FLAGS,
         &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         ucs_error("SCIPrepareSegment failed: %s", SCIGetErrorString(sci_error));
-        SCIRemoveSegment(*segment, UCT_SCI_NO_FLAGS , &sci_error);
+        SCIRemoveSegment(*segment, UCT_PCIE_NO_FLAGS , &sci_error);
         return -1;
     }
 
@@ -56,12 +56,12 @@ int uct_sci_helper_create_segment(
         0, /* Mapping offset == 0 */
         segment_size,
         NULL, /* No suggested virtual address */
-        UCT_SCI_NO_FLAGS,
+        UCT_PCIE_NO_FLAGS,
         &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         ucs_error("SCIMapLocalSegment failed: %s",
             SCIGetErrorString(sci_error));
-        SCIRemoveSegment(*segment, UCT_SCI_NO_FLAGS , &sci_error);
+        SCIRemoveSegment(*segment, UCT_PCIE_NO_FLAGS , &sci_error);
         return -1;
     }
 
@@ -71,15 +71,15 @@ int uct_sci_helper_create_segment(
 }
 
 /**
- * @brief Undos setup by uct_sci_helper_create_segment.
+ * @brief Undos setup by uct_pcie_helper_create_segment.
  * 
  * @details Unmaps and removes local segment set up by
- *          uct_sci_helper_create_segment.
+ *          uct_pcie_helper_create_segment.
  * 
  * @param[in] segment 
  * @param[in] segment_map 
  */
-void uct_sci_helper_remove_segment(
+void uct_pcie_helper_remove_segment(
     sci_local_segment_t segment,
     sci_map_t segment_map)
 {
@@ -108,7 +108,7 @@ void uct_sci_helper_remove_segment(
  * @param[out] buf 
  * @return 
  */
-int uct_sci_helper_create_seg_set_avail(
+int uct_pcie_helper_create_seg_set_avail(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
@@ -119,7 +119,7 @@ int uct_sci_helper_create_seg_set_avail(
     sci_error_t sci_error;
     int ret;
     
-    ret = uct_sci_helper_create_segment(
+    ret = uct_pcie_helper_create_segment(
         sd,
         segment,
         segment_map,
@@ -131,7 +131,7 @@ int uct_sci_helper_create_seg_set_avail(
         if (sci_error != SCI_ERR_OK) { 
             ucs_error("SCISetSegmentAvailable failed: %s",
                 SCIGetErrorString(sci_error));
-            uct_sci_helper_remove_segment(*segment, *segment_map);
+            uct_pcie_helper_remove_segment(*segment, *segment_map);
             return -1;
         }
     }
@@ -141,30 +141,30 @@ int uct_sci_helper_create_seg_set_avail(
 
 /**
  * @brief Unmaps, removes local segment (after first setting it to unavailable)
- *        set up by uct_sci_helper_create_segment.
- *        (Undos setup by uct_sci_helper_create_segment)
+ *        set up by uct_pcie_helper_create_segment.
+ *        (Undos setup by uct_pcie_helper_create_segment)
  *
  * @details Unmaps, removes local segment set up by
- *          uct_sci_helper_create_segment.
+ *          uct_pcie_helper_create_segment.
  *          (after first setting it to unavailable)
  * 
  * @param[in] segment 
  * @param[in] segment_map 
  */
-void uct_sci_helper_remove_seg_set_unavail(
+void uct_pcie_helper_remove_seg_set_unavail(
     sci_local_segment_t segment,
     sci_map_t segment_map)
 {
     sci_error_t sci_error;
-    SCISetSegmentUnavailable(segment, 0, UCT_SCI_NO_FLAGS, &sci_error);
+    SCISetSegmentUnavailable(segment, 0, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_warn("SCISetSegmentUnavailable failed: %s",
             SCIGetErrorString(sci_error));
     }
-    uct_sci_helper_remove_segment(segment, segment_map);
+    uct_pcie_helper_remove_segment(segment, segment_map);
 }
 
-int uct_sci_connect_segment(
+int uct_pcie_connect_segment(
     sci_desc_t sd,
     size_t offset,
     size_t segment_size,
@@ -180,11 +180,11 @@ int uct_sci_connect_segment(
             segment,
             node_id,
             segment_id,
-            UCT_SCI_LOCAL_ADAPTER_NO,
-            UCT_SCI_NO_CALLBACK,
+            UCT_PCIE_LOCAL_ADAPTER_NO,
+            UCT_PCIE_NO_CALLBACK,
             NULL,
             0,
-            UCT_SCI_NO_FLAGS,
+            UCT_PCIE_NO_FLAGS,
             &sci_error);
     } while (sci_error != SCI_ERR_OK);
 
@@ -207,7 +207,7 @@ int uct_sci_connect_segment(
     return 0;
 }
 
-void uct_sci_disconnect_segment(
+void uct_pcie_disconnect_segment(
     sci_remote_segment_t segment,
     sci_map_t segment_map)
 {

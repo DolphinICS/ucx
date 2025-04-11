@@ -1,5 +1,5 @@
-#ifndef UCT_SCI_MD_H
-#define UCT_SCI_MD_H
+#ifndef UCT_PCIE_MD_H
+#define UCT_PCIE_MD_H
 
 #include <uct/api/uct_def.h>
 #include <uct/base/uct_md.h>
@@ -13,7 +13,7 @@ typedef struct {
     uct_md_t super;
     size_t   num_devices; /* Number of devices to create */
     sci_desc_t sci_virtual_device;
-} uct_sci_md_t;
+} uct_pcie_md_t;
 
 
 #endif

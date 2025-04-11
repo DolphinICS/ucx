@@ -2,14 +2,14 @@
 
 #include <uct/base/uct_iov.inl>
 
-#include "sci_ep.h"
-#include "sci_sisci_helper.h"
-#include "sci_md.h"
+#include "pcie_ep.h"
+#include "pcie_sisci_helper.h"
+#include "pcie_md.h"
 
-static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
+static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
 {   
     self->remote_seg_buf = NULL;
-    uct_sci_disconnect_segment(self->remote_segment, self->remote_seg_map);
+    uct_pcie_disconnect_segment(self->remote_segment, self->remote_seg_map);
     ucs_debug("ep deleted segment_id %d node_id %d\n",
         self->remote_seg_id,
         self->remote_node_id);
@@ -23,8 +23,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_ep_t)
  * @param[in] remote_interrupt_no 
  * @return 
  */
-static ucs_status_t uct_sci_ep_send_conn_request(
-    uct_sci_conn_req_t *request,
+static ucs_status_t uct_pcie_ep_send_conn_request(
+    uct_pcie_conn_req_t *request,
     unsigned int node_id,
     unsigned int remote_interrupt_no,
     sci_desc_t sci_virtual_device)
@@ -38,18 +38,18 @@ static ucs_status_t uct_sci_ep_send_conn_request(
             sci_virtual_device,
             &req_interrupt,
             node_id,
-            UCT_SCI_LOCAL_ADAPTER_NO,
+            UCT_PCIE_LOCAL_ADAPTER_NO,
             remote_interrupt_no,
             SCI_INFINITE_TIMEOUT,
-            UCT_SCI_NO_FLAGS,
+            UCT_PCIE_NO_FLAGS,
             &sci_error);
     } while (sci_error != SCI_ERR_OK);
 
     SCITriggerDataInterrupt(
         req_interrupt,
         (void *) request,
-        sizeof(uct_sci_conn_req_t),
-        UCT_SCI_NO_FLAGS,
+        sizeof(uct_pcie_conn_req_t),
+        UCT_PCIE_NO_FLAGS,
         &sci_error);
     if(sci_error != SCI_ERR_OK) {
         ucs_error("SCI Trigger Interrupt: %s", SCIGetErrorString(sci_error));
@@ -57,7 +57,7 @@ static ucs_status_t uct_sci_ep_send_conn_request(
     }
 
     /*  Clean up for connection.  */
-    SCIDisconnectDataInterrupt(req_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIDisconnectDataInterrupt(req_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
     if(sci_error == SCI_ERR_BUSY) {
         ucs_error("SCIDisconnectDataInterrupt: %s",
             SCIGetErrorString(sci_error));
@@ -74,17 +74,17 @@ static ucs_status_t uct_sci_ep_send_conn_request(
  * @param[in] sci_virtual_device 
  * @param[out] answer 
  */
-static ucs_status_t uct_sci_ep_send_recv_conn_request(
-    uct_sci_conn_req_t request,
+static ucs_status_t uct_pcie_ep_send_recv_conn_request(
+    uct_pcie_conn_req_t request,
     unsigned int node_id,
     unsigned int remote_interrupt_no,
     sci_desc_t sci_virtual_device,
-    uct_sci_conn_ans_t *answer)
+    uct_pcie_conn_ans_t *answer)
 {
     sci_error_t sci_error;
     ucs_status_t ucs_ret;
     sci_local_data_interrupt_t ans_interrupt;
-    unsigned int ans_size = (unsigned int) sizeof(uct_sci_conn_ans_t);
+    unsigned int ans_size = (unsigned int) sizeof(uct_pcie_conn_ans_t);
 
     /* 1.
      * Create the data interrupt we will use to receive the response of our
@@ -94,11 +94,11 @@ static ucs_status_t uct_sci_ep_send_recv_conn_request(
     SCICreateDataInterrupt(
         sci_virtual_device,
         &ans_interrupt,
-        UCT_SCI_LOCAL_ADAPTER_NO,
+        UCT_PCIE_LOCAL_ADAPTER_NO,
         &request.interrupt,  
-        UCT_SCI_NO_CALLBACK,
+        UCT_PCIE_NO_CALLBACK,
         NULL, /* No callback arguments */
-        UCT_SCI_NO_FLAGS,
+        UCT_PCIE_NO_FLAGS,
         &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
@@ -109,7 +109,7 @@ static ucs_status_t uct_sci_ep_send_recv_conn_request(
      * Send connection request to the server. This will trigger a callback on
      * the other side, and that callback will get back to us and send us an
      * answer to our connection request. */
-    ucs_ret = uct_sci_ep_send_conn_request(
+    ucs_ret = uct_pcie_ep_send_conn_request(
         &request,
         node_id,
         remote_interrupt_no,
@@ -124,36 +124,36 @@ static ucs_status_t uct_sci_ep_send_recv_conn_request(
         (void*) answer,
         &ans_size,
         SCI_INFINITE_TIMEOUT,
-        UCT_SCI_NO_FLAGS,
+        UCT_PCIE_NO_FLAGS,
         &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("SCI Wait For Interrupt: %s\n", SCIGetErrorString(sci_error));
         ucs_ret = UCS_ERR_NO_RESOURCE;
     }
     /* Done. Clean up data interrupt made in step 1 */
-    SCIRemoveDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIRemoveDataInterrupt(ans_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
 
     return ucs_ret;
 }
 
-static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
+static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
 {
     ucs_status_t ucs_ret;
     
-    uct_sci_iface_addr_t* iface_addr =
-        (uct_sci_iface_addr_t*) params->iface_addr;
+    uct_pcie_iface_addr_t* iface_addr =
+        (uct_pcie_iface_addr_t*) params->iface_addr;
 
-    uct_sci_device_addr_t* dev_addr =
-        (uct_sci_device_addr_t*) params->dev_addr;
+    uct_pcie_device_addr_t* dev_addr =
+        (uct_pcie_device_addr_t*) params->dev_addr;
     
-    uct_sci_conn_ans_t answer;
+    uct_pcie_conn_ans_t answer;
     int ret;
     unsigned int ep_conn_index;
-    uct_sci_conn_req_t request;
+    uct_pcie_conn_req_t request;
 
     unsigned int remote_interrupt_no;
-    uct_sci_iface_t* iface = ucs_derived_of(params->iface, uct_sci_iface_t);
-    uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t);
+    uct_pcie_iface_t* iface = ucs_derived_of(params->iface, uct_pcie_iface_t);
+    uct_pcie_md_t* md = ucs_derived_of(iface->super.md, uct_pcie_md_t);
 
     UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS(params);
 
@@ -177,7 +177,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
     request.ep_conn_index = ep_conn_index;
     request.ctl_segment_id = iface->ctl_segment_id;
 
-    ucs_ret = uct_sci_ep_send_recv_conn_request(
+    ucs_ret = uct_pcie_ep_send_recv_conn_request(
         request,
         self->remote_node_id,
         remote_interrupt_no,
@@ -187,7 +187,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
         return ucs_ret;
     }
     
-    /* uct_sci_ep_t *self */
+    /* uct_pcie_ep_t *self */
     self->remote_seg_id = answer.segment_id;
     self->ep_conn_offset  = answer.ep_conn_offset;
     self->packet_size_bytes = answer.packet_size_bytes;
@@ -196,7 +196,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
     /* quick fix for weird behaviour when queue size was 1...*/
     self->ep_conn_seq_num               = self->packet_queue_len > 1 ? 1 : 0;
 
-    ret = uct_sci_connect_segment(
+    ret = uct_pcie_connect_segment(
         iface->vdev_ep,
         self->ep_conn_offset,
         iface->packet_size_bytes * self->packet_queue_len,
@@ -215,7 +215,7 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
     //     DEBUG_PRINT("waiting to connect %d %s\n", sci_error,  SCIGetErrorString(sci_error));
         
     //     SCIConnectSegment(iface->vdev_ep, &self->remote_segment, self->remote_node_id, self->remote_seg_id, 
-    //                 UCT_SCI_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
+    //                 UCT_PCIE_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
     // } while (sci_error != SCI_ERR_OK);
 
     // self->buf = (uint8_t *) SCIMapRemoteSegment(self->remote_segment, &self->remote_seg_map, self->ep_conn_offset, iface->packet_size_bytes * self->packet_queue_len, NULL, 0, &sci_error);
@@ -232,14 +232,14 @@ static UCS_CLASS_INIT_FUNC(uct_sci_ep_t, const uct_ep_params_t *params)
 }
 
 
-UCS_CLASS_DEFINE(uct_sci_ep_t, uct_base_ep_t);
+UCS_CLASS_DEFINE(uct_pcie_ep_t, uct_base_ep_t);
 
-UCS_CLASS_DEFINE_NEW_FUNC(uct_sci_ep_t, uct_ep_t, const uct_ep_params_t *);
-UCS_CLASS_DEFINE_DELETE_FUNC(uct_sci_ep_t, uct_ep_t);
+UCS_CLASS_DEFINE_NEW_FUNC(uct_pcie_ep_t, uct_ep_t, const uct_ep_params_t *);
+UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
 
 
 /* //SECTION RDMA*/
-ucs_status_t uct_sci_ep_put_short(
+ucs_status_t uct_pcie_ep_put_short(
     uct_ep_h tl_ep,
     const void *buffer,
     unsigned length,
@@ -247,11 +247,11 @@ ucs_status_t uct_sci_ep_put_short(
     uct_rkey_t rkey)
 {
     //TODO
-    printf("uct_sci_ep_put_short()\n");
+    printf("uct_pcie_ep_put_short()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
-ssize_t uct_sci_ep_put_bcopy(
+ssize_t uct_pcie_ep_put_bcopy(
     uct_ep_h tl_ep,
     uct_pack_callback_t pack_cb,
     void *arg,
@@ -259,11 +259,11 @@ ssize_t uct_sci_ep_put_bcopy(
     uct_rkey_t rkey)
 {
     //TODO
-    printf("uct_sci_ep_put_bcopy()\n");
+    printf("uct_pcie_ep_put_bcopy()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
-ucs_status_t uct_sci_ep_get_bcopy(
+ucs_status_t uct_pcie_ep_get_bcopy(
     uct_ep_h tl_ep,
     uct_unpack_callback_t unpack_cb,
     void *arg,
@@ -273,7 +273,7 @@ ucs_status_t uct_sci_ep_get_bcopy(
     uct_completion_t *comp)
 {
     //TODO
-    printf("uct_sci_ep_get_bcopy()\n");
+    printf("uct_pcie_ep_get_bcopy()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
@@ -282,7 +282,7 @@ ucs_status_t uct_sci_ep_get_bcopy(
 
 /* //SECTION ATOMICS*/
 
-ucs_status_t uct_sci_ep_atomic32_post(
+ucs_status_t uct_pcie_ep_atomic32_post(
     uct_ep_h ep,
     unsigned opcode,
     uint32_t value,
@@ -290,11 +290,11 @@ ucs_status_t uct_sci_ep_atomic32_post(
     uct_rkey_t rkey)
 {
     //TODO
-    printf("uct_sci_ep_atomic32_post()\n");
+    printf("uct_pcie_ep_atomic32_post()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
-ucs_status_t uct_sci_ep_atomic64_post(
+ucs_status_t uct_pcie_ep_atomic64_post(
     uct_ep_h ep,
     unsigned opcode,
     uint64_t value,
@@ -302,11 +302,11 @@ ucs_status_t uct_sci_ep_atomic64_post(
     uct_rkey_t rkey)
 {
     //TODO
-    printf("uct_sci_ep_atomic64_post()\n");
+    printf("uct_pcie_ep_atomic64_post()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
-ucs_status_t uct_sci_ep_atomic64_fetch(
+ucs_status_t uct_pcie_ep_atomic64_fetch(
     uct_ep_h ep,
     uct_atomic_op_t opcode,
     uint64_t value,
@@ -316,11 +316,11 @@ ucs_status_t uct_sci_ep_atomic64_fetch(
     uct_completion_t *comp)
 {
     //TODO
-    printf("uct_sci_ep_atomic64_fetch()\n");
+    printf("uct_pcie_ep_atomic64_fetch()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
-ucs_status_t uct_sci_ep_atomic32_fetch(
+ucs_status_t uct_pcie_ep_atomic32_fetch(
     uct_ep_h ep,
     uct_atomic_op_t opcode,
     uint32_t value,
@@ -330,11 +330,11 @@ ucs_status_t uct_sci_ep_atomic32_fetch(
     uct_completion_t *comp)
 {
     //TODO
-    printf("uct_sci_ep_atomic32_fetch()\n");
+    printf("uct_pcie_ep_atomic32_fetch()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
-ucs_status_t uct_sci_ep_atomic_cswap64(
+ucs_status_t uct_pcie_ep_atomic_cswap64(
     uct_ep_h tl_ep,
     uint64_t compare,
     uint64_t swap,
@@ -344,11 +344,11 @@ ucs_status_t uct_sci_ep_atomic_cswap64(
     uct_completion_t *comp)
 {
     //TODO
-    printf("uct_sci_ep_atomic_cswap64()\n");
+    printf("uct_pcie_ep_atomic_cswap64()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
-ucs_status_t uct_sci_ep_atomic_cswap32(
+ucs_status_t uct_pcie_ep_atomic_cswap32(
     uct_ep_h tl_ep,
     uint32_t compare,
     uint32_t swap,
@@ -358,7 +358,7 @@ ucs_status_t uct_sci_ep_atomic_cswap32(
     uct_completion_t *comp)
 {
     //TODO
-    printf("uct_sci_ep_atomic_cswap32()\n");
+    printf("uct_pcie_ep_atomic_cswap32()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
@@ -375,7 +375,7 @@ ucs_status_t uct_sci_ep_atomic_cswap32(
  * @param[in] length 
  * @return 
  */
-ucs_status_t uct_sci_ep_am_short(
+ucs_status_t uct_pcie_ep_am_short(
     uct_ep_h tl_ep,
     uint8_t id,
     uint64_t header,
@@ -383,10 +383,10 @@ ucs_status_t uct_sci_ep_am_short(
     unsigned length)
 {
 
-    uct_sci_ep_t* ep = ucs_derived_of(tl_ep, uct_sci_ep_t);
-    uct_sci_am_hdr_t* packet_am_hdr; 
-    uct_sci_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_sci_iface_t);
-    uct_sci_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
+    uct_pcie_ep_t* ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_am_hdr_t* packet_am_hdr; 
+    uct_pcie_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uct_pcie_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
     uint32_t packet_buf_offset;
     uint32_t send_start_buf_offset;
     
@@ -395,11 +395,11 @@ ucs_status_t uct_sci_ep_am_short(
     }
         
     packet_buf_offset = ep->packet_size_bytes * (ep->ep_conn_seq_num % ep->packet_queue_len);
-    packet_am_hdr = (uct_sci_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
+    packet_am_hdr = (uct_pcie_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
     packet_am_hdr->am_id = id;
     packet_am_hdr->am_length = length + sizeof(header);
 
-    send_start_buf_offset = packet_buf_offset + sizeof(uct_sci_am_hdr_t);
+    send_start_buf_offset = packet_buf_offset + sizeof(uct_pcie_am_hdr_t);
 
     uct_am_short_fill_data(
         &ep->remote_seg_buf[send_start_buf_offset],
@@ -421,14 +421,14 @@ ucs_status_t uct_sci_ep_am_short(
     return UCS_OK;
 }
 
-ucs_status_t uct_sci_ep_am_short_iov(
+ucs_status_t uct_pcie_ep_am_short_iov(
     uct_ep_h tl_ep,
     uint8_t id,
     const uct_iov_t *iov,
     size_t iovcnt)
 {
     //TODO short_iov
-    printf("uct_sci_ep_am_short_iov()\n");
+    printf("uct_pcie_ep_am_short_iov()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
@@ -441,17 +441,17 @@ ucs_status_t uct_sci_ep_am_short_iov(
  * @param[in] flags 
  * @return 
  */
-ssize_t uct_sci_ep_am_bcopy(
+ssize_t uct_pcie_ep_am_bcopy(
     uct_ep_h tl_ep,
     uint8_t id,
     uct_pack_callback_t pack_cb,
     void *arg,
     unsigned flags)
 {
-    uct_sci_ep_t* ep = ucs_derived_of(tl_ep, uct_sci_ep_t);
-    uct_sci_am_hdr_t* packet_am_hdr;
-    uct_sci_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_sci_iface_t);
-    uct_sci_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
+    uct_pcie_ep_t* ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_am_hdr_t* packet_am_hdr;
+    uct_pcie_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uct_pcie_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
     ssize_t length;
     uint32_t packet_buf_offset;
     uint32_t send_start_buf_offset;
@@ -463,9 +463,9 @@ ssize_t uct_sci_ep_am_bcopy(
     packet_buf_offset =
         ep->packet_size_bytes * (ep->ep_conn_seq_num % ep->packet_queue_len);
 
-    packet_am_hdr = (uct_sci_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
+    packet_am_hdr = (uct_pcie_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
     
-    send_start_buf_offset = packet_buf_offset + sizeof(uct_sci_am_hdr_t);
+    send_start_buf_offset = packet_buf_offset + sizeof(uct_pcie_am_hdr_t);
     
     /* This is where the sending of the real data happends */
     length = pack_cb(&ep->remote_seg_buf[send_start_buf_offset],  arg);
@@ -496,7 +496,7 @@ ssize_t uct_sci_ep_am_bcopy(
  * @param[in] bytes_to_send
  * @param[out] packet_buffer 
  */
-static void uct_sci_fill_buffer_with_packet(
+static void uct_pcie_fill_buffer_with_packet(
     const void *header,
     unsigned header_length,
     uint8_t id,
@@ -508,29 +508,29 @@ static void uct_sci_fill_buffer_with_packet(
 {
     size_t bytes_copied;
     ucs_iov_iter_t uct_iov_iter;
-    uct_sci_am_hdr_t* packet_am_hdr = (uct_sci_am_hdr_t*) packet_buffer;
+    uct_pcie_am_hdr_t* packet_am_hdr = (uct_pcie_am_hdr_t*) packet_buffer;
 
     /* Convert the iov into a contiguous buffer */
     ucs_iov_iter_init(&uct_iov_iter);
     
-    /* Set uct_sci packet prefix values, stored directly into the DMA buffer
+    /* Set uct_pcie packet prefix values, stored directly into the DMA buffer
      * ready for sending */
     packet_am_hdr->am_id = id;
     packet_am_hdr->am_length = iov_total_len + header_length;
     
     /* Copy the uct header to the transfer buffer after prefix.
-     * Copied after uct_sci packet prefix*/
+     * Copied after uct_pcie packet prefix*/
     if (header_length != 0) {
-        memcpy(&packet_buffer[sizeof(uct_sci_am_hdr_t)], header, header_length);
+        memcpy(&packet_buffer[sizeof(uct_pcie_am_hdr_t)], header, header_length);
     }
     
     /* Copy package from iov to the the DMA buffer. That is,
-     * the rest of the data, after uct_sci packet prefix and uct header */
+     * the rest of the data, after uct_pcie packet prefix and uct header */
     bytes_copied = uct_iov_to_buffer(
         iov,
         iovcnt,
         &uct_iov_iter,
-        &packet_buffer[sizeof(uct_sci_am_hdr_t) + header_length],
+        &packet_buffer[sizeof(uct_pcie_am_hdr_t) + header_length],
         bytes_to_send);
     assert(bytes_copied != iov_total_len);
 }
@@ -547,7 +547,7 @@ static void uct_sci_fill_buffer_with_packet(
  * @param comp Unused 
  * @return 
  */
-ucs_status_t uct_sci_ep_am_zcopy(
+ucs_status_t uct_pcie_ep_am_zcopy(
     uct_ep_h uct_ep,
     uint8_t id,
     const void *header,
@@ -558,10 +558,10 @@ ucs_status_t uct_sci_ep_am_zcopy(
     uct_completion_t *comp) 
 {
 
-    uct_sci_ep_t* ep = ucs_derived_of(uct_ep, uct_sci_ep_t);
-    uct_sci_iface_t* iface = ucs_derived_of(uct_ep->iface, uct_sci_iface_t);
-    uct_sci_am_hdr_t* packet_am_hdr; 
-    uct_sci_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
+    uct_pcie_ep_t* ep = ucs_derived_of(uct_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t* iface = ucs_derived_of(uct_ep->iface, uct_pcie_iface_t);
+    uct_pcie_am_hdr_t* packet_am_hdr; 
+    uct_pcie_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
     uint32_t packet_buf_offset;
     size_t bytes_to_send;
     sci_error_t sci_error;
@@ -572,11 +572,11 @@ ucs_status_t uct_sci_ep_am_zcopy(
         return UCS_ERR_NO_RESOURCE;
     }
 
-    bytes_to_send = iov_total_len + header_length + sizeof(uct_sci_am_hdr_t);
+    bytes_to_send = iov_total_len + header_length + sizeof(uct_pcie_am_hdr_t);
     UCT_CHECK_LENGTH(bytes_to_send, 0 , iface->packet_size_bytes, "am_zcopy");
     UCT_CHECK_AM_ID(id);
 
-    uct_sci_fill_buffer_with_packet(
+    uct_pcie_fill_buffer_with_packet(
         header,
         header_length,
         id,
@@ -597,9 +597,9 @@ ucs_status_t uct_sci_ep_am_zcopy(
         0, /* localOffset = 0 */
         bytes_to_send,
         packet_buf_offset,
-        UCT_SCI_NO_CALLBACK,
+        UCT_PCIE_NO_CALLBACK,
         NULL,
-        UCT_SCI_NO_FLAGS,
+        UCT_PCIE_NO_FLAGS,
         &sci_error);
     if (ucs_unlikely(sci_error != SCI_ERR_OK)) {
         ucs_error("SCIStartDmaTransfer failed: %s",
@@ -610,7 +610,7 @@ ucs_status_t uct_sci_ep_am_zcopy(
     SCIWaitForDMAQueue(
         iface->dma_queue,
         SCI_INFINITE_TIMEOUT,
-        UCT_SCI_NO_FLAGS,
+        UCT_PCIE_NO_FLAGS,
         &sci_error);
     if(ucs_unlikely(sci_error != SCI_ERR_OK)) {
         ucs_error("SCIWaitForDMAQueue failed: %s",
@@ -619,7 +619,7 @@ ucs_status_t uct_sci_ep_am_zcopy(
     }
 
     /* Notify other side that a message has been posted */
-    packet_am_hdr = (uct_sci_am_hdr_t*)&ep->remote_seg_buf[packet_buf_offset];
+    packet_am_hdr = (uct_pcie_am_hdr_t*)&ep->remote_seg_buf[packet_buf_offset];
     ep->ep_conn_seq_num++;
     packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);

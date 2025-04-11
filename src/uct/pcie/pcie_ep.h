@@ -1,17 +1,17 @@
-#ifndef UCT_SCI_EP_H
-#define UCT_SCI_EP_H
+#ifndef UCT_PCIE_EP_H
+#define UCT_PCIE_EP_H
 
 #include <stdio.h>
 
 #include <uct/base/uct_iface.h>
-#include "sci_iface.h"
+#include "pcie_iface.h"
 
 
 
 typedef struct {
-    uct_sci_device_addr_t device_addr;
-    uct_sci_iface_addr_t iface_addr;
-}  UCS_S_PACKED uct_sci_ep_addr_t;
+    uct_pcie_device_addr_t device_addr;
+    uct_pcie_iface_addr_t iface_addr;
+}  UCS_S_PACKED uct_pcie_ep_addr_t;
 
 typedef struct {
     uct_base_ep_t           super;
@@ -27,28 +27,28 @@ typedef struct {
     unsigned int            remote_node_id;
     uint32_t                ep_conn_seq_num;
     //sci_map_t               ctl_segment_map;
-    //uct_sci_ctl_t*              sci_ctl;              
-} uct_sci_ep_t;
+    //uct_pcie_ctl_t*              sci_ctl;              
+} uct_pcie_ep_t;
 
 
-UCS_CLASS_DECLARE_NEW_FUNC(uct_sci_ep_t, uct_ep_t, const uct_ep_params_t *);
-UCS_CLASS_DECLARE_DELETE_FUNC(uct_sci_ep_t, uct_ep_t);
+UCS_CLASS_DECLARE_NEW_FUNC(uct_pcie_ep_t, uct_ep_t, const uct_ep_params_t *);
+UCS_CLASS_DECLARE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
 
-ucs_status_t uct_sci_ep_am_short(
+ucs_status_t uct_pcie_ep_am_short(
     uct_ep_h tl_ep,
     uint8_t id,
     uint64_t header,
     const void *payload,
     unsigned length);
 
-ssize_t uct_sci_ep_am_bcopy(
+ssize_t uct_pcie_ep_am_bcopy(
     uct_ep_h tl_ep,
     uint8_t id,
     uct_pack_callback_t pack_cb,
     void *arg,
     unsigned flags);
 
-ucs_status_t uct_sci_ep_am_zcopy(
+ucs_status_t uct_pcie_ep_am_zcopy(
     uct_ep_h ep,
     uint8_t id,
     const void *header,
@@ -58,27 +58,27 @@ ucs_status_t uct_sci_ep_am_zcopy(
     unsigned flags,
     uct_completion_t *comp);                                  
 
-ucs_status_t uct_sci_ep_put_short(
+ucs_status_t uct_pcie_ep_put_short(
     uct_ep_h tl_ep,
     const void *buffer,
     unsigned length,
     uint64_t remote_addr,
     uct_rkey_t rkey);
 
-ucs_status_t uct_sci_ep_am_short_iov(
+ucs_status_t uct_pcie_ep_am_short_iov(
     uct_ep_h tl_ep,
     uint8_t id,
     const uct_iov_t *iov,
     size_t iovcnt);
 
-ssize_t uct_sci_ep_put_bcopy(
+ssize_t uct_pcie_ep_put_bcopy(
     uct_ep_h ep,
     uct_pack_callback_t pack_cb,
     void *arg,
     uint64_t remote_addr,
     uct_rkey_t rkey);
 
-ucs_status_t uct_sci_ep_get_bcopy(
+ucs_status_t uct_pcie_ep_get_bcopy(
     uct_ep_h ep,
     uct_unpack_callback_t unpack_cb,
     void *arg,
@@ -87,7 +87,7 @@ ucs_status_t uct_sci_ep_get_bcopy(
     uct_rkey_t rkey,
     uct_completion_t *comp);
 
-ucs_status_t uct_sci_ep_atomic_cswap64(
+ucs_status_t uct_pcie_ep_atomic_cswap64(
     uct_ep_h tl_ep,
     uint64_t compare,
     uint64_t swap,
@@ -96,7 +96,7 @@ ucs_status_t uct_sci_ep_atomic_cswap64(
     uint64_t *result,
     uct_completion_t *comp);
 
-ucs_status_t uct_sci_ep_atomic_cswap32(
+ucs_status_t uct_pcie_ep_atomic_cswap32(
     uct_ep_h tl_ep,
     uint32_t compare,
     uint32_t swap,
@@ -105,14 +105,14 @@ ucs_status_t uct_sci_ep_atomic_cswap32(
     uint32_t *result,
     uct_completion_t *comp);
 
-ucs_status_t uct_sci_ep_atomic64_post(
+ucs_status_t uct_pcie_ep_atomic64_post(
     uct_ep_h ep,
     unsigned opcode,
     uint64_t value,
     uint64_t remote_addr,
     uct_rkey_t rkey);
 
-ucs_status_t uct_sci_ep_atomic64_fetch(
+ucs_status_t uct_pcie_ep_atomic64_fetch(
     uct_ep_h ep,
     uct_atomic_op_t opcode,
     uint64_t value,
@@ -121,14 +121,14 @@ ucs_status_t uct_sci_ep_atomic64_fetch(
     uct_rkey_t rkey,
     uct_completion_t *comp);
 
-ucs_status_t uct_sci_ep_atomic32_post(
+ucs_status_t uct_pcie_ep_atomic32_post(
     uct_ep_h ep,
     unsigned opcode,
     uint32_t value,
     uint64_t remote_addr,
     uct_rkey_t rkey);
 
-ucs_status_t uct_sci_ep_atomic32_fetch(
+ucs_status_t uct_pcie_ep_atomic32_fetch(
     uct_ep_h ep,
     uct_atomic_op_t opcode,
     uint32_t value,
