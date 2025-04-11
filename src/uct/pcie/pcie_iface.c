@@ -5,33 +5,33 @@
 
 #include "stdio.h"
 
-#include "sci_md.h"
-#include "sci_iface.h"
-#include "sci_ep.h"
-#include "sci_sisci_helper.h"
+#include "pcie_md.h"
+#include "pcie_iface.h"
+#include "pcie_ep.h"
+#include "pcie_sisci_helper.h"
 
 /* Forward declarations */
-static uct_iface_ops_t uct_sci_iface_ops;
+static uct_iface_ops_t uct_pcie_iface_ops;
 
-static ucs_config_field_t uct_sci_iface_config_table[] = {
+static ucs_config_field_t uct_pcie_iface_config_table[] = {
     {"", "MAX_NUM_EPS=16", NULL,
-     ucs_offsetof(uct_sci_iface_config_t, super),
+     ucs_offsetof(uct_pcie_iface_config_t, super),
      UCS_CONFIG_TYPE_TABLE(uct_iface_config_table)},
 
     {"SEND_SIZE", "16k",
      "Size of copy-out buffer",
-     ucs_offsetof(uct_sci_iface_config_t, packet_size_bytes),
+     ucs_offsetof(uct_pcie_iface_config_t, packet_size_bytes),
         UCS_CONFIG_TYPE_MEMUNITS},
 
     {
         "MAX_EPS", "24", "Max EPs for SCI tl",
-        ucs_offsetof(uct_sci_iface_config_t, max_eps),
+        ucs_offsetof(uct_pcie_iface_config_t, max_eps),
         UCS_CONFIG_TYPE_UINT
     },
 
     {
         "PACKET_QUEUE_LEN", "5", "Message Queue size for each connection",
-        ucs_offsetof(uct_sci_iface_config_t, packet_queue_len),
+        ucs_offsetof(uct_pcie_iface_config_t, packet_queue_len),
         UCS_CONFIG_TYPE_UINT
     },
 
@@ -39,7 +39,7 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
 };
 
 /**
- * @brief Reserve a uct_sci control descriptor from the uct_sci_iface's list
+ * @brief Reserve a uct_pcie control descriptor from the uct_pcie_iface's list
  *        of control descriptor.
  * 
  * @param[in] iface 
@@ -47,8 +47,8 @@ static ucs_config_field_t uct_sci_iface_config_table[] = {
  * 
  * @return 
  */
-static int uct_sci_reserve_control_descriptor(
-    uct_sci_iface_t* iface,
+static int uct_pcie_reserve_control_descriptor(
+    uct_pcie_iface_t* iface,
     unsigned int *cd_index)
 {
     unsigned int i;
@@ -59,7 +59,7 @@ static int uct_sci_reserve_control_descriptor(
     /* Find free sci_cd in iface sci_cd list */
     for (i = 0; i < iface->max_eps; i++)
     {
-        if(iface->sci_cds[i].cd_status == UCT_SCI_CD_AVAILABLE) {
+        if(iface->sci_cds[i].cd_status == UCT_PCIE_CD_AVAILABLE) {
             break;
         }
     }
@@ -67,7 +67,7 @@ static int uct_sci_reserve_control_descriptor(
     if (i < iface->max_eps) {
         /* Success: reserve sci_cd */
         *cd_index = i;
-        iface->sci_cds[i].cd_status = UCT_SCI_CD_RESERVED;
+        iface->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
         iface->connections++;
     } else {
         rc = -1;
@@ -79,21 +79,21 @@ static int uct_sci_reserve_control_descriptor(
 }
 
 /**
- * @brief Unreserve a uct_sci control descriptor from the uct_sci_iface's list
+ * @brief Unreserve a uct_pcie control descriptor from the uct_pcie_iface's list
  *        of control descriptor.
  * 
- * @details helper function to uct_sci_conn_handler.
+ * @details helper function to uct_pcie_conn_handler.
  * 
  * @param[inout] iface 
  * @param[in] cd_index 
  */
-static void uct_sci_ureserve_control_descriptor(
-    uct_sci_iface_t* iface,
+static void uct_pcie_ureserve_control_descriptor(
+    uct_pcie_iface_t* iface,
     unsigned int cd_index)
 {
     pthread_mutex_lock(&iface->lock);
 
-    iface->sci_cds[cd_index].cd_status = UCT_SCI_CD_AVAILABLE;
+    iface->sci_cds[cd_index].cd_status = UCT_PCIE_CD_AVAILABLE;
     iface->connections--;
 
     pthread_mutex_unlock(&iface->lock);
@@ -102,19 +102,19 @@ static void uct_sci_ureserve_control_descriptor(
 /**
  * @brief Send answer to incoming request.
  * 
- * @details helper function to uct_sci_conn_handler.
+ * @details helper function to uct_pcie_conn_handler.
  * 
  * @param[in] iface
  * @param[in] request 
  * @return 
  */
-static int uct_sci_send_answer_to_request(
-    uct_sci_iface_t* iface,
-    uct_sci_conn_req_t* request,
+static int uct_pcie_send_answer_to_request(
+    uct_pcie_iface_t* iface,
+    uct_pcie_conn_req_t* request,
     sci_desc_t sci_virtual_device,
-    uct_sci_conn_desc_t *sci_cd)
+    uct_pcie_conn_desc_t *sci_cd)
 {
-    uct_sci_conn_ans_t   answer;
+    uct_pcie_conn_ans_t   answer;
     sci_remote_data_interrupt_t ans_interrupt;
     sci_error_t sci_error;
 
@@ -139,13 +139,13 @@ static int uct_sci_send_answer_to_request(
         ans_interrupt,
         (void *) &answer,
         sizeof(answer),
-        UCT_SCI_NO_FLAGS,
+        UCT_PCIE_NO_FLAGS,
         &sci_error);
     if(sci_error != SCI_ERR_OK) {
         ucs_warn("SCI Trigger Interrupt: %s", SCIGetErrorString(sci_error));
     }
 
-    SCIDisconnectDataInterrupt(ans_interrupt, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIDisconnectDataInterrupt(ans_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
 
     /* todo, do error checking */
     return 0;
@@ -166,44 +166,44 @@ static int uct_sci_send_answer_to_request(
  * @param[in] sci_error: Not used
  * @return sci_callback_action_t: Returns callback_continue  
  */
-static sci_callback_action_t uct_sci_conn_handler(
+static sci_callback_action_t uct_pcie_conn_handler(
     void* arg,
     sci_local_data_interrupt_t interrupt,
     void* data,
     unsigned int length,
     sci_error_t sci_error)
 {
-    uct_sci_conn_req_t* request = (uct_sci_conn_req_t*) data;
-    uct_sci_iface_t* iface = (uct_sci_iface_t*) arg;
-    uct_sci_md_t* md = ucs_derived_of(iface->super.md, uct_sci_md_t); 
+    uct_pcie_conn_req_t* request = (uct_pcie_conn_req_t*) data;
+    uct_pcie_iface_t* iface = (uct_pcie_iface_t*) arg;
+    uct_pcie_md_t* md = ucs_derived_of(iface->super.md, uct_pcie_md_t); 
     unsigned int sci_cd_index;
-    uct_sci_conn_desc_t *sci_cd;
+    uct_pcie_conn_desc_t *sci_cd;
 
     int ret;
 
-    ret = uct_sci_reserve_control_descriptor(iface, &sci_cd_index);
+    ret = uct_pcie_reserve_control_descriptor(iface, &sci_cd_index);
     if (ret != 0) {
         ucs_error("Number of endpoints exceeds limit %u", iface->max_eps);
         return SCI_CALLBACK_CONTINUE;
     }
     sci_cd = &(iface->sci_cds[sci_cd_index]);
     
-    ret = uct_sci_send_answer_to_request(
+    ret = uct_pcie_send_answer_to_request(
         iface,
         request,
         md->sci_virtual_device,
         sci_cd);
     if (ret != 0) {
         ucs_error("Failed to send answer to connection request");
-        uct_sci_ureserve_control_descriptor(iface, sci_cd_index);
+        uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
         return SCI_CALLBACK_CONTINUE;
     }
 
     /* Connect to remote endpoint's control buffer */
-    ret = uct_sci_connect_segment(
+    ret = uct_pcie_connect_segment(
         iface->vdev_ctl,
-        request->ep_conn_index * sizeof(uct_sci_ctl_t),
-        sizeof(uct_sci_ctl_t),
+        request->ep_conn_index * sizeof(uct_pcie_ctl_t),
+        sizeof(uct_pcie_ctl_t),
         request->node_id,
         request->ctl_segment_id,
         &sci_cd->ctl_segment,
@@ -211,11 +211,11 @@ static sci_callback_action_t uct_sci_conn_handler(
         (volatile void **)&sci_cd->ctl_buf);
     if (ret != 0) {
         ucs_error("Failed to connect to remote control buffer");
-        uct_sci_ureserve_control_descriptor(iface, sci_cd_index);
+        uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
         return SCI_CALLBACK_CONTINUE;
     }
             
-    sci_cd->cd_status = UCT_SCI_CD_READY;
+    sci_cd->cd_status = UCT_PCIE_CD_READY;
     return SCI_CALLBACK_CONTINUE;
 }
 
@@ -253,7 +253,7 @@ static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
  * @param tl_config 
  */
 static UCS_CLASS_INIT_FUNC(
-    uct_sci_iface_t,
+    uct_pcie_iface_t,
     uct_md_h md,
     uct_worker_h worker,
     const uct_iface_params_t *params,
@@ -266,9 +266,9 @@ static UCS_CLASS_INIT_FUNC(
     ssize_t i = 0;
     sci_error_t sci_error;
     unsigned dma_seg_id;
-    sci_cb_data_interrupt_t callback = uct_sci_conn_handler;
-    uct_sci_iface_config_t* config = ucs_derived_of(tl_config, uct_sci_iface_config_t); 
-    uct_sci_md_t * sci_md = ucs_derived_of(md, uct_sci_md_t);
+    sci_cb_data_interrupt_t callback = uct_pcie_conn_handler;
+    uct_pcie_iface_config_t* config = ucs_derived_of(tl_config, uct_pcie_iface_config_t); 
+    uct_pcie_md_t * sci_md = ucs_derived_of(md, uct_pcie_md_t);
 
     size_t packet_queue_size_bytes;
     size_t recv_segment_size;
@@ -293,12 +293,12 @@ static UCS_CLASS_INIT_FUNC(
     }
 
     UCS_CLASS_CALL_SUPER_INIT(
-            uct_base_iface_t, &uct_sci_iface_ops, &uct_base_iface_internal_ops,
+            uct_base_iface_t, &uct_pcie_iface_ops, &uct_base_iface_internal_ops,
             md, worker, params,
             tl_config UCS_STATS_ARG(
                     (params->field_mask & UCT_IFACE_PARAM_FIELD_STATS_ROOT) ?
                             params->stats_root :
-                            NULL) UCS_STATS_ARG(UCT_SCI_NAME));
+                            NULL) UCS_STATS_ARG(UCT_PCIE_NAME));
     
 
 
@@ -309,11 +309,11 @@ static UCS_CLASS_INIT_FUNC(
         goto err_destroy_mutex;
     }
 
-    /* uct_sci_iface_t *self */
+    /* uct_pcie_iface_t *self */
     self->device_addr = nodeID;
     self->packet_size_bytes = config->packet_size_bytes;
     self->eps_init_cnt = 0;
-    self->max_eps = MIN(UCT_SCI_MAX_EPS, config->max_eps);
+    self->max_eps = MIN(UCT_PCIE_MAX_EPS, config->max_eps);
     self->connections = 0;
     self->packet_queue_len  = config->packet_queue_len;
 
@@ -333,7 +333,7 @@ static UCS_CLASS_INIT_FUNC(
 
     /*  recv segment    */
     recv_segment_size = self->max_eps * packet_queue_size_bytes;
-    ret = uct_sci_helper_create_seg_set_avail(
+    ret = uct_pcie_helper_create_seg_set_avail(
         sci_md->sci_virtual_device,
         &self->local_segment,
         &self->local_map,
@@ -346,8 +346,8 @@ static UCS_CLASS_INIT_FUNC(
     }
 
     /* ctl segment */
-    control_segment_size = sizeof(uct_sci_ctl_t) * self->max_eps;
-    ret = uct_sci_helper_create_seg_set_avail(
+    control_segment_size = sizeof(uct_pcie_ctl_t) * self->max_eps;
+    ret = uct_pcie_helper_create_seg_set_avail(
         sci_md->sci_virtual_device,
         &self->ctl_segment,
         &self->ctl_segment_map,
@@ -360,7 +360,7 @@ static UCS_CLASS_INIT_FUNC(
     }
 
     for(i = 0; i < self->max_eps; i++) {
-        self->sci_cds[i].cd_status = UCT_SCI_CD_AVAILABLE;
+        self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
         self->sci_cds[i].ep_conn_offset = i * packet_queue_size_bytes; 
         
         self->sci_cds[i].packet_queue_buf =
@@ -370,7 +370,7 @@ static UCS_CLASS_INIT_FUNC(
     }
 
     /* --- Initialize DMA related resources --- */
-    ret = uct_sci_helper_create_segment(
+    ret = uct_pcie_helper_create_segment(
         sci_md->sci_virtual_device,
         &self->dma_segment,
         &self->dma_map,
@@ -387,7 +387,7 @@ static UCS_CLASS_INIT_FUNC(
         &self->dma_queue,
         0,
         10,
-        UCT_SCI_NO_FLAGS,
+        UCT_PCIE_NO_FLAGS,
         &sci_error);
     if(sci_error != SCI_ERR_OK) {
         ucs_error("CreateDMAQueue: %s", SCIGetErrorString(sci_error));
@@ -427,20 +427,20 @@ static UCS_CLASS_INIT_FUNC(
     return UCS_OK;
 
 err_remove_dma_queue:
-    SCIRemoveDMAQueue(self->dma_queue, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIRemoveDMAQueue(self->dma_queue, UCT_PCIE_NO_FLAGS, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         printf("SCIRemoveDMAQueue failed: %s\n", SCIGetErrorString(sci_error));
     }
 err_remove_dma_seg:
-    uct_sci_helper_remove_segment(self->dma_segment, self->dma_map);
+    uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
 err_remove_recv_seg:
-    uct_sci_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
+    uct_pcie_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
 err_remove_ctl_seg:
-    uct_sci_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
+    uct_pcie_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
 err_free_vdev_ctl:
-    SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
 err_free_vdev_ep:
-    SCIClose(self->vdev_ep, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
 err_destroy_mutex:
     pthread_mutex_destroy(&self->lock);
 err:
@@ -453,11 +453,11 @@ err:
  * 
  */
 
-static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
+static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
 {
     sci_error_t sci_error;
     
-    /* Cleanup for uct_sci_iface_progress_enable */
+    /* Cleanup for uct_pcie_iface_progress_enable */
     uct_base_iface_progress_disable(&self->super.super,
                                     UCT_PROGRESS_SEND |
                                     UCT_PROGRESS_RECV);
@@ -466,53 +466,53 @@ static UCS_CLASS_CLEANUP_FUNC(uct_sci_iface_t)
      * init, but it makes sense to clean it up before disconnecting from
      * segments. Since removing this data interrupt effectively stops any new
      * connections from being set up. */
-    SCIRemoveDataInterrupt(self->interrupt, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIRemoveDataInterrupt(self->interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
 
-    /* Remove connections set up by connection handler uct_sci_conn_handler for
+    /* Remove connections set up by connection handler uct_pcie_conn_handler for
      * any connections initiated by a remote endpoint */
     for(ssize_t i = 0; i < self->connections; i++) {
-        self->sci_cds[i].cd_status = UCT_SCI_CD_RESERVED;
-        uct_sci_disconnect_segment(
+        self->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
+        uct_pcie_disconnect_segment(
             self->sci_cds[i].ctl_segment,
             self->sci_cds[i].ctl_segment_map);
-        self->sci_cds[i].cd_status = UCT_SCI_CD_AVAILABLE;
+        self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
     }
     
     /* ----  Remove other resources set up on init --- */
 
     /* Clean up DMA related resources */
-    SCIRemoveDMAQueue(self->dma_queue, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIRemoveDMAQueue(self->dma_queue, UCT_PCIE_NO_FLAGS, &sci_error);
     if(sci_error != SCI_ERR_OK) {
         ucs_error("SCIRemoveDMAQueue: %s", SCIGetErrorString(sci_error));
     }
-    uct_sci_helper_remove_segment(self->dma_segment, self->dma_map);
+    uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
 
 
     /* Remove data segment where iface receives packages from endpoint */
-    uct_sci_helper_remove_seg_set_unavail(
+    uct_pcie_helper_remove_seg_set_unavail(
         self->local_segment,
         self->local_map);
 
     /* Remove control segment where iface sends acknowledgements */
-    uct_sci_helper_remove_seg_set_unavail(
+    uct_pcie_helper_remove_seg_set_unavail(
         self->ctl_segment,
         self->ctl_segment_map);
 
     /* Closing device descriptors used for connections */
-    SCIClose(self->vdev_ctl, UCT_SCI_NO_FLAGS, &sci_error);
-    SCIClose(self->vdev_ep, UCT_SCI_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
 
     pthread_mutex_destroy(&self->lock);
 }
 
 
 /* block of macros defining the interface class */ 
-UCS_CLASS_DEFINE(uct_sci_iface_t, uct_base_iface_t);
+UCS_CLASS_DEFINE(uct_pcie_iface_t, uct_base_iface_t);
 
-static UCS_CLASS_DEFINE_DELETE_FUNC(uct_sci_iface_t, uct_iface_t);
+static UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_iface_t, uct_iface_t);
 
 static UCS_CLASS_DEFINE_NEW_FUNC(
-    uct_sci_iface_t,
+    uct_pcie_iface_t,
     uct_iface_t,
     uct_md_h,
     uct_worker_h,
@@ -520,7 +520,7 @@ static UCS_CLASS_DEFINE_NEW_FUNC(
     const uct_iface_config_t*);
 
 
-static ucs_status_t uct_sci_query_devices(
+static ucs_status_t uct_pcie_query_devices(
     uct_md_h md,
     uct_tl_device_resource_t **devices_p,
     unsigned *num_devices_p)
@@ -529,7 +529,7 @@ static ucs_status_t uct_sci_query_devices(
        
     status = uct_single_device_resource(
         md,
-        UCT_SCI_NAME,
+        UCT_PCIE_NAME,
         UCT_DEVICE_TYPE_NET,
         UCS_SYS_DEVICE_ID_UNKNOWN,
         devices_p,
@@ -538,7 +538,7 @@ static ucs_status_t uct_sci_query_devices(
     return status; 
 }
 
-static int uct_sci_iface_is_reachable(
+static int uct_pcie_iface_is_reachable(
     const uct_iface_h tl_iface,
     const uct_device_addr_t *dev_addr,
     const uct_iface_addr_t *iface_addr)
@@ -546,12 +546,12 @@ static int uct_sci_iface_is_reachable(
     return 1;
 }
 
-ucs_status_t uct_sci_get_device_address(
+ucs_status_t uct_pcie_get_device_address(
     uct_iface_h iface,
     uct_device_addr_t *addr)
 {
-    uct_sci_iface_t* sci_iface = ucs_derived_of(iface, uct_sci_iface_t);
-    uct_sci_device_addr_t* sci_addr = (uct_sci_device_addr_t *) addr;
+    uct_pcie_iface_t* sci_iface = ucs_derived_of(iface, uct_pcie_iface_t);
+    uct_pcie_device_addr_t* sci_addr = (uct_pcie_device_addr_t *) addr;
     
     sci_addr->node_id = sci_iface->device_addr;
     
@@ -563,14 +563,14 @@ ucs_status_t uct_sci_get_device_address(
  * @brief returns the ID used for the connection interrupt
  *  
  */
-ucs_status_t uct_sci_iface_get_address(
+ucs_status_t uct_pcie_iface_get_address(
     uct_iface_h tl_iface,
     uct_iface_addr_t *addr)
 {
     
-    uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
+    uct_pcie_iface_t* iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
     
-    uct_sci_iface_addr_t* iface_addr = (uct_sci_iface_addr_t *) addr;
+    uct_pcie_iface_addr_t* iface_addr = (uct_pcie_iface_addr_t *) addr;
     
     iface_addr->interrupt_no = iface->interrupt_no;
     
@@ -578,7 +578,7 @@ ucs_status_t uct_sci_iface_get_address(
 }
 
 
-void uct_sci_iface_progress_enable(uct_iface_h iface, unsigned flags) {
+void uct_pcie_iface_progress_enable(uct_iface_h iface, unsigned flags) {
     uct_base_iface_progress_enable(iface, flags);
 }
 
@@ -599,34 +599,34 @@ void uct_sci_iface_progress_enable(uct_iface_h iface, unsigned flags) {
  * 
  * @return Number of messages received
  */
-static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
+static unsigned uct_pcie_iface_progress_aux(uct_pcie_iface_t* iface) {
     uint32_t packet_offset = 0;
     uint32_t packet_queue_index = 0;
     ucs_status_t ucs_ret;
     unsigned count = 0;
-    uct_sci_am_hdr_t* packet;
-    uct_sci_conn_desc_t* cd;
+    uct_pcie_am_hdr_t* packet;
+    uct_pcie_conn_desc_t* cd;
     void *packet_payload_ptr;
 
     for (size_t i = 0; i < iface->connections; i++) {
         cd = &iface->sci_cds[i];
         
         /* Skip this cd if it does not correspond to a valid connection */
-        if(cd->cd_status != UCT_SCI_CD_READY) {
+        if(cd->cd_status != UCT_PCIE_CD_READY) {
             continue;
         }
 
         packet_queue_index =
             ((cd->ep_conn_last_ack + 1) % iface->packet_queue_len);
         packet_offset = iface->packet_size_bytes * packet_queue_index;
-        packet = (uct_sci_am_hdr_t *)&cd->packet_queue_buf[packet_offset]; 
+        packet = (uct_pcie_am_hdr_t *)&cd->packet_queue_buf[packet_offset]; 
         
         if (packet->am_message_posted != 1) {
             continue;
         }
         
         packet_payload_ptr = (void*)
-            &cd->packet_queue_buf[packet_offset + sizeof(uct_sci_am_hdr_t)];
+            &cd->packet_queue_buf[packet_offset + sizeof(uct_pcie_am_hdr_t)];
 
         ucs_ret = uct_iface_invoke_am(
             &iface->super,
@@ -635,12 +635,12 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
             packet->am_length,
             0);    
         if(ucs_ret == UCS_INPROGRESS) {
-            ucs_debug("uct_sci_iface_progress_aux in progress");
+            ucs_debug("uct_pcie_iface_progress_aux in progress");
             continue;
         }
 
         if(ucs_ret != UCS_OK) {
-            ucs_error("uct_sci_iface_progress_aux returned error %d", ucs_ret);
+            ucs_error("uct_pcie_iface_progress_aux returned error %d", ucs_ret);
             continue;
         }
         
@@ -663,24 +663,24 @@ static unsigned uct_sci_iface_progress_aux(uct_sci_iface_t* iface) {
  * @param[inout] tl_iface
  * @return 
  */
-unsigned uct_sci_iface_progress(uct_iface_h tl_iface) {
-    uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
+unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
+    uct_pcie_iface_t* iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
     unsigned total_count = 0;
     unsigned partial_count;
 
     do {
-        partial_count = uct_sci_iface_progress_aux(iface);
+        partial_count = uct_pcie_iface_progress_aux(iface);
         total_count += partial_count;
     } while (partial_count != 0);
     
     return total_count;
 }
 
-static ucs_status_t uct_sci_iface_query(
+static ucs_status_t uct_pcie_iface_query(
     uct_iface_h tl_iface,
     uct_iface_attr_t *attr)
 {
-    uct_sci_iface_t* iface = ucs_derived_of(tl_iface, uct_sci_iface_t);
+    uct_pcie_iface_t* iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
 
     uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);   
     
@@ -692,9 +692,9 @@ static ucs_status_t uct_sci_iface_query(
                         UCT_IFACE_FLAG_AM_BCOPY         |
                         UCT_IFACE_FLAG_AM_ZCOPY;
     attr->cap.event_flags  = 0;
-    attr->device_addr_len  = sizeof(uct_sci_device_addr_t);
-    attr->ep_addr_len      = sizeof(uct_sci_ep_addr_t);
-    attr->iface_addr_len   = sizeof(uct_sci_iface_addr_t);
+    attr->device_addr_len  = sizeof(uct_pcie_device_addr_t);
+    attr->ep_addr_len      = sizeof(uct_pcie_ep_addr_t);
+    attr->iface_addr_len   = sizeof(uct_pcie_iface_addr_t);
     
     /* TODO: Change all these numbers to things that make sense */
     
@@ -716,46 +716,46 @@ static ucs_status_t uct_sci_iface_query(
     return UCS_OK;
 }
 
-static uct_iface_ops_t uct_sci_iface_ops = {
-    .ep_put_short             = uct_sci_ep_put_short, /* Stubbed */
-    .ep_put_bcopy             = uct_sci_ep_put_bcopy, /* Stubbed */
-    .ep_get_bcopy             = uct_sci_ep_get_bcopy, /* Stubbed */
+static uct_iface_ops_t uct_pcie_iface_ops = {
+    .ep_put_short             = uct_pcie_ep_put_short, /* Stubbed */
+    .ep_put_bcopy             = uct_pcie_ep_put_bcopy, /* Stubbed */
+    .ep_get_bcopy             = uct_pcie_ep_get_bcopy, /* Stubbed */
     
-    .ep_am_short              = uct_sci_ep_am_short,
-    .ep_am_short_iov          = uct_sci_ep_am_short_iov, /* Stubbed */
-    .ep_am_bcopy              = uct_sci_ep_am_bcopy,
-    .ep_am_zcopy              = uct_sci_ep_am_zcopy,
+    .ep_am_short              = uct_pcie_ep_am_short,
+    .ep_am_short_iov          = uct_pcie_ep_am_short_iov, /* Stubbed */
+    .ep_am_bcopy              = uct_pcie_ep_am_bcopy,
+    .ep_am_zcopy              = uct_pcie_ep_am_zcopy,
     
-    .ep_atomic_cswap64        = uct_sci_ep_atomic_cswap64, /* Stubbed */
-    .ep_atomic64_post         = uct_sci_ep_atomic64_post, /* Stubbed */
-    .ep_atomic64_fetch        = uct_sci_ep_atomic64_fetch, /* Stubbed */
-    .ep_atomic_cswap32        = uct_sci_ep_atomic_cswap32, /* Stubbed */
-    .ep_atomic32_post         = uct_sci_ep_atomic32_post, /* Stubbed */
-    .ep_atomic32_fetch        = uct_sci_ep_atomic32_fetch, /* Stubbed */
+    .ep_atomic_cswap64        = uct_pcie_ep_atomic_cswap64, /* Stubbed */
+    .ep_atomic64_post         = uct_pcie_ep_atomic64_post, /* Stubbed */
+    .ep_atomic64_fetch        = uct_pcie_ep_atomic64_fetch, /* Stubbed */
+    .ep_atomic_cswap32        = uct_pcie_ep_atomic_cswap32, /* Stubbed */
+    .ep_atomic32_post         = uct_pcie_ep_atomic32_post, /* Stubbed */
+    .ep_atomic32_fetch        = uct_pcie_ep_atomic32_fetch, /* Stubbed */
 
     .ep_flush                 = uct_base_ep_flush,
     .ep_fence                 = uct_base_ep_fence,
     .ep_check                 = ucs_empty_function_return_success,
     .ep_pending_add           = ucs_empty_function_return_busy,
     .ep_pending_purge         = ucs_empty_function,
-    .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_sci_ep_t),
-    .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_sci_ep_t),
+    .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_pcie_ep_t),
+    .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_pcie_ep_t),
     .iface_flush              = uct_base_iface_flush,
     .iface_fence              = uct_base_iface_fence,
-    .iface_progress_enable    = uct_sci_iface_progress_enable,
+    .iface_progress_enable    = uct_pcie_iface_progress_enable,
     .iface_progress_disable   = uct_base_iface_progress_disable,
-    .iface_progress           = uct_sci_iface_progress,
+    .iface_progress           = uct_pcie_iface_progress,
     .iface_event_arm          = ucs_empty_function_return_success,
-    .iface_close              = UCS_CLASS_DELETE_FUNC_NAME(uct_sci_iface_t),
-    .iface_query              = uct_sci_iface_query,
-    .iface_get_device_address = uct_sci_get_device_address,
-    .iface_get_address        = uct_sci_iface_get_address,
-    .iface_is_reachable       = uct_sci_iface_is_reachable
+    .iface_close              = UCS_CLASS_DELETE_FUNC_NAME(uct_pcie_iface_t),
+    .iface_query              = uct_pcie_iface_query,
+    .iface_get_device_address = uct_pcie_get_device_address,
+    .iface_get_address        = uct_pcie_iface_get_address,
+    .iface_is_reachable       = uct_pcie_iface_is_reachable
 };
 
-extern uct_component_t uct_sci_component;
+extern uct_component_t uct_pcie_component;
 
-#define UCT_SCI_CONFIG_PREFIX "SCI_"
+#define UCT_PCIE_CONFIG_PREFIX "SCI_"
 
 /**
  * @brief Construct a new uct tl define object
@@ -768,13 +768,13 @@ extern uct_component_t uct_sci_component;
  *  type of config table
  */
 UCT_TL_DEFINE(
-    &uct_sci_component,
-    sci,
-    uct_sci_query_devices,
-    uct_sci_iface_t,
-    UCT_SCI_CONFIG_PREFIX,
-    uct_sci_iface_config_table,
-    uct_sci_iface_config_t);
+    &uct_pcie_component,
+    pcie,
+    uct_pcie_query_devices,
+    uct_pcie_iface_t,
+    UCT_PCIE_CONFIG_PREFIX,
+    uct_pcie_iface_config_table,
+    uct_pcie_iface_config_t);
 
 
 UCS_STATIC_INIT

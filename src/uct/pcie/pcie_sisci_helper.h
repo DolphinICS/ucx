@@ -1,7 +1,7 @@
-#ifndef UCT_SCI_SISCI_HELPER_H
-#define UCT_SCI_SISCI_HELPER_H
+#ifndef UCT_PCIE_SISCI_HELPER_H
+#define UCT_PCIE_SISCI_HELPER_H
 
-#include "sci_iface.h"
+#include "pcie_iface.h"
 
 /**
  * @brief Creates, prepares and maps a local sisci segment. Gets sisci to
@@ -14,7 +14,7 @@
  * @param[out] buf 
  * @return 
  */
-int uct_sci_helper_create_segment(
+int uct_pcie_helper_create_segment(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
@@ -23,14 +23,14 @@ int uct_sci_helper_create_segment(
     void **buf);
 
 /**
- * @brief Undos setup by uct_sci_helper_create_segment.
+ * @brief Undos setup by uct_pcie_helper_create_segment.
  * 
  * @details Unmaps and removes local segment set up by
- * uct_sci_helper_create_segment.
+ * uct_pcie_helper_create_segment.
  * 
  * @param[in] segment 
  */
-void uct_sci_helper_remove_segment(
+void uct_pcie_helper_remove_segment(
     sci_local_segment_t segment,
     sci_map_t segment_map);
 
@@ -46,7 +46,7 @@ void uct_sci_helper_remove_segment(
  * @param[out] buf 
  * @return 
  */
-int uct_sci_helper_create_seg_set_avail(
+int uct_pcie_helper_create_seg_set_avail(
     sci_desc_t sd,
     sci_local_segment_t *segment,
     sci_map_t *segment_map,
@@ -56,17 +56,17 @@ int uct_sci_helper_create_seg_set_avail(
 
 /**
  * @brief Unmaps, removes local segment (after first setting it to unavailable)
- *        set up by uct_sci_helper_create_segment.
- *        (Undos setup by uct_sci_helper_create_segment)
+ *        set up by uct_pcie_helper_create_segment.
+ *        (Undos setup by uct_pcie_helper_create_segment)
  *
  * @details Unmaps, removes local segment set up by
- *          uct_sci_helper_create_segment.
+ *          uct_pcie_helper_create_segment.
  *          (after first setting it to unavailable)
  * 
  * @param[in] segment 
  * @param[in] segment_map 
  */
-void uct_sci_helper_remove_seg_set_unavail(
+void uct_pcie_helper_remove_seg_set_unavail(
     sci_local_segment_t segment,
     sci_map_t segment_map);
 
@@ -85,7 +85,7 @@ void uct_sci_helper_remove_seg_set_unavail(
  * @param[out] buf 
  * @return 
  */
-int uct_sci_connect_segment(
+int uct_pcie_connect_segment(
     sci_desc_t sd,
     size_t offset,
     size_t segment_size,
@@ -97,11 +97,11 @@ int uct_sci_connect_segment(
 
 /**
  * @brief Unmaps and disconnects from remote segment segment.
- *        (Reverses what is done in uct_sci_connect_segment)
+ *        (Reverses what is done in uct_pcie_connect_segment)
  * @param[in] segment 
  * @param[in] segment_map 
  */
-void uct_sci_disconnect_segment(
+void uct_pcie_disconnect_segment(
     sci_remote_segment_t segment,
     sci_map_t segment_map);
 

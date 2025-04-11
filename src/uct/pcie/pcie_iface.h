@@ -1,5 +1,5 @@
-#ifndef UCT_SCI_IFACE_H
-#define UCT_SCI_IFACE_H
+#ifndef UCT_PCIE_IFACE_H
+#define UCT_PCIE_IFACE_H
 
 #include "pthread.h"
 
@@ -8,35 +8,35 @@
 #include <sisci_error.h> //TODO
 #include <sisci_api.h>
 
-#define UCT_SCI_NAME "sci"
+#define UCT_PCIE_NAME "pcie"
 
-#define UCT_SCI_LOCAL_ADAPTER_NO 0
-#define UCT_SCI_NO_FLAGS 0
-#define UCT_SCI_NO_CALLBACK 0
-#define UCT_SCI_MAX_EPS 28
+#define UCT_PCIE_LOCAL_ADAPTER_NO 0
+#define UCT_PCIE_NO_FLAGS 0
+#define UCT_PCIE_NO_CALLBACK 0
+#define UCT_PCIE_MAX_EPS 28
 
 typedef struct {
     unsigned int interrupt_no; /* Listening port of iface */
-} UCS_S_PACKED uct_sci_iface_addr_t;
+} UCS_S_PACKED uct_pcie_iface_addr_t;
 
 typedef struct {
     unsigned int node_id;
-} UCS_S_PACKED uct_sci_device_addr_t;
+} UCS_S_PACKED uct_pcie_device_addr_t;
 
 typedef struct {
     uint32_t     ep_conn_ack;
-} uct_sci_ctl_t;
+} uct_pcie_ctl_t;
 
 typedef struct {
     uint8_t     am_id;
     uint8_t     am_message_posted;
     unsigned    am_length;
-} UCS_S_PACKED uct_sci_am_hdr_t;
+} UCS_S_PACKED uct_pcie_am_hdr_t;
 
 typedef enum {
-    UCT_SCI_CD_AVAILABLE,
-    UCT_SCI_CD_RESERVED,
-    UCT_SCI_CD_READY,
+    UCT_PCIE_CD_AVAILABLE,
+    UCT_PCIE_CD_RESERVED,
+    UCT_PCIE_CD_READY,
 } conn_desc_status_t;
 
 /*
@@ -71,22 +71,22 @@ typedef struct {
     uint32_t                ctl_segment_id;
     sci_remote_segment_t    ctl_segment;
     sci_map_t               ctl_segment_map;
-    uct_sci_ctl_t*          ctl_buf;
-} uct_sci_conn_desc_t;
+    uct_pcie_ctl_t*          ctl_buf;
+} uct_pcie_conn_desc_t;
 
 typedef struct {
     int     node_id;
     int     interrupt;
     int     ctl_segment_id;
     int     ep_conn_index;
-} uct_sci_conn_req_t;
+} uct_pcie_conn_req_t;
 
 typedef struct {
     unsigned int segment_id;
     unsigned int ep_conn_offset;
     unsigned int packet_size_bytes;
     unsigned int packet_queue_len;
-} uct_sci_conn_ans_t;
+} uct_pcie_conn_ans_t;
 
 typedef struct {
     uct_iface_config_t    super;
@@ -97,11 +97,11 @@ typedef struct {
     /* Number of packets in the packet queue */
     unsigned int          packet_queue_len;
 
-} uct_sci_iface_config_t;
+} uct_pcie_iface_config_t;
 
 typedef struct {
     /* UCT TCP AM header */
-    uct_sci_am_hdr_t              super;
+    uct_pcie_am_hdr_t              super;
     /* Local UCT completion object */
     uct_completion_t              *comp;
     /* Current IOV index */
@@ -110,7 +110,7 @@ typedef struct {
     size_t                        iov_cnt;
     /* IOVs that should be sent */
     struct iovec                  iov[0];
-} uct_sci_ep_zcopy_tx_t;
+} uct_pcie_ep_zcopy_tx_t;
 
 typedef struct {
     uct_base_iface_t            super;
@@ -135,7 +135,7 @@ typedef struct {
     sci_map_t                   dma_map;
     void*                       dma_buffer;
 
-    uct_sci_conn_desc_t         sci_cds[UCT_SCI_MAX_EPS];
+    uct_pcie_conn_desc_t         sci_cds[UCT_PCIE_MAX_EPS];
 
     sci_local_data_interrupt_t  interrupt; 
     unsigned int                interrupt_no;
@@ -155,8 +155,8 @@ typedef struct {
     unsigned int                ctl_segment_id;
     sci_local_segment_t         ctl_segment;
     sci_map_t                   ctl_segment_map;
-    uct_sci_ctl_t*              ctls;
-} uct_sci_iface_t;
+    uct_pcie_ctl_t*              ctls;
+} uct_pcie_iface_t;
 
 
 
