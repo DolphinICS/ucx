@@ -84,18 +84,16 @@ typedef struct {
 typedef struct {
     unsigned int segment_id;
     unsigned int ep_conn_offset;
-    unsigned int packet_size_bytes;
-    unsigned int packet_queue_len;
 } uct_pcie_conn_ans_t;
 
 typedef struct {
     uct_iface_config_t    super;
     /* Size of packet in bytes (Maximal send size) */
     size_t                packet_size_bytes;
-    /* Maximum number of endpoints supported by the iface */
-    unsigned int          max_eps;
     /* Number of packets in the packet queue */
     unsigned int          packet_queue_len;
+    /* Maximum number of endpoints supported by the iface */
+    unsigned int          max_eps;
 
 } uct_pcie_iface_config_t;
 
@@ -120,6 +118,7 @@ typedef struct {
     unsigned int                device_addr;
     /* Maximum size for payload */
     size_t                      packet_size_bytes;
+    uint32_t                    packet_queue_len;
     unsigned int                max_eps;
 
     /* Messages memory pool */
@@ -139,8 +138,6 @@ typedef struct {
 
     sci_local_data_interrupt_t  interrupt; 
     unsigned int                interrupt_no;
-    
-    uint32_t                    packet_queue_len;
 
     sci_desc_t                  vdev_ep;
     sci_desc_t                  vdev_ctl;

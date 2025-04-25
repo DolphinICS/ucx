@@ -132,8 +132,6 @@ static int uct_pcie_send_answer_to_request(
 
     answer.segment_id = iface->segment_id;
     answer.ep_conn_offset     = sci_cd->ep_conn_offset;
-    answer.packet_size_bytes  = iface->packet_size_bytes;
-    answer.packet_queue_len = iface->packet_queue_len;
     
     SCITriggerDataInterrupt(
         ans_interrupt,

@@ -190,16 +190,14 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     /* uct_pcie_ep_t *self */
     self->remote_seg_id = answer.segment_id;
     self->ep_conn_offset  = answer.ep_conn_offset;
-    self->packet_size_bytes = answer.packet_size_bytes;
-    self->packet_queue_len  = answer.packet_queue_len;
     self->ep_conn_index = ep_conn_index;
     /* quick fix for weird behaviour when queue size was 1...*/
-    self->ep_conn_seq_num               = self->packet_queue_len > 1 ? 1 : 0;
+    self->ep_conn_seq_num               = iface->packet_queue_len > 1 ? 1 : 0;
 
     ret = uct_pcie_connect_segment(
         iface->vdev_ep,
         self->ep_conn_offset,
-        iface->packet_size_bytes * self->packet_queue_len,
+        iface->packet_size_bytes * iface->packet_queue_len,
         self->remote_node_id,
         self->remote_seg_id,
         &self->remote_segment,
@@ -394,7 +392,7 @@ ucs_status_t uct_pcie_ep_am_short(
         return UCS_ERR_NO_RESOURCE;
     }
         
-    packet_buf_offset = ep->packet_size_bytes * (ep->ep_conn_seq_num % ep->packet_queue_len);
+    packet_buf_offset = iface->packet_size_bytes * (ep->ep_conn_seq_num % iface->packet_queue_len);
     packet_am_hdr = (uct_pcie_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
     packet_am_hdr->am_id = id;
     packet_am_hdr->am_length = length + sizeof(header);
@@ -461,7 +459,7 @@ ssize_t uct_pcie_ep_am_bcopy(
     }
 
     packet_buf_offset =
-        ep->packet_size_bytes * (ep->ep_conn_seq_num % ep->packet_queue_len);
+        iface->packet_size_bytes * (ep->ep_conn_seq_num % iface->packet_queue_len);
 
     packet_am_hdr = (uct_pcie_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
     
@@ -587,7 +585,7 @@ ucs_status_t uct_pcie_ep_am_zcopy(
         iface->dma_buffer);
     
     packet_buf_offset =
-        ep->packet_size_bytes * (ep->ep_conn_seq_num % ep->packet_queue_len);
+        iface->packet_size_bytes * (ep->ep_conn_seq_num % iface->packet_queue_len);
 
     /* Send all the data  */
     SCIStartDmaTransfer(
