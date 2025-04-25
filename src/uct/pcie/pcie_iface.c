@@ -18,7 +18,7 @@ static ucs_config_field_t uct_pcie_iface_config_table[] = {
      ucs_offsetof(uct_pcie_iface_config_t, super),
      UCS_CONFIG_TYPE_TABLE(uct_iface_config_table)},
 
-    {"SEND_SIZE", "64k",
+    {"SEND_SIZE", "512k",
      "Size of copy-out buffer",
      ucs_offsetof(uct_pcie_iface_config_t, packet_size_bytes),
         UCS_CONFIG_TYPE_MEMUNITS},
