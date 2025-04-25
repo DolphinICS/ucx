@@ -18,7 +18,7 @@ static ucs_config_field_t uct_pcie_iface_config_table[] = {
      ucs_offsetof(uct_pcie_iface_config_t, super),
      UCS_CONFIG_TYPE_TABLE(uct_iface_config_table)},
 
-    {"SEND_SIZE", "16k",
+    {"SEND_SIZE", "64k",
      "Size of copy-out buffer",
      ucs_offsetof(uct_pcie_iface_config_t, packet_size_bytes),
         UCS_CONFIG_TYPE_MEMUNITS},
@@ -701,7 +701,7 @@ static ucs_status_t uct_pcie_iface_query(
     /* AM flags - TODO: these might need to be fine tuned at a later stage */
     attr->cap.am.max_short = iface->packet_size_bytes;
     attr->cap.am.max_bcopy = 2048;
-    attr->cap.am.min_zcopy = 32768;
+    attr->cap.am.min_zcopy = 512;
     attr->cap.am.max_zcopy = iface->packet_size_bytes;
 
     attr->cap.am.max_iov   = 10;

@@ -532,7 +532,7 @@ static void uct_pcie_fill_buffer_with_packet(
         &uct_iov_iter,
         &packet_buffer[sizeof(uct_pcie_am_hdr_t) + header_length],
         bytes_to_send);
-    assert(bytes_copied != iov_total_len);
+    assert(bytes_copied != bytes_to_send);
 }
 
 /**
