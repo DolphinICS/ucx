@@ -23,15 +23,32 @@ hilmar@mx4-dev-5:~/ucx_dev/build$ ./src/tools/info/ucx_info -d
 sisci_2097152  -t am_lat -D short  -d sci -x sci -s 2097152 -n 300
 sisci_1024     -t am_lat -D short  -d sci -x sci -s    1024 -n 1000
 
+// old, changed transport name to pcie
+hilmar@mx4-dev-5:~/ucx_dev/build$ ./src/tools/perf/ucx_perftest -t am_lat -d sci -x sci
+hilmar@mx4-dev-6:~/ucx_dev/build$ ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d sci -x sci -n 1000 -s 1024
 
-hilmar@mx4-dev-5:~/ucx_sigurd/ucx-sisci/build$ ./src/tools/perf/ucx_perftest -t am_lat -D short  -d sci -x sci -s 1024 -n 1000
-hilmar@mx4-dev-6:~/ucx_sigurd/ucx-sisci/build$ ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d sci -x sci -n 1000
+hilmar@mx4-dev-5:~/ucx_dev/build$ ./src/tools/perf/ucx_perftest -t am_lat -d eno1 -x tcp
+hilmar@mx4-dev-6:~/ucx_dev/build$ ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d eno1 -x tcp -n 1000 -s 1024
 
-hilmar@mx4-dev-5:~/ucx_sigurd/ucx-sisci/build$ ./src/tools/perf/ucx_perftest -s 1024 -t am_lat -d eno1 -x tcp
-hilmar@mx4-dev-6:~/ucx_sigurd/ucx-sisci/build$ ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d eno1 -x tcp -n 1000
+./src/tools/perf/ucx_perftest -t am_lat -d eno1 -x tcp
+./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d eno1 -x tcp -n 1000 -s 1024
 
+./src/tools/perf/ucx_perftest -t am_lat -d pcie -x pcie
+./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d pcie -x pcie -n 1000 -s 1024
+
+
+// Test DMA
+./src/tools/perf/ucx_perftest -t am_lat -d pcie -x pcie
+./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d pcie -x pcie -n 1000 -s 262000
+
+./src/tools/perf/ucx_perftest -t am_lat -d pcie -x pcie
+./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D zcopy -d pcie -x pcie -n 1000 -s 262000
 
 # Developer build
 $ ./autogen.sh
 $ ./contrib/configure-devel --prefix=$PWD/install-debug
+
+
+
+
 

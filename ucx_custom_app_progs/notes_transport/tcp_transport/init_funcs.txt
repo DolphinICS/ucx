@@ -1,0 +1,6 @@
+UCS_CLASS_INIT_FUNC for uct_tcp_iface_t
+
+    - config = derived_of(tl_config)
+    - tcp_md = derived_of(md)
+    
+    - UCS_CLASS_CALL_SUPER_INIT for uct_base_iface_t
