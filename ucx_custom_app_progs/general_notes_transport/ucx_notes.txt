@@ -11,7 +11,7 @@ $ cd build
 
 ./autogen.sh
 cd build
-../configure --prefix=/hilmar_install; make -j4; make install
+../configure --prefix=/hilmar_install/ucx_install; make -j4; make install
 
 
 hilmar@mx4-dev-5:~/ucx_dev/build$ ./src/tools/perf/ucx_perftest -s 32 -t am_lat -d eno1 -x tcp
@@ -37,10 +37,10 @@ hilmar@mx4-dev-6:~/ucx_dev/build$ ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_
 ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d pcie -x pcie -n 1000 -s 1024
 
 
-// Test DMA
 ./src/tools/perf/ucx_perftest -t am_lat -d pcie -x pcie
 ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D short -d pcie -x pcie -n 1000 -s 262000
 
+// Test DMA
 ./src/tools/perf/ucx_perftest -t am_lat -d pcie -x pcie
 ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_lat -D zcopy -d pcie -x pcie -n 1000 -s 262000
 
@@ -48,6 +48,57 @@ hilmar@mx4-dev-6:~/ucx_dev/build$ ./src/tools/perf/ucx_perftest mx4-dev-5 -t am_
 $ ./autogen.sh
 $ ./contrib/configure-devel --prefix=$PWD/install-debug
 
+
+
+maybe check out uct_hello_word.c?
+
+UCX APIs etc on download page: https://openucx.org/downloads/
+
+
+ucx_info -u m -c
+ucx_info -f
+ucx_info -f | grep -i AM
+
+
+https://openucx.readthedocs.io/en/master/running.html
+// configuring mpi with ucx
+../configure --prefix=/hilmar_install/ompi_install --with-ucx=/hilmar_install/ucx_install
+./configure --prefix=/hilmar_install/ompi_install --enable-mca-no-build=btl-uct --with-ucx=/hilmar_install/ucx_install
+
+
+// this
+./configure --libdir=/opt/DIS/lib64 --prefix=/hilmar_install/ompi_install --enable-mca-no-build=btl-uct --with-ucx=/hilmar_install/ucx_install
+make
+make install
+
+https://docs.open-mpi.org/en/v5.0.x/installing-open-mpi/quickstart.html
+
+
+// dumbest hack ever to compile openmp with ucx with sisci
+// error:
+libtool:   error: cannot find the library '/tmp/DIS_PKG_ROOT_rqB/BUILD/dolphin-mx-5.21.4-1-5.15.0-119-generic/opt/DIS/lib64/libsisci.la' or unhandled argument '/tmp/DIS_PKG_ROOT_rqB/BUILD/dolphin-mx-5.21.4-1-5.15.0-119-generic/opt/DIS/lib64/libsisci.la'
+// hacky solution, just copy the libraries to that location
+mkdir -p /tmp/DIS_PKG_ROOT_rqB/BUILD/dolphin-mx-5.21.4-1-5.15.0-119-generic/opt/DIS
+cp -r /opt/DIS/lib64 /tmp/DIS_PKG_ROOT_rqB/BUILD/dolphin-mx-5.21.4-1-5.15.0-119-generic/opt/DIS/
+
+
+/hilmar_install/ompi_install/bin/mpirun
+
+
+hilmar@mx4-dev-5:~/IMB/IMB-source/src$ /hilmar_install/ompi_install/bin/mpirun -n 2 --hostfile hilmar_hostfile.txt IMB-MPI1
+
+
+// These things don't work. Something bad with pml or something
+hilmar@mx4-dev-5:~/IMB/IMB-source/src$ /hilmar_install/ompi_install/bin/mpirun -n 2 -mca pml ucx -mca btl ^uct -x UCX_NET_DEVICES=mlx5_0:1 --hostfile hilmar_hostfile.txt IMB-MPI1
+/hilmar_install/ompi_install/bin/mpirun -np 2 -mca pml ucx --mca btl ^vader,tcp,openib,uct -x UCX_NET_DEVICES=mlx5_0:1 --hostfile hilmar_hostfile.txt IMB-MPI1
+
+
+$ cat hilmar_hostfile.txt 
+mx4-dev-5
+mx4-dev-6
+
+
+find /hilmar_install/ucx_install -name "*.la" -delete
 
 
 
