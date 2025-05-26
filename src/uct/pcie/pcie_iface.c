@@ -222,7 +222,7 @@ uct_sisci_ipc_iface_is_reachable_v2(
     const uct_iface_h tl_iface,
     const uct_iface_is_reachable_params_t *params)
 {
-    return 0;
+    return 1;
 }
 
 int uct_cuda_ipc_ep_is_connected(
