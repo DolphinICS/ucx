@@ -24,6 +24,8 @@ static void uct_pcie_md_close(uct_md_h md) {
     uct_pcie_md_t * sci_md = ucs_derived_of(md, uct_pcie_md_t);
     sci_error_t sci_error;
 
+    fprintf(stderr, "uct_pcie_md_close\n");
+
     SCIClose(sci_md->sci_virtual_device, 0 , &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_error("Error closing Virtual_Device error: %s",
@@ -63,6 +65,8 @@ static ucs_status_t uct_pcie_mem_alloc(
 {
     uct_pcie_alloc_handle_t *alloc_handle;
 
+    fprintf(stderr, "uct_pcie_reserve_control_descriptor\n");
+
     alloc_handle = ucs_malloc(sizeof(*alloc_handle),
                               "uct_pcie_mem_alloc");
     if (NULL == alloc_handle) {
@@ -87,6 +91,7 @@ static ucs_status_t uct_pcie_mem_alloc(
 static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
 {
     uct_pcie_alloc_handle_t *alloc_handle = (uct_pcie_alloc_handle_t*) memh;
+    fprintf(stderr, "uct_pcie_mem_free\n");
     free(alloc_handle->ptr);
     ucs_free(alloc_handle);
     return UCS_OK;
@@ -99,6 +104,7 @@ static ucs_status_t uct_pcie_mem_reg(
     const uct_md_mem_reg_params_t *params,
     uct_mem_h *memh_p)
 {
+    fprintf(stderr, "uct_pcie_mem_reg\n");
     /* We have to emulate memory registration. Return dummy pointer */
     *memh_p = (void *) 0xdeadbeef;
     return UCS_OK;
@@ -108,6 +114,7 @@ static ucs_status_t uct_pcie_mem_dereg(
     uct_md_h uct_md,
     const uct_md_mem_dereg_params_t *params)
 {
+    fprintf(stderr, "uct_pcie_mem_dereg\n");
     UCT_MD_MEM_DEREG_CHECK_PARAMS(params, 0);
 
     ucs_assert(params->memh == (void*)0xdeadbeef);
@@ -119,6 +126,7 @@ static ucs_status_t uct_pcie_md_rkey_unpack(uct_component_t *component,
     const void *rkey_buffer, uct_rkey_t *rkey_p,
     void **handle_p)
 {
+    fprintf(stderr, "uct_pcie_md_rkey_unpack\n");
     /**
     * Pseudo stub function for the key unpacking
     * Need rkey == 0 due to work with same process to reuse
@@ -136,8 +144,8 @@ static ucs_status_t uct_pcie_md_open(
     uct_md_h *md_p)
 {
     uct_pcie_md_config_t *md_config =
-        ucs_derived_of(config, uct_pcie_md_config_t);
-
+    ucs_derived_of(config, uct_pcie_md_config_t);
+    
     static uct_md_ops_t md_ops = {
         .close              = uct_pcie_md_close, 
         .query              = uct_pcie_md_query,
@@ -148,10 +156,11 @@ static ucs_status_t uct_pcie_md_open(
         .mem_dereg          = uct_pcie_mem_dereg,
         .detect_memory_type = ucs_empty_function_return_unsupported
     };
-
+    
     /* create sci memory domain struct */
     static uct_pcie_md_t md;
     sci_error_t errors;
+    fprintf(stderr, "uct_pcie_md_open\n");
     SCIOpen(&md.sci_virtual_device, 0, &errors);
     if (errors != SCI_ERR_OK) {
         ucs_error("SCIOpen: %s/n", SCIGetErrorString(errors));

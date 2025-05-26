@@ -7,7 +7,8 @@
 #include "pcie_md.h"
 
 static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
-{   
+{
+    fprintf(stderr, "UCS_CLASS_CLEANUP_FUNC_uct_pcie_ep_t\n");
     self->remote_seg_buf = NULL;
     uct_pcie_disconnect_segment(self->remote_segment, self->remote_seg_map);
     ucs_debug("ep deleted segment_id %d node_id %d\n",
@@ -32,6 +33,8 @@ static ucs_status_t uct_pcie_ep_send_conn_request(
     sci_error_t sci_error;
     sci_remote_data_interrupt_t req_interrupt;
     int rc = UCS_OK;
+
+    fprintf(stderr, "uct_pcie_ep_send_conn_request\n");
 
     do {
         SCIConnectDataInterrupt(
@@ -85,6 +88,8 @@ static ucs_status_t uct_pcie_ep_send_recv_conn_request(
     ucs_status_t ucs_ret;
     sci_local_data_interrupt_t ans_interrupt;
     unsigned int ans_size = (unsigned int) sizeof(uct_pcie_conn_ans_t);
+
+    fprintf(stderr, "uct_pcie_ep_send_recv_conn_request\n");
 
     /* 1.
      * Create the data interrupt we will use to receive the response of our
@@ -141,22 +146,23 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     ucs_status_t ucs_ret;
     
     uct_pcie_iface_addr_t* iface_addr =
-        (uct_pcie_iface_addr_t*) params->iface_addr;
-
+    (uct_pcie_iface_addr_t*) params->iface_addr;
+    
     uct_pcie_device_addr_t* dev_addr =
-        (uct_pcie_device_addr_t*) params->dev_addr;
+    (uct_pcie_device_addr_t*) params->dev_addr;
     
     uct_pcie_conn_ans_t answer;
     int ret;
     unsigned int ep_conn_index;
     uct_pcie_conn_req_t request;
-
+    
     unsigned int remote_interrupt_no;
     uct_pcie_iface_t* iface = ucs_derived_of(params->iface, uct_pcie_iface_t);
     uct_pcie_md_t* md = ucs_derived_of(iface->super.md, uct_pcie_md_t);
-
+    
     UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS(params);
-
+    fprintf(stderr, "UCS_CLASS_INIT_FUNC_uct_pcie_ep_t\n");
+    
     remote_interrupt_no = (unsigned int) iface_addr->interrupt_no;
     self->remote_node_id = (unsigned int) dev_addr->node_id;
 
@@ -387,6 +393,8 @@ ucs_status_t uct_pcie_ep_am_short(
     uct_pcie_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
     uint32_t packet_buf_offset;
     uint32_t send_start_buf_offset;
+
+    fprintf(stderr, "uct_pcie_ep_am_short\n");
     
     if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
@@ -454,6 +462,8 @@ ssize_t uct_pcie_ep_am_bcopy(
     uint32_t packet_buf_offset;
     uint32_t send_start_buf_offset;
 
+    fprintf(stderr, "uct_pcie_ep_am_bcopy\n");
+
     if(ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
@@ -508,6 +518,8 @@ static void uct_pcie_fill_buffer_with_packet(
     ucs_iov_iter_t uct_iov_iter;
     uct_pcie_am_hdr_t* packet_am_hdr = (uct_pcie_am_hdr_t*) packet_buffer;
 
+    fprintf(stderr, "uct_pcie_fill_buffer_with_packet\n");
+
     /* Convert the iov into a contiguous buffer */
     ucs_iov_iter_init(&uct_iov_iter);
     
@@ -555,7 +567,7 @@ ucs_status_t uct_pcie_ep_am_zcopy(
     unsigned flags,
     uct_completion_t *comp) 
 {
-
+    
     uct_pcie_ep_t* ep = ucs_derived_of(uct_ep, uct_pcie_ep_t);
     uct_pcie_iface_t* iface = ucs_derived_of(uct_ep->iface, uct_pcie_iface_t);
     uct_pcie_am_hdr_t* packet_am_hdr; 
@@ -563,9 +575,10 @@ ucs_status_t uct_pcie_ep_am_zcopy(
     uint32_t packet_buf_offset;
     size_t bytes_to_send;
     sci_error_t sci_error;
-
+    
     size_t iov_total_len = uct_iov_total_length(iov, iovcnt);
     
+    fprintf(stderr, "uct_pcie_ep_am_zcopy\n");
     if(ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
