@@ -218,14 +218,14 @@ static sci_callback_action_t uct_pcie_conn_handler(
 }
 
 static int
-uct_sisci_ipc_iface_is_reachable_v2(
+uct_pcie_ipc_iface_is_reachable_v2(
     const uct_iface_h tl_iface,
     const uct_iface_is_reachable_params_t *params)
 {
-    return 0;
+    return 1;
 }
 
-int uct_cuda_ipc_ep_is_connected(
+int uct_pcie_ipc_ep_is_connected(
     const uct_ep_h tl_ep,
     const uct_ep_is_connected_params_t *params)
 {
@@ -238,8 +238,8 @@ static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
     .ep_query              = (uct_ep_query_func_t)ucs_empty_function_return_unsupported,
     .ep_invalidate         = (uct_ep_invalidate_func_t)ucs_empty_function_return_unsupported,
     .ep_connect_to_ep_v2   = ucs_empty_function_return_unsupported,
-    .iface_is_reachable_v2 = uct_sisci_ipc_iface_is_reachable_v2,
-    .ep_is_connected       = uct_cuda_ipc_ep_is_connected
+    .iface_is_reachable_v2 = uct_pcie_ipc_iface_is_reachable_v2,
+    .ep_is_connected       = uct_pcie_ipc_ep_is_connected
 };
 
 /**
