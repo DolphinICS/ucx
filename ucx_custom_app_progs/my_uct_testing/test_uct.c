@@ -37,7 +37,14 @@ static ucs_status_t dev_tl_lookup()
         status = uct_component_query(components[cmpt_index], &component_attr);
         ERROR_CHECK_UCS_OK("uct_query_components", status)
 
-        
+        component_attr.field_mask = UCT_COMPONENT_ATTR_FIELD_NAME;
+        component_attr.md_resources = alloca(sizeof(*component_attr.md_resources) *
+                                             component_attr.md_resource_count);
+        status = uct_component_query(components[cmpt_index], &component_attr);
+        ERROR_CHECK_UCS_OK("uct_query_components", status)
+
+
+        printf("component attribute name = %s\n", component_attr.name);
         
     }
 
