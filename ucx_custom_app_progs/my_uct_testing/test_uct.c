@@ -104,41 +104,48 @@ static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_r
     return UCS_OK;
 }
 
-// static ucs_status_t init_iface(
-//     char *dev_name,
-//     char *tl_name,
-//     uct_iface_attr_t iface_attr,
-//     uct_iface_h *iface,
-//     uct_md_h md)
-// {
-//     ucs_status_t status;
-//     uct_iface_config_t *config; /* Defines interface configuration options */
-//     uct_iface_params_t params;
+static ucs_status_t init_iface(
+    char *dev_name,
+    char *tl_name,
+    uct_iface_attr_t *iface_attr,
+    uct_iface_h *iface,
+    uct_md_h md,
+    uct_worker_h worker)
+{
+    ucs_status_t status;
+    uct_iface_config_t *config; /* Defines interface configuration options */
+    uct_iface_params_t params;
 
-//     params.field_mask = UCT_IFACE_PARAM_FIELD_OPEN_MODE   |
-//                         UCT_IFACE_PARAM_FIELD_DEVICE      |
-//                         UCT_IFACE_PARAM_FIELD_STATS_ROOT  |
-//                         UCT_IFACE_PARAM_FIELD_RX_HEADROOM |
-//                         UCT_IFACE_PARAM_FIELD_CPU_MASK;
-//     params.open_mode            = UCT_IFACE_OPEN_MODE_DEVICE;
-//     params.mode.device.tl_name  = tl_name;
-//     params.mode.device.dev_name = dev_name;
-//     params.stats_root           = NULL;
-//     params.rx_headroom          = sizeof(recv_desc_t);
+    params.field_mask = UCT_IFACE_PARAM_FIELD_OPEN_MODE   |
+                        UCT_IFACE_PARAM_FIELD_DEVICE      |
+                        UCT_IFACE_PARAM_FIELD_STATS_ROOT  |
+                        UCT_IFACE_PARAM_FIELD_RX_HEADROOM |
+                        UCT_IFACE_PARAM_FIELD_CPU_MASK;
+    params.open_mode            = UCT_IFACE_OPEN_MODE_DEVICE;
+    params.mode.device.tl_name  = tl_name;
+    params.mode.device.dev_name = dev_name;
+    params.stats_root           = NULL;
+    params.rx_headroom          = sizeof(int);
 
-//     // UCS_CPU_ZERO(&params.cpu_mask);
-//     // /* Read transport-specific interface configuration */
-//     // status = uct_md_iface_config_read(iface_p->md, tl_name, NULL, NULL, &config);
-//     // ERROR_CHECK_UCS_OK("uct_md_iface_config_read", status)
+    UCS_CPU_ZERO(&params.cpu_mask);
+    /* Read transport-specific interface configuration */
+    status = uct_md_iface_config_read(md, tl_name, NULL, NULL, &config);
+    ERROR_CHECK_UCS_OK("uct_md_iface_config_read", status)
 
-//     // /* Open communication interface */
-//     // status = uct_iface_open(md, iface_p->worker, &params, config,
-//     //                         iface);
-//     // uct_config_release(config);
-//     // CHKERR_JUMP(UCS_OK != status, "open temporary interface", error_ret);
+    // /* Open communication interface */
+    // status = uct_iface_open(md, worker, &params, config,
+    //                         iface);
+    uct_config_release(config);
+    ERROR_CHECK_UCS_OK("uct_md_iface_config_read", status)
 
+    // /* Enable progress on the interface */
+    // uct_iface_progress_enable(*iface,
+    //                           UCT_PROGRESS_SEND | UCT_PROGRESS_RECV);
 
-// }
+    // /* Get interface attributes */
+    // status = uct_iface_query(*iface, iface_attr);
+
+}
 
 int main(int argc, char **argv)
 {
@@ -165,7 +172,7 @@ int main(int argc, char **argv)
     status = dev_tl_lookup(&md, &md_attr, &tl_res);
     ERROR_CHECK_UCS_OK("dev_tl_lookup", status)
 
-    // init_iface()
+    init_iface(tl_res->dev_name, tl_res->tl_name, &iface_attr, &iface, md, worker);
 
     /* Cleanup */
     uct_worker_destroy(worker);
