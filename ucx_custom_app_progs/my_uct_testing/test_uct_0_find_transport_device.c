@@ -9,7 +9,7 @@ if (error != UCS_OK) {  \
     exit(EXIT_FAILURE); \
 }
 
-static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_resource_desc_t **tl_res)
+static ucs_status_t dev_tl_lookup()
 {
     uct_component_h *components;
     unsigned num_components;
@@ -54,10 +54,11 @@ static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_r
     }
 
     printf("tcp_index == %d\n", tcp_index);
+    uct_md_h md;
+    uct_md_attr_t md_attr;
 
     int eno1_index = -1;
 
-    uct_tl_resource_desc_t *tl_resources = NULL;
     /* Iterate through memory domain resources */
     for (int md_index = 0; md_index < component_attr.md_resource_count; ++md_index) {
 
@@ -69,15 +70,16 @@ static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_r
         ERROR_CHECK_UCS_OK("uct_md_config_read", status)
         status = uct_md_open(components[tcp_index],
                                  component_attr.md_resources[md_index].md_name,
-                                 md_config, md);
+                                 md_config, &md);
         uct_config_release(md_config);
         ERROR_CHECK_UCS_OK("uct_md_open", status)
 
-        status = uct_md_query(*md, md_attr);
+        status = uct_md_query(md, &md_attr);
         ERROR_CHECK_UCS_OK("uct_md_query", status)
 
+        uct_tl_resource_desc_t *tl_resources = NULL;
         unsigned int num_tl_resources;
-        status = uct_md_query_tl_resources(*md, &tl_resources,
+        status = uct_md_query_tl_resources(md, &tl_resources,
                                                &num_tl_resources);
         ERROR_CHECK_UCS_OK("uct_md_query_tl_resources", status)
 
@@ -95,50 +97,9 @@ static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_r
 
     printf("eno1_index == %d\n", eno1_index);
 
-    if (tl_resources != NULL) {
-        *tl_res = &tl_resources[eno1_index];
-    } else {
-        return UCS_ERR_NO_RESOURCE;
-    }
 
     return UCS_OK;
 }
-
-// static ucs_status_t init_iface(
-//     char *dev_name,
-//     char *tl_name,
-//     uct_iface_attr_t iface_attr,
-//     uct_iface_h *iface,
-//     uct_md_h md)
-// {
-//     ucs_status_t status;
-//     uct_iface_config_t *config; /* Defines interface configuration options */
-//     uct_iface_params_t params;
-
-//     params.field_mask = UCT_IFACE_PARAM_FIELD_OPEN_MODE   |
-//                         UCT_IFACE_PARAM_FIELD_DEVICE      |
-//                         UCT_IFACE_PARAM_FIELD_STATS_ROOT  |
-//                         UCT_IFACE_PARAM_FIELD_RX_HEADROOM |
-//                         UCT_IFACE_PARAM_FIELD_CPU_MASK;
-//     params.open_mode            = UCT_IFACE_OPEN_MODE_DEVICE;
-//     params.mode.device.tl_name  = tl_name;
-//     params.mode.device.dev_name = dev_name;
-//     params.stats_root           = NULL;
-//     params.rx_headroom          = sizeof(recv_desc_t);
-
-//     // UCS_CPU_ZERO(&params.cpu_mask);
-//     // /* Read transport-specific interface configuration */
-//     // status = uct_md_iface_config_read(iface_p->md, tl_name, NULL, NULL, &config);
-//     // ERROR_CHECK_UCS_OK("uct_md_iface_config_read", status)
-
-//     // /* Open communication interface */
-//     // status = uct_iface_open(md, iface_p->worker, &params, config,
-//     //                         iface);
-//     // uct_config_release(config);
-//     // CHKERR_JUMP(UCS_OK != status, "open temporary interface", error_ret);
-
-
-// }
 
 int main(int argc, char **argv)
 {
@@ -153,19 +114,9 @@ int main(int argc, char **argv)
     status = uct_worker_create(async, UCS_THREAD_MODE_SINGLE, &worker);
     ERROR_CHECK_UCS_OK("uct_worker_create", status)
 
-    uct_iface_attr_t    iface_attr; /* Interface attributes: capabilities and limitations */
-    uct_iface_h         iface;      /* Communication interface context */
-    uct_md_attr_t       md_attr;    /* Memory domain attributes: capabilities and limitations */
-    uct_md_h            md;         /* Memory domain */
-
     /* Search for the desired transport */
-
-    uct_tl_resource_desc_t *tl_res;
-
-    status = dev_tl_lookup(&md, &md_attr, &tl_res);
+    status = dev_tl_lookup();
     ERROR_CHECK_UCS_OK("dev_tl_lookup", status)
-
-    // init_iface()
 
     /* Cleanup */
     uct_worker_destroy(worker);
