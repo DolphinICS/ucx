@@ -2,6 +2,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #define ERROR_CHECK_UCS_OK(func_name, error) \
 if (error != UCS_OK) {  \
@@ -200,6 +201,15 @@ static ucs_status_t hello_world(void *arg, void *data, size_t length,
 
 int main(int argc, char **argv)
 {
+    bool is_server = false;
+    if (argc < 2) {
+        printf("This is a server now. In this program, no arguments means server\n");
+        is_server = true;
+    } else {
+        printf("This is a client. You gave an argument so it's a client\n");
+        printf("Hopefully the argument is the hostname of the server, because that's what I'm expecting.\n");
+    }
+
     ucs_async_context_t *async;
     uct_worker_h worker;
 
@@ -230,6 +240,34 @@ int main(int argc, char **argv)
     status = uct_iface_set_am_handler(iface, id, hello_world,
                                       FUNC_AM_SHORT, 0);
     ERROR_CHECK_UCS_OK("uct_iface_set_am_handler", status)
+
+    // uct_device_addr_t own_dev;
+    // uct_iface_addr_t own_iface;
+
+    int oob_sock = -1;  /* OOB connection socket */
+
+    /* get own device address */
+    // uct_iface_get_device_address
+    uct_device_addr_t *own_dev = (uct_device_addr_t*)calloc(1, iface_attr.device_addr_len);
+    if (iface_attr.device_addr_len > 0) {
+        status = uct_iface_get_device_address(iface, own_dev);
+        ERROR_CHECK_UCS_OK("uct_iface_get_device_address", status)
+    }
+    
+    /* get own iface address */
+    // uct_iface_get_address
+    uct_iface_addr_t *own_iface = (uct_iface_addr_t*)calloc(1, iface_attr.iface_addr_len);
+    if (iface_attr.iface_addr_len > 0) {
+        status = uct_iface_get_address(iface, own_iface);
+        ERROR_CHECK_UCS_OK("uct_iface_get_address", status)
+    }
+
+
+    // if (is_server) {
+    //     // run_ucx_server(ucp_worker);
+    // } else {
+    //     // run_ucx_client(ucp_worker, argv[1]);
+    // }
 
     /* Cleanup */
     uct_worker_destroy(worker);
