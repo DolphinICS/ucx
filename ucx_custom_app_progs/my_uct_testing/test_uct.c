@@ -198,6 +198,13 @@ static ucs_status_t hello_world(void *arg, void *data, size_t length,
     printf("callback %s, %lu, %lu\n", func_am_t_str(func_am_type), (unsigned long) data, length);
 }
 
+void run_ucx_server(uct_worker_h worker, uct_device_addr_t *own_dev, uct_iface_addr_t *own_iface) {
+    printf("Yes, yes, this is the server.\n");
+}
+
+void run_ucx_client(char *server_name, uct_worker_h worker, uct_device_addr_t *own_dev, uct_iface_addr_t *own_iface) {
+    printf("Okay, okay, this is the client.\n");
+}
 
 int main(int argc, char **argv)
 {
@@ -262,12 +269,12 @@ int main(int argc, char **argv)
         ERROR_CHECK_UCS_OK("uct_iface_get_address", status)
     }
 
-
-    // if (is_server) {
-    //     // run_ucx_server(ucp_worker);
-    // } else {
-    //     // run_ucx_client(ucp_worker, argv[1]);
-    // }
+    if (is_server) {
+        run_ucx_server(worker, own_dev, own_iface);
+    } else {
+        char *server_name = argv[1];
+        run_ucx_client(server_name, worker, own_dev, own_iface);
+    }
 
     /* Cleanup */
     uct_worker_destroy(worker);
