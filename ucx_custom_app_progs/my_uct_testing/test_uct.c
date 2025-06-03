@@ -77,6 +77,7 @@ static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_r
         ERROR_CHECK_UCS_OK("uct_md_query", status)
 
         unsigned int num_tl_resources;
+        // Apparently, this should be freed with uct_release_tl_resource_list
         status = uct_md_query_tl_resources(*md, &tl_resources,
                                                &num_tl_resources);
         ERROR_CHECK_UCS_OK("uct_md_query_tl_resources", status)
@@ -132,18 +133,37 @@ static ucs_status_t init_iface(
     status = uct_md_iface_config_read(md, tl_name, NULL, NULL, &config);
     ERROR_CHECK_UCS_OK("uct_md_iface_config_read", status)
 
-    // /* Open communication interface */
-    // status = uct_iface_open(md, worker, &params, config,
-    //                         iface);
+    /* Open communication interface */
+    status = uct_iface_open(md, worker, &params, config,
+                            iface);
     uct_config_release(config);
     ERROR_CHECK_UCS_OK("uct_md_iface_config_read", status)
 
-    // /* Enable progress on the interface */
-    // uct_iface_progress_enable(*iface,
-    //                           UCT_PROGRESS_SEND | UCT_PROGRESS_RECV);
+    /* Enable progress on the interface */
+    uct_iface_progress_enable(*iface,
+                              UCT_PROGRESS_SEND | UCT_PROGRESS_RECV);
 
-    // /* Get interface attributes */
-    // status = uct_iface_query(*iface, iface_attr);
+    /* Get interface attributes */
+    status = uct_iface_query(*iface, iface_attr);
+    ERROR_CHECK_UCS_OK("uct_md_iface_config_read", status)
+
+    if (iface_attr->cap.flags & UCT_IFACE_FLAG_AM_SHORT) {
+        printf("UCT_IFACE_FLAG_AM_SHORT 1\n");
+    } else {
+        printf("UCT_IFACE_FLAG_AM_SHORT 0\n");
+    }
+
+    if (iface_attr->cap.flags & UCT_IFACE_FLAG_AM_BCOPY) {
+        printf("UCT_IFACE_FLAG_AM_BCOPY 1\n");
+    } else {
+        printf("UCT_IFACE_FLAG_AM_BCOPY 0\n");
+    }
+
+    if (iface_attr->cap.flags & UCT_IFACE_FLAG_AM_ZCOPY) {
+        printf("UCT_IFACE_FLAG_AM_ZCOPY 1\n");
+    } else {
+        printf("UCT_IFACE_FLAG_AM_ZCOPY 0\n");
+    }
 
 }
 
