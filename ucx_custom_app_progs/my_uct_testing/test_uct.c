@@ -9,6 +9,12 @@ if (error != UCS_OK) {  \
     exit(EXIT_FAILURE); \
 }
 
+typedef enum {
+    FUNC_AM_SHORT,
+    FUNC_AM_BCOPY,
+    FUNC_AM_ZCOPY
+} func_am_t;
+
 static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_resource_desc_t **tl_res)
 {
     uct_component_h *components;
@@ -165,7 +171,32 @@ static ucs_status_t init_iface(
         printf("UCT_IFACE_FLAG_AM_ZCOPY 0\n");
     }
 
+    return UCS_OK;
+
 }
+
+static char *func_am_t_str(func_am_t func_am_type)
+{
+    switch (func_am_type) {
+    case FUNC_AM_SHORT:
+        return "uct_ep_am_short";
+    case FUNC_AM_BCOPY:
+        return "uct_ep_am_bcopy";
+    case FUNC_AM_ZCOPY:
+        return "uct_ep_am_zcopy";
+    }
+    return NULL;
+}
+
+static ucs_status_t hello_world(void *arg, void *data, size_t length,
+                                unsigned flags)
+{
+    func_am_t func_am_type = *(func_am_t *)arg;
+    // int *rdesc;
+
+    printf("callback %s, %lu, %lu\n", func_am_t_str(func_am_type), (unsigned long) data, length);
+}
+
 
 int main(int argc, char **argv)
 {
@@ -192,7 +223,13 @@ int main(int argc, char **argv)
     status = dev_tl_lookup(&md, &md_attr, &tl_res);
     ERROR_CHECK_UCS_OK("dev_tl_lookup", status)
 
-    init_iface(tl_res->dev_name, tl_res->tl_name, &iface_attr, &iface, md, worker);
+    status = init_iface(tl_res->dev_name, tl_res->tl_name, &iface_attr, &iface, md, worker);
+    ERROR_CHECK_UCS_OK("init_iface", status)
+
+    uint8_t id = 0;
+    status = uct_iface_set_am_handler(iface, id, hello_world,
+                                      FUNC_AM_SHORT, 0);
+    ERROR_CHECK_UCS_OK("uct_iface_set_am_handler", status)
 
     /* Cleanup */
     uct_worker_destroy(worker);
