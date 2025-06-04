@@ -334,39 +334,49 @@ void receive_dev_and_iface(
 {
     int ret;
 
-    ret = recv(socket_fd, *peer_dev_len, sizeof(size_t), MSG_WAITALL);
+    printf("Receiving peer_dev_len\n");
+    ret = recv(socket_fd, peer_dev_len, sizeof(size_t), MSG_WAITALL);
     if (ret != (int)sizeof(size_t)) {
+        perror("recv");
         fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
         exit(EXIT_FAILURE);
     }
 
     *peer_dev = calloc(1, *peer_dev_len);
     if (*peer_dev == NULL) {
+        perror("recv");
         fprintf(stderr, "Failed to allocate peer_dev\n", ret);
         exit(EXIT_FAILURE);
     }
 
+    printf("Receiving peer_dev\n");
     ret = recv(socket_fd, *peer_dev, *peer_dev_len, MSG_WAITALL);
     if (ret != (int)*peer_dev_len) {
+        perror("recv");
         fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
         exit(EXIT_FAILURE);
     }
 
 
-    ret = recv(socket_fd, *peer_iface_len, sizeof(size_t), MSG_WAITALL);
+    printf("Receiving peer_iface_len\n");
+    ret = recv(socket_fd, peer_iface_len, sizeof(size_t), MSG_WAITALL);
     if (ret != (int)sizeof(size_t)) {
+        perror("recv");
         fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
         exit(EXIT_FAILURE);
     }
 
     *peer_iface = calloc(1, *peer_iface_len);
     if (*peer_iface == NULL) {
+        perror("calloc");
         fprintf(stderr, "Failed to allocate peer_iface\n", ret);
         exit(EXIT_FAILURE);
     }
 
+    printf("Receiving peer_iface\n");
     ret = recv(socket_fd, *peer_iface, *peer_iface_len, MSG_WAITALL);
     if (ret != (int)*peer_iface_len) {
+        perror("recv");
         fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
         exit(EXIT_FAILURE);
     }
@@ -381,27 +391,34 @@ void send_dev_and_iface(
 {
     int ret;
 
-    ret = send(socket_fd, own_dev_len, sizeof(size_t), MSG_WAITALL);
+    printf("Sending own_dev_len\n");
+    ret = send(socket_fd, &own_dev_len, sizeof(size_t), 0);
     if (ret != (int)sizeof(size_t)) {
+        perror("send");
         fprintf(stderr, "send failed. %d bytes received, should have been higher\n", ret);
         exit(EXIT_FAILURE);
     }
 
-    ret = send(socket_fd, own_dev, own_dev_len, MSG_WAITALL);
+    printf("Sending own_dev\n");
+    ret = send(socket_fd, own_dev, own_dev_len, 0);
     if (ret != (int)own_dev_len) {
+        perror("send");
         fprintf(stderr, "send failed. %d bytes received, should have been higher\n", ret);
         exit(EXIT_FAILURE);
     }
 
-
-    ret = send(socket_fd, own_iface_len, sizeof(size_t), MSG_WAITALL);
+    printf("Sending own_iface_len\n");
+    ret = send(socket_fd, &own_iface_len, sizeof(size_t), 0);
     if (ret != (int)sizeof(size_t)) {
+        perror("send");
         fprintf(stderr, "send failed. %d bytes received, should have been higher\n", ret);
         exit(EXIT_FAILURE);
     }
 
-    ret = send(socket_fd, own_iface, own_iface_len, MSG_WAITALL);
+    printf("Sending own_iface\n");
+    ret = send(socket_fd, own_iface, own_iface_len, 0);
     if (ret != (int)own_iface_len) {
+        perror("send");
         fprintf(stderr, "send failed. %d bytes received, should have been higher\n", ret);
         exit(EXIT_FAILURE);
     }
@@ -421,6 +438,13 @@ void run_ucx_server(
 
     int socket_fd = server_connect_to_client();
 
+    uct_device_addr_t *peer_dev;
+    size_t peer_dev_len;
+    uct_iface_addr_t *peer_iface;
+    size_t peer_iface_len;
+    receive_dev_and_iface(socket_fd, &peer_dev, &peer_dev_len, &peer_iface, &peer_iface_len);
+
+    send_dev_and_iface(socket_fd, own_dev, own_dev_len, own_iface, own_dev_len);
 
 
 
