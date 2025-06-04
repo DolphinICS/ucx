@@ -275,7 +275,7 @@ int server_connect_to_client() {
         }
         close(listen_fd);
 
-        // So socket_fd should now be open right
+        // So socket_fd should now be open
     }
     
     return socket_fd;
