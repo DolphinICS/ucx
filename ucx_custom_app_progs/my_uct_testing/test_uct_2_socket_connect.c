@@ -325,129 +325,19 @@ int client_connect_to_server(char *server_hostname) {
     return socket_fd;
 }
 
-void receive_dev_and_iface(
-    int socket_fd,
-    uct_device_addr_t **peer_dev,
-    size_t *peer_dev_len,
-    uct_iface_addr_t **peer_iface,
-    size_t *peer_iface_len)
-{
-    int ret;
-
-    ret = recv(socket_fd, *peer_dev_len, sizeof(size_t), MSG_WAITALL);
-    if (ret != (int)sizeof(size_t)) {
-        fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
-        exit(EXIT_FAILURE);
-    }
-
-    *peer_dev = calloc(1, *peer_dev_len);
-    if (*peer_dev == NULL) {
-        fprintf(stderr, "Failed to allocate peer_dev\n", ret);
-        exit(EXIT_FAILURE);
-    }
-
-    ret = recv(socket_fd, *peer_dev, *peer_dev_len, MSG_WAITALL);
-    if (ret != (int)*peer_dev_len) {
-        fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
-        exit(EXIT_FAILURE);
-    }
-
-
-    ret = recv(socket_fd, *peer_iface_len, sizeof(size_t), MSG_WAITALL);
-    if (ret != (int)sizeof(size_t)) {
-        fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
-        exit(EXIT_FAILURE);
-    }
-
-    *peer_iface = calloc(1, *peer_iface_len);
-    if (*peer_iface == NULL) {
-        fprintf(stderr, "Failed to allocate peer_iface\n", ret);
-        exit(EXIT_FAILURE);
-    }
-
-    ret = recv(socket_fd, *peer_iface, *peer_iface_len, MSG_WAITALL);
-    if (ret != (int)*peer_iface_len) {
-        fprintf(stderr, "recv failed. %d bytes received, should have been higher\n", ret);
-        exit(EXIT_FAILURE);
-    }
-}
-
-void send_dev_and_iface(
-    int socket_fd,
-    uct_device_addr_t *own_dev,
-    size_t own_dev_len,
-    uct_iface_addr_t *own_iface,
-    size_t own_iface_len)
-{
-    int ret;
-
-    ret = send(socket_fd, own_dev_len, sizeof(size_t), MSG_WAITALL);
-    if (ret != (int)sizeof(size_t)) {
-        fprintf(stderr, "send failed. %d bytes received, should have been higher\n", ret);
-        exit(EXIT_FAILURE);
-    }
-
-    ret = send(socket_fd, own_dev, own_dev_len, MSG_WAITALL);
-    if (ret != (int)own_dev_len) {
-        fprintf(stderr, "send failed. %d bytes received, should have been higher\n", ret);
-        exit(EXIT_FAILURE);
-    }
-
-
-    ret = send(socket_fd, own_iface_len, sizeof(size_t), MSG_WAITALL);
-    if (ret != (int)sizeof(size_t)) {
-        fprintf(stderr, "send failed. %d bytes received, should have been higher\n", ret);
-        exit(EXIT_FAILURE);
-    }
-
-    ret = send(socket_fd, own_iface, own_iface_len, MSG_WAITALL);
-    if (ret != (int)own_iface_len) {
-        fprintf(stderr, "send failed. %d bytes received, should have been higher\n", ret);
-        exit(EXIT_FAILURE);
-    }
-}
-
-
-void run_ucx_server(
-    uct_worker_h worker,
-    uct_device_addr_t *own_dev,
-    size_t own_dev_len,
-    uct_iface_addr_t *own_iface,
-    size_t own_iface_len)
-{
+void run_ucx_server(uct_worker_h worker, uct_device_addr_t *own_dev, uct_iface_addr_t *own_iface) {
     printf("Yes, yes, this is the server.\n");
 
-    int ret;
-
     int socket_fd = server_connect_to_client();
-
-
-
-
+    
     close(socket_fd);
 }
 
-void run_ucx_client(
-    char *server_name,
-    uct_worker_h worker,
-    uct_device_addr_t *own_dev,
-    size_t own_dev_len,
-    uct_iface_addr_t *own_iface,
-    size_t own_iface_len)
-{
+void run_ucx_client(char *server_name, uct_worker_h worker, uct_device_addr_t *own_dev, uct_iface_addr_t *own_iface) {
     printf("Okay, okay, this is the client.\n");
 
     int socket_fd = client_connect_to_server(server_name);
     
-    send_dev_and_iface(socket_fd, own_dev, own_dev_len, own_iface, own_dev_len);
-
-    uct_device_addr_t *peer_dev;
-    size_t peer_dev_len;
-    uct_iface_addr_t *peer_iface;
-    size_t peer_iface_len;
-    receive_dev_and_iface(socket_fd, &peer_dev, &peer_dev_len, &peer_iface, &peer_iface_len);
-
-
 
     close(socket_fd);
 }
@@ -501,27 +391,25 @@ int main(int argc, char **argv)
 
     /* get own device address */
     // uct_iface_get_device_address
-    size_t own_dev_len = iface_attr.device_addr_len;
-    uct_device_addr_t *own_dev = (uct_device_addr_t*)calloc(1, own_dev_len);
-    if (own_dev_len > 0) {
+    uct_device_addr_t *own_dev = (uct_device_addr_t*)calloc(1, iface_attr.device_addr_len);
+    if (iface_attr.device_addr_len > 0) {
         status = uct_iface_get_device_address(iface, own_dev);
         ERROR_CHECK_UCS_OK("uct_iface_get_device_address", status)
     }
     
     /* get own iface address */
     // uct_iface_get_address
-    size_t own_iface_len = iface_attr.iface_addr_len;
-    uct_iface_addr_t *own_iface = (uct_iface_addr_t*)calloc(1, own_iface_len);
-    if (own_iface_len > 0) {
+    uct_iface_addr_t *own_iface = (uct_iface_addr_t*)calloc(1, iface_attr.iface_addr_len);
+    if (iface_attr.iface_addr_len > 0) {
         status = uct_iface_get_address(iface, own_iface);
         ERROR_CHECK_UCS_OK("uct_iface_get_address", status)
     }
 
     if (is_server) {
-        run_ucx_server(worker, own_dev, own_dev_len, own_iface, own_iface_len);
+        run_ucx_server(worker, own_dev, own_iface);
     } else {
         char *server_name = argv[1];
-        run_ucx_client(server_name, worker, own_dev, own_dev_len, own_iface, own_iface_len);
+        run_ucx_client(server_name, worker, own_dev, own_iface);
     }
 
     /* Cleanup */
