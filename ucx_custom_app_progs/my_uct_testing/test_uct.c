@@ -3,9 +3,22 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <unistd.h>
+
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netdb.h>
+
+
 
 #define ERROR_CHECK_UCS_OK(func_name, error) \
 if (error != UCS_OK) {  \
+    fprintf(stderr, "Error %s, line %u: %s failed, error code %d", __FUNCTION__, __LINE__, func_name, (int)error); \
+    exit(EXIT_FAILURE); \
+}
+
+#define ERROR_CHECK_ZERO(func_name, error) \
+if (error != 0) {  \
     fprintf(stderr, "Error %s, line %u: %s failed, error code %d", __FUNCTION__, __LINE__, func_name, (int)error); \
     exit(EXIT_FAILURE); \
 }
@@ -198,12 +211,135 @@ static ucs_status_t hello_world(void *arg, void *data, size_t length,
     printf("callback %s, %lu, %lu\n", func_am_t_str(func_am_type), (unsigned long) data, length);
 }
 
+const char server_port_str[] = "59152";
+
+
+int server_connect_to_client() {
+
+    int socket_fd = 0;
+
+    int ret;
+
+    struct addrinfo hints = { 0 };
+    hints.ai_flags    = AI_PASSIVE;
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    struct addrinfo *res;
+
+
+    ret = getaddrinfo(NULL, server_port_str, &hints, &res);
+    if (ret < 0) {
+        fprintf(stderr, "PROGRAM ERROR! getaddrinfo: %s\n", gai_strerror(ret));
+        exit(EXIT_FAILURE);
+    }
+    printf("getaddrinfo successful\n");
+
+    printf("Iterating through addrinfo structs\n");
+    for (struct addrinfo *ai_cur = res; ai_cur != NULL; ai_cur = ai_cur->ai_next) {
+
+        printf("* Loop, hello\n");
+
+        socket_fd = socket(ai_cur->ai_family, ai_cur->ai_socktype, ai_cur->ai_protocol);
+        if (socket_fd < 0) {
+            printf("socket failed here, moving on!\n");
+            continue;
+        }
+        
+        // Set up server port or whatever and wait for connections
+        int optval;
+        ret = setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &optval,
+                            sizeof(optval));
+        if (ret < 0) {
+            perror("PROGRAM ERROR! setsockopt failed\n");
+            exit(EXIT_FAILURE);
+        }
+
+        ret = bind(socket_fd, ai_cur->ai_addr, ai_cur->ai_addrlen);
+        if (ret != 0) {
+            perror("PROGRAM ERROR! bind failed\n");
+            exit(EXIT_FAILURE);
+        }
+
+        ret = listen(socket_fd, 0);
+        if (ret != 0) {
+            perror("PROGRAM ERROR! listen failed\n");
+            exit(EXIT_FAILURE);
+        }
+
+        fprintf(stdout, "Waiting for connection... Port is %s\n", server_port_str);
+        int listen_fd = socket_fd;
+        socket_fd = accept(listen_fd, NULL, NULL);
+        if (socket_fd < 0) {
+            perror("PROGRAM ERROR! accept failed\n");
+        }
+        close(listen_fd);
+
+        // So socket_fd should now be open right
+    }
+    
+    return socket_fd;
+}
+
+
+int client_connect_to_server(char *server_hostname) {
+
+    printf("client_connect_to_server start\n");
+
+    int socket_fd;
+
+    struct addrinfo hints = { 0 };
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    struct addrinfo *res;
+
+    int ret = getaddrinfo(server_hostname, server_port_str, &hints, &res);
+    if (ret < 0) {
+        fprintf(stderr, "PROGRAM ERROR! getaddrinfo: %s\n", gai_strerror(ret));
+        exit(EXIT_FAILURE);
+    }
+    printf("getaddrinfo successful\n");
+
+    for (struct addrinfo *ai_cur = res; ai_cur != NULL; ai_cur = ai_cur->ai_next) {
+
+        printf("* Loop, hello\n");
+
+        socket_fd = socket(ai_cur->ai_family, ai_cur->ai_socktype, ai_cur->ai_protocol);
+        if (socket_fd < 0) {
+            printf("socket failed here, moving on!\n");
+            continue;
+        }
+        
+        printf("Trying to connect to server on port %s\n", server_port_str);
+        
+        ret = connect(socket_fd, ai_cur->ai_addr, ai_cur->ai_addrlen);
+        if (ret != 0) {
+            perror("PROGRAM ERROR! connect failed\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    printf("client_connect_to_server stop\n");
+
+    return socket_fd;
+}
+
 void run_ucx_server(uct_worker_h worker, uct_device_addr_t *own_dev, uct_iface_addr_t *own_iface) {
     printf("Yes, yes, this is the server.\n");
+
+    int socket_fd = server_connect_to_client();
+    
+    close(socket_fd);
 }
 
 void run_ucx_client(char *server_name, uct_worker_h worker, uct_device_addr_t *own_dev, uct_iface_addr_t *own_iface) {
     printf("Okay, okay, this is the client.\n");
+
+    int socket_fd = client_connect_to_server(server_name);
+    
+
+    close(socket_fd);
 }
 
 int main(int argc, char **argv)
