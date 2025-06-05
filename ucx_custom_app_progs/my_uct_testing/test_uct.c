@@ -13,13 +13,13 @@
 
 #define ERROR_CHECK_UCS_OK(func_name, error) \
 if (error != UCS_OK) {  \
-    fprintf(stderr, "Error %s, line %u: %s failed, error code %d", __FUNCTION__, __LINE__, func_name, (int)error); \
+    fprintf(stderr, "Error %s, line %u: %s failed, error code %d\n", __FUNCTION__, __LINE__, func_name, (int)error); \
     exit(EXIT_FAILURE); \
 }
 
 #define ERROR_CHECK_ZERO(func_name, error) \
 if (error != 0) {  \
-    fprintf(stderr, "Error %s, line %u: %s failed, error code %d", __FUNCTION__, __LINE__, func_name, (int)error); \
+    fprintf(stderr, "Error %s, line %u: %s failed, error code %d\n", __FUNCTION__, __LINE__, func_name, (int)error); \
     exit(EXIT_FAILURE); \
 }
 
@@ -450,6 +450,7 @@ void run_ucx_server(
 {
     printf("Yes, yes, this is the server.\n");
 
+    ucs_status_t status;
     int ret;
 
     int socket_fd = server_connect_to_client();
@@ -469,11 +470,18 @@ void run_ucx_server(
     }
     printf("uct_iface_is_reachable returned true\n");
 
+    uct_ep_params_t ep_params;
+    ep_params.field_mask = UCT_EP_PARAM_FIELD_IFACE |
+                           UCT_EP_PARAM_FIELD_DEV_ADDR |
+                           UCT_EP_PARAM_FIELD_IFACE_ADDR;
+    ep_params.iface = iface;
+    ep_params.dev_addr    = peer_dev;
+    ep_params.iface_addr  = peer_iface;
 
-    // uct_ep_params_t ep_params;
-    // ep_params.field_mask = UCT_EP_PARAM_FIELD_IFACE;
-    // ep_params.iface = if_info.iface;
-    
+    uct_ep_h ep;
+    status = uct_ep_create(&ep_params, &ep);
+    ERROR_CHECK_UCS_OK("uct_ep_create", status)
+    printf("uct_ep_create succeeded\n");
 
     close(socket_fd);
 }
@@ -488,6 +496,8 @@ void run_ucx_client(
     uct_iface_h iface)
 {
     printf("Okay, okay, this is the client.\n");
+
+    ucs_status_t status;
 
     int socket_fd = client_connect_to_server(server_name);
     
@@ -506,6 +516,26 @@ void run_ucx_client(
     }
     printf("uct_iface_is_reachable returned true\n");
 
+    // UCT_IFACE_FLAG_CONNECT_TO_IFACE case seems simpler than UCT_IFACE_FLAG_CONNECT_TO_IFACE
+    // We can either send our endpoint using sockets or we can connect our enpoint to the peer iface
+    // Since we have already exchanged peer_iface it seems more sensible to use it to set up the endpoint
+    // rather than sending even more data using sockets
+    uct_ep_params_t ep_params;
+    // Unclear if this is necessary when we use UCT_IFACE_FLAG_CONNECT_TO_IFACE
+    // Aha! It is necessary!
+    ep_params.field_mask = UCT_EP_PARAM_FIELD_IFACE;
+    ep_params.iface = iface;
+
+    // These parameters are definitely specific for UCT_IFACE_FLAG_CONNECT_TO_IFACE
+    ep_params.field_mask |= UCT_EP_PARAM_FIELD_DEV_ADDR |
+                            UCT_EP_PARAM_FIELD_IFACE_ADDR;
+    ep_params.dev_addr    = peer_dev;
+    ep_params.iface_addr  = peer_iface;
+
+    uct_ep_h ep;
+    status = uct_ep_create(&ep_params, &ep);
+    ERROR_CHECK_UCS_OK("uct_ep_create", status)
+    printf("uct_ep_create succeeded\n");
 
     close(socket_fd);
 }
