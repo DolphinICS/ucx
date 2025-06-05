@@ -185,6 +185,21 @@ static ucs_status_t init_iface(
         printf("UCT_IFACE_FLAG_AM_ZCOPY 0\n");
     }
 
+    // other thing:
+
+    if (iface_attr->cap.flags & UCT_IFACE_FLAG_CONNECT_TO_EP) {
+        printf("UCT_IFACE_FLAG_CONNECT_TO_EP 1\n");
+    } else {
+        printf("UCT_IFACE_FLAG_CONNECT_TO_EP 0\n");
+    }
+
+    if (iface_attr->cap.flags & UCT_IFACE_FLAG_CONNECT_TO_IFACE) {
+        printf("UCT_IFACE_FLAG_CONNECT_TO_IFACE 1\n");
+    } else {
+        printf("UCT_IFACE_FLAG_CONNECT_TO_IFACE 0\n");
+    }
+
+
     return UCS_OK;
 
 }
@@ -345,7 +360,7 @@ void receive_dev_and_iface(
     *peer_dev = calloc(1, *peer_dev_len);
     if (*peer_dev == NULL) {
         perror("recv");
-        fprintf(stderr, "Failed to allocate peer_dev\n", ret);
+        fprintf(stderr, "Failed to allocate peer_dev\n");
         exit(EXIT_FAILURE);
     }
 
@@ -369,7 +384,7 @@ void receive_dev_and_iface(
     *peer_iface = calloc(1, *peer_iface_len);
     if (*peer_iface == NULL) {
         perror("calloc");
-        fprintf(stderr, "Failed to allocate peer_iface\n", ret);
+        fprintf(stderr, "Failed to allocate peer_iface\n");
         exit(EXIT_FAILURE);
     }
 
@@ -430,7 +445,8 @@ void run_ucx_server(
     uct_device_addr_t *own_dev,
     size_t own_dev_len,
     uct_iface_addr_t *own_iface,
-    size_t own_iface_len)
+    size_t own_iface_len,
+    uct_iface_h iface)
 {
     printf("Yes, yes, this is the server.\n");
 
@@ -446,7 +462,18 @@ void run_ucx_server(
 
     send_dev_and_iface(socket_fd, own_dev, own_dev_len, own_iface, own_dev_len);
 
+    int is_reachable = uct_iface_is_reachable(iface, peer_dev, peer_iface);
+    if (is_reachable == 0) {
+        fprintf(stderr, "uct_iface_is_reachable returned false. Peer is not reachable for this iface\n");
+        exit(EXIT_FAILURE);
+    }
+    printf("uct_iface_is_reachable returned true\n");
 
+
+    // uct_ep_params_t ep_params;
+    // ep_params.field_mask = UCT_EP_PARAM_FIELD_IFACE;
+    // ep_params.iface = if_info.iface;
+    
 
     close(socket_fd);
 }
@@ -457,7 +484,8 @@ void run_ucx_client(
     uct_device_addr_t *own_dev,
     size_t own_dev_len,
     uct_iface_addr_t *own_iface,
-    size_t own_iface_len)
+    size_t own_iface_len,
+    uct_iface_h iface)
 {
     printf("Okay, okay, this is the client.\n");
 
@@ -471,6 +499,12 @@ void run_ucx_client(
     size_t peer_iface_len;
     receive_dev_and_iface(socket_fd, &peer_dev, &peer_dev_len, &peer_iface, &peer_iface_len);
 
+    int is_reachable = uct_iface_is_reachable(iface, peer_dev, peer_iface);
+    if (is_reachable == 0) {
+        fprintf(stderr, "uct_iface_is_reachable returned false. Peer is not reachable for this iface\n");
+        exit(EXIT_FAILURE);
+    }
+    printf("uct_iface_is_reachable returned true\n");
 
 
     close(socket_fd);
@@ -542,10 +576,22 @@ int main(int argc, char **argv)
     }
 
     if (is_server) {
-        run_ucx_server(worker, own_dev, own_dev_len, own_iface, own_iface_len);
+        run_ucx_server(
+            worker,
+            own_dev,
+            own_dev_len,
+            own_iface,
+            own_iface_len,
+            iface);
     } else {
         char *server_name = argv[1];
-        run_ucx_client(server_name, worker, own_dev, own_dev_len, own_iface, own_iface_len);
+        run_ucx_client(server_name,
+            worker,
+            own_dev,
+            own_dev_len,
+            own_iface,
+            own_iface_len,
+            iface);
     }
 
     /* Cleanup */
