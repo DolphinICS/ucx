@@ -23,6 +23,8 @@ if (error != 0) {  \
     exit(EXIT_FAILURE); \
 }
 
+#define AM_ID 0
+
 typedef enum {
     FUNC_AM_SHORT,
     FUNC_AM_BCOPY,
@@ -40,7 +42,7 @@ static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_r
 
     printf("num_components = %u\n", num_components);
 
-    int tcp_index = -1;
+    int pcie_tl_cmp_index = -1;
 
     uct_component_attr_t component_attr;
     for (int cmpt_index = 0; cmpt_index < num_components; cmpt_index++) {
@@ -68,14 +70,14 @@ static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_r
         printf("component attribute name = %s\n", component_attr.name);
         
         /* Put transport you're looking for here, search can technically end here in a real program */
-        if (strncmp(component_attr.name, "tcp", 3) == 0) {
-            tcp_index = cmpt_index;
+        if (strncmp(component_attr.name, "pcie", 4) == 0) {
+            pcie_tl_cmp_index = cmpt_index;
         }
     }
 
-    printf("tcp_index == %d\n", tcp_index);
+    printf("pcie_tl_cmp_index == %d\n", pcie_tl_cmp_index);
 
-    int eno1_index = -1;
+    int pcie_dev_index = -1;
 
     uct_tl_resource_desc_t *tl_resources = NULL;
     /* Iterate through memory domain resources */
@@ -84,10 +86,10 @@ static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_r
         printf("md_index == %d\n", md_index);
 
         uct_md_config_t *md_config;
-        status = uct_md_config_read(components[tcp_index], NULL, NULL,
+        status = uct_md_config_read(components[pcie_tl_cmp_index], NULL, NULL,
                                         &md_config);
         ERROR_CHECK_UCS_OK("uct_md_config_read", status)
-        status = uct_md_open(components[tcp_index],
+        status = uct_md_open(components[pcie_tl_cmp_index],
                                  component_attr.md_resources[md_index].md_name,
                                  md_config, md);
         uct_config_release(md_config);
@@ -108,16 +110,16 @@ static ucs_status_t dev_tl_lookup(uct_md_h *md, uct_md_attr_t *md_attr, uct_tl_r
             printf("tl_index == %d\n", tl_index);
             printf("tl_name = %s , dev_name = %s\n", tl_resources[tl_index].tl_name, tl_resources[tl_index].dev_name);
 
-            if (strncmp(tl_resources[tl_index].dev_name, "eno1", 4) == 0) {
-                eno1_index = tl_index;
+            if (strncmp(tl_resources[tl_index].dev_name, "pcie", 4) == 0) {
+                pcie_dev_index = tl_index;
             }
         }
     }
 
-    printf("eno1_index == %d\n", eno1_index);
+    printf("pcie_dev_index == %d\n", pcie_dev_index);
 
     if (tl_resources != NULL) {
-        *tl_res = &tl_resources[eno1_index];
+        *tl_res = &tl_resources[pcie_dev_index];
     } else {
         return UCS_ERR_NO_RESOURCE;
     }
@@ -483,6 +485,29 @@ void run_ucx_server(
     ERROR_CHECK_UCS_OK("uct_ep_create", status)
     printf("uct_ep_create succeeded\n");
 
+    char *str = "hello";
+    printf("string on server side: %s\n", str);
+
+    // do {
+    //     /* Send active message to remote endpoint */
+    //     // status = uct_ep_am_short(ep, AM_ID, 1ULL, str, strlen(str) + 8);
+    //     uct_worker_progress(worker);
+    // } while (status == UCS_ERR_NO_RESOURCE);
+
+    for (int i = 0; i < 100; i++) {
+        status = uct_ep_am_short(ep, AM_ID, 1ULL, str, strlen(str) + 8);
+        uct_worker_progress(worker);
+        printf("status == %d\n", (int) status);
+        if (status != UCS_ERR_NO_RESOURCE) {
+            break;
+        }
+    }
+    if (status == UCS_ERR_NO_RESOURCE) {
+        printf("Tried a hundred times and status is still UCS_ERR_NO_RESOURCE\n");
+    }
+
+    printf("something was sent ?\n");
+
     close(socket_fd);
 }
 
@@ -537,6 +562,8 @@ void run_ucx_client(
     ERROR_CHECK_UCS_OK("uct_ep_create", status)
     printf("uct_ep_create succeeded\n");
 
+    
+
     close(socket_fd);
 }
 
@@ -577,8 +604,7 @@ int main(int argc, char **argv)
     status = init_iface(tl_res->dev_name, tl_res->tl_name, &iface_attr, &iface, md, worker);
     ERROR_CHECK_UCS_OK("init_iface", status)
 
-    uint8_t id = 0;
-    status = uct_iface_set_am_handler(iface, id, hello_world,
+    status = uct_iface_set_am_handler(iface, AM_ID, hello_world,
                                       FUNC_AM_SHORT, 0);
     ERROR_CHECK_UCS_OK("uct_iface_set_am_handler", status)
 
