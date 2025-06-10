@@ -224,13 +224,15 @@ int callback_var = 0;
 static ucs_status_t hello_world(void *arg, void *data, size_t length,
                                 unsigned flags)
 {
-    func_am_t func_am_type = *(func_am_t *)arg;
+    // func_am_t func_am_type = *(func_am_t *)arg;
     // int *rdesc;
     fprintf(stderr, "------------------- caaaaaaaaaaaaaaalbaaaaaaaaaaaaaaaaack ----------------");
 
-    printf("callback %s, %lu, %lu\n", func_am_t_str(func_am_type), (unsigned long) data, length);
+    // printf("callback %s, %lu, %lu\n", func_am_t_str(func_am_type), (unsigned long) data, length);
 
     callback_var++;
+
+    return UCS_OK;
 }
 
 const char server_port_str[] = "59152";
@@ -567,6 +569,8 @@ void run_ucx_client(
     status = uct_ep_create(&ep_params, &ep);
     ERROR_CHECK_UCS_OK("uct_ep_create", status)
     printf("uct_ep_create succeeded\n");
+
+    // Progress enable first, maybe?
 
     for (int i = 0; i < 100; i++) {
         uct_worker_progress(worker);
