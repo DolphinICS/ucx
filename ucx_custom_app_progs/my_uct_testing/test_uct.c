@@ -226,7 +226,7 @@ static ucs_status_t hello_world(void *arg, void *data, size_t length,
 {
     // func_am_t func_am_type = *(func_am_t *)arg;
     // int *rdesc;
-    fprintf(stderr, "------------------- caaaaaaaaaaaaaaalbaaaaaaaaaaaaaaaaack ----------------");
+    fprintf(stderr, "------------------- caaaaaaaaaaaaaaalbaaaaaaaaaaaaaaaaack ----------------\n");
 
     // printf("callback %s, %lu, %lu\n", func_am_t_str(func_am_type), (unsigned long) data, length);
 
@@ -577,6 +577,7 @@ void run_ucx_client(
         usleep(100);
         if (callback_var != 0) {
             printf("Message arrived after %d iterations\n", i);
+            break;
         }
     }
 
