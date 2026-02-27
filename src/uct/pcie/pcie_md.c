@@ -34,7 +34,8 @@ static void uct_pcie_md_close(uct_md_h md) {
 static ucs_status_t uct_pcie_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
 {
     /* Dummy memory registration provided. No real memory handling exists */
-    attr->flags               = UCT_MD_FLAG_NEED_RKEY | UCT_MD_FLAG_ALLOC;
+    // attr->flags               = UCT_MD_FLAG_NEED_RKEY | UCT_MD_FLAG_ALLOC;
+    attr->flags               = UCT_MD_FLAG_ALLOC;
     attr->max_alloc           = 0;
     attr->reg_mem_types       = UCS_BIT(UCS_MEMORY_TYPE_HOST);
     attr->alloc_mem_types     = UCS_BIT(UCS_MEMORY_TYPE_HOST);
@@ -92,6 +93,22 @@ static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
     return UCS_OK;
 }
 
+static ucs_status_t uct_pcie_md_rkey_unpack(uct_component_t *component,
+    const void *rkey_buffer, uct_rkey_t *rkey_p,
+    void **handle_p)
+{
+    /**
+    * Pseudo stub function for the key unpacking
+    * Need rkey == 0 due to work with same process to reuse
+    * uct_base_[put|get|atomic]*
+    */
+    *rkey_p   = 0;
+    *handle_p = NULL;
+    return UCS_OK;
+}
+
+#if defined false
+
 static ucs_status_t uct_pcie_mem_reg(
     uct_md_h md,
     void *address,
@@ -115,19 +132,7 @@ static ucs_status_t uct_pcie_mem_dereg(
     return UCS_OK;
 }
 
-static ucs_status_t uct_pcie_md_rkey_unpack(uct_component_t *component,
-    const void *rkey_buffer, uct_rkey_t *rkey_p,
-    void **handle_p)
-{
-    /**
-    * Pseudo stub function for the key unpacking
-    * Need rkey == 0 due to work with same process to reuse
-    * uct_base_[put|get|atomic]*
-    */
-    *rkey_p   = 0;
-    *handle_p = NULL;
-    return UCS_OK;
-}
+#endif
 
 static ucs_status_t uct_pcie_md_open(
     uct_component_t *component,
@@ -144,8 +149,8 @@ static ucs_status_t uct_pcie_md_open(
         .mem_alloc          = uct_pcie_mem_alloc,
         .mem_free           = uct_pcie_mem_free,
         .mkey_pack          = ucs_empty_function_return_success,
-        .mem_reg            = uct_pcie_mem_reg,
-        .mem_dereg          = uct_pcie_mem_dereg,
+        .mem_reg            = ucs_empty_function_return_unsupported,
+        .mem_dereg          = ucs_empty_function_return_unsupported,
         .detect_memory_type = ucs_empty_function_return_unsupported
     };
 
