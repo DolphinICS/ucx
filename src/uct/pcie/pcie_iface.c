@@ -699,10 +699,13 @@ static ucs_status_t uct_pcie_iface_query(
     /* AM flags - TODO: these might need to be fine tuned at a later stage */
     attr->cap.am.max_short = iface->packet_size_bytes;
     attr->cap.am.max_bcopy = 2048;
-    attr->cap.am.min_zcopy = 512;
-    attr->cap.am.max_zcopy = iface->packet_size_bytes;
+    // attr->cap.am.min_zcopy = 512;
+    // attr->cap.am.max_zcopy = iface->packet_size_bytes;
+    attr->cap.am.min_zcopy = 0;
+    attr->cap.am.max_zcopy = 0;
+    // attr->cap.am.max_iov   = 10;
+    attr->cap.am.max_iov   = 0;
 
-    attr->cap.am.max_iov   = 10;
     attr->cap.am.max_hdr   = 100;
 
     attr->latency                 = ucs_linear_func_make(0, 0);;
@@ -715,21 +718,21 @@ static ucs_status_t uct_pcie_iface_query(
 }
 
 static uct_iface_ops_t uct_pcie_iface_ops = {
-    .ep_put_short             = uct_pcie_ep_put_short, /* Stubbed */
+    .ep_put_short             = ucs_empty_function_return_unsupported, /* Stubbed */
     .ep_put_bcopy             = uct_pcie_ep_put_bcopy, /* Stubbed */
-    .ep_get_bcopy             = uct_pcie_ep_get_bcopy, /* Stubbed */
+    .ep_get_bcopy             = ucs_empty_function_return_unsupported, /* Stubbed */
     
     .ep_am_short              = uct_pcie_ep_am_short,
     .ep_am_short_iov          = uct_pcie_ep_am_short_iov, /* Stubbed */
     .ep_am_bcopy              = uct_pcie_ep_am_bcopy,
     .ep_am_zcopy              = uct_pcie_ep_am_zcopy,
     
-    .ep_atomic_cswap64        = uct_pcie_ep_atomic_cswap64, /* Stubbed */
-    .ep_atomic64_post         = uct_pcie_ep_atomic64_post, /* Stubbed */
-    .ep_atomic64_fetch        = uct_pcie_ep_atomic64_fetch, /* Stubbed */
-    .ep_atomic_cswap32        = uct_pcie_ep_atomic_cswap32, /* Stubbed */
-    .ep_atomic32_post         = uct_pcie_ep_atomic32_post, /* Stubbed */
-    .ep_atomic32_fetch        = uct_pcie_ep_atomic32_fetch, /* Stubbed */
+    .ep_atomic_cswap64        = ucs_empty_function_return_unsupported, /* Stubbed */
+    .ep_atomic64_post         = ucs_empty_function_return_unsupported, /* Stubbed */
+    .ep_atomic64_fetch        = ucs_empty_function_return_unsupported, /* Stubbed */
+    .ep_atomic_cswap32        = ucs_empty_function_return_unsupported, /* Stubbed */
+    .ep_atomic32_post         = ucs_empty_function_return_unsupported, /* Stubbed */
+    .ep_atomic32_fetch        = ucs_empty_function_return_unsupported, /* Stubbed */
 
     .ep_flush                 = uct_base_ep_flush,
     .ep_fence                 = uct_base_ep_fence,

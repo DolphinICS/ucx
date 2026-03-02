@@ -31,17 +31,33 @@ static void uct_pcie_md_close(uct_md_h md) {
     }
 }
 
+// static ucs_status_t uct_pcie_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
+// {
+//     /* Dummy memory registration provided. No real memory handling exists */
+//     // attr->flags               = UCT_MD_FLAG_NEED_RKEY | UCT_MD_FLAG_ALLOC;
+//     attr->flags               = UCT_MD_FLAG_ALLOC;
+//     attr->max_alloc           = 0;
+//     attr->reg_mem_types       = UCS_BIT(UCS_MEMORY_TYPE_HOST);
+//     attr->alloc_mem_types     = UCS_BIT(UCS_MEMORY_TYPE_HOST);
+//     attr->access_mem_types    = UCS_BIT(UCS_MEMORY_TYPE_HOST);
+//     attr->detect_mem_types    = 0;
+//     attr->max_reg             = ULONG_MAX;
+//     attr->rkey_packed_size    = 0;
+//     attr->reg_cost            = ucs_linear_func_make(0, 0);
+//     memset(&attr->local_cpus, 0xff, sizeof(attr->local_cpus));
+//     return UCS_OK;
+// }
+
 static ucs_status_t uct_pcie_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
 {
     /* Dummy memory registration provided. No real memory handling exists */
-    // attr->flags               = UCT_MD_FLAG_NEED_RKEY | UCT_MD_FLAG_ALLOC;
     attr->flags               = UCT_MD_FLAG_ALLOC;
     attr->max_alloc           = 0;
-    attr->reg_mem_types       = UCS_BIT(UCS_MEMORY_TYPE_HOST);
+    attr->reg_mem_types       = 0;
     attr->alloc_mem_types     = UCS_BIT(UCS_MEMORY_TYPE_HOST);
-    attr->access_mem_types    = UCS_BIT(UCS_MEMORY_TYPE_HOST);
+    attr->access_mem_types    = UCS_BIT(UCS_MEMORY_TYPE_HOST);;
     attr->detect_mem_types    = 0;
-    attr->max_reg             = ULONG_MAX;
+    attr->max_reg             = 0;
     attr->rkey_packed_size    = 0;
     attr->reg_cost            = ucs_linear_func_make(0, 0);
     memset(&attr->local_cpus, 0xff, sizeof(attr->local_cpus));
@@ -143,6 +159,16 @@ static ucs_status_t uct_pcie_md_open(
     uct_pcie_md_config_t *md_config =
         ucs_derived_of(config, uct_pcie_md_config_t);
 
+    // static uct_md_ops_t md_ops = {
+    //     .close              = uct_pcie_md_close, 
+    //     .query              = uct_pcie_md_query,
+    //     .mem_alloc          = uct_pcie_mem_alloc,
+    //     .mem_free           = uct_pcie_mem_free,
+    //     .mkey_pack          = ucs_empty_function_return_success,
+    //     .mem_reg            = ucs_empty_function_return_unsupported,
+    //     .mem_dereg          = ucs_empty_function_return_unsupported,
+    //     .detect_memory_type = ucs_empty_function_return_unsupported
+    // };
     static uct_md_ops_t md_ops = {
         .close              = uct_pcie_md_close, 
         .query              = uct_pcie_md_query,

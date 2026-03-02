@@ -236,6 +236,21 @@ UCS_CLASS_DEFINE_NEW_FUNC(uct_pcie_ep_t, uct_ep_t, const uct_ep_params_t *);
 UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
 
 
+ssize_t uct_pcie_ep_put_bcopy(
+    uct_ep_h tl_ep,
+    uct_pack_callback_t pack_cb,
+    void *arg,
+    uint64_t remote_addr,
+    uct_rkey_t rkey)
+{
+    //TODO
+    // printf("uct_pcie_ep_put_bcopy()\n");
+    return UCS_ERR_NOT_IMPLEMENTED;
+}
+
+
+#if defined false
+
 /* //SECTION RDMA*/
 ucs_status_t uct_pcie_ep_put_short(
     uct_ep_h tl_ep,
@@ -246,18 +261,6 @@ ucs_status_t uct_pcie_ep_put_short(
 {
     //TODO
     printf("uct_pcie_ep_put_short()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
-}
-
-ssize_t uct_pcie_ep_put_bcopy(
-    uct_ep_h tl_ep,
-    uct_pack_callback_t pack_cb,
-    void *arg,
-    uint64_t remote_addr,
-    uct_rkey_t rkey)
-{
-    //TODO
-    printf("uct_pcie_ep_put_bcopy()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
@@ -360,6 +363,8 @@ ucs_status_t uct_pcie_ep_atomic_cswap32(
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
+#endif
+
 /* //!SECTION */
 
 /*  // SECTION Active messages */
@@ -426,7 +431,7 @@ ucs_status_t uct_pcie_ep_am_short_iov(
     size_t iovcnt)
 {
     //TODO short_iov
-    printf("uct_pcie_ep_am_short_iov()\n");
+    // printf("uct_pcie_ep_am_short_iov()\n");
     return UCS_ERR_NOT_IMPLEMENTED;
 }
 
@@ -483,6 +488,34 @@ ssize_t uct_pcie_ep_am_bcopy(
 
     return length;
 }
+
+
+/**
+ * @brief 
+ * @param[inout] uct_ep 
+ * @param[in] id 
+ * @param[in] header 
+ * @param[in] header_length 
+ * @param[in] iov 
+ * @param[in] iovcnt 
+ * @param[in] flags 
+ * @param comp Unused 
+ * @return 
+ */
+ucs_status_t uct_pcie_ep_am_zcopy(
+    uct_ep_h uct_ep,
+    uint8_t id,
+    const void *header,
+    unsigned header_length,
+    const uct_iov_t *iov,
+    size_t iovcnt,
+    unsigned flags,
+    uct_completion_t *comp) 
+{
+    return UCS_ERR_NOT_IMPLEMENTED;
+}
+
+#if defined false
 
 /**
  * @brief 
@@ -630,6 +663,8 @@ ucs_status_t uct_pcie_ep_am_zcopy(
 
     return UCS_OK;    
 }
+
+#endif
 
 /* //!SECTION*/
 
