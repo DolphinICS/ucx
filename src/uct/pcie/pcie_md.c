@@ -179,6 +179,7 @@ uct_component_t uct_pcie_component = {
     .rkey_unpack        = uct_pcie_md_rkey_unpack,
     .rkey_ptr           = ucs_empty_function_return_unsupported, 
     .rkey_release       = ucs_empty_function_return_success,
+    .rkey_compare       = uct_base_rkey_compare,
     .name               = UCT_PCIE_NAME,
     .md_config          = UCT_MD_DEFAULT_CONFIG_INITIALIZER,
     .tl_list            = UCT_COMPONENT_TL_LIST_INITIALIZER(&uct_pcie_component),
