@@ -562,7 +562,8 @@ ucs_status_t uct_pcie_ep_am_zcopy(
     uct_pcie_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
     uint32_t packet_buf_offset;
     size_t bytes_to_send;
-    sci_error_t sci_error;
+    // sci_error_t sci_error;
+    uint8_t *dest_buffer;
 
     size_t iov_total_len = uct_iov_total_length(iov, iovcnt);
     
@@ -574,6 +575,10 @@ ucs_status_t uct_pcie_ep_am_zcopy(
     UCT_CHECK_LENGTH(bytes_to_send, 0 , iface->packet_size_bytes, "am_zcopy");
     UCT_CHECK_AM_ID(id);
 
+    packet_buf_offset =
+        iface->packet_size_bytes * (ep->ep_conn_seq_num % iface->packet_queue_len);
+    dest_buffer = &ep->remote_seg_buf[packet_buf_offset];
+
     uct_pcie_fill_buffer_with_packet(
         header,
         header_length,
@@ -582,42 +587,11 @@ ucs_status_t uct_pcie_ep_am_zcopy(
         iovcnt,
         iov_total_len,
         bytes_to_send,
-        iface->dma_buffer);
-    
-    packet_buf_offset =
-        iface->packet_size_bytes * (ep->ep_conn_seq_num % iface->packet_queue_len);
-
-    /* Send all the data  */
-    SCIStartDmaTransfer(
-        iface->dma_queue,
-        iface->dma_segment,
-        ep->remote_segment, 
-        0, /* localOffset = 0 */
-        bytes_to_send,
-        packet_buf_offset,
-        UCT_PCIE_NO_CALLBACK,
-        NULL,
-        UCT_PCIE_NO_FLAGS,
-        &sci_error);
-    if (ucs_unlikely(sci_error != SCI_ERR_OK)) {
-        ucs_error("SCIStartDmaTransfer failed: %s",
-            SCIGetErrorString(sci_error));
-        return UCS_ERR_IO_ERROR;
-    }
-    
-    SCIWaitForDMAQueue(
-        iface->dma_queue,
-        SCI_INFINITE_TIMEOUT,
-        UCT_PCIE_NO_FLAGS,
-        &sci_error);
-    if(ucs_unlikely(sci_error != SCI_ERR_OK)) {
-        ucs_error("SCIWaitForDMAQueue failed: %s",
-            SCIGetErrorString(sci_error));
-        return UCS_ERR_IO_ERROR;
-    }
+        dest_buffer);
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     /* Notify other side that a message has been posted */
-    packet_am_hdr = (uct_pcie_am_hdr_t*)&ep->remote_seg_buf[packet_buf_offset];
+    packet_am_hdr = (uct_pcie_am_hdr_t*)dest_buffer;
     ep->ep_conn_seq_num++;
     packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
