@@ -24,6 +24,8 @@ static void uct_pcie_md_close(uct_md_h md) {
     uct_pcie_md_t * sci_md = ucs_derived_of(md, uct_pcie_md_t);
     sci_error_t sci_error;
 
+    printf("uct_pcie_md_close\n");
+
     SCIClose(sci_md->sci_virtual_device, 0 , &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_error("Error closing Virtual_Device error: %s",
@@ -33,6 +35,7 @@ static void uct_pcie_md_close(uct_md_h md) {
 
 static ucs_status_t uct_pcie_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
 {
+    printf("uct_pcie_md_query\n");
     /* Dummy memory registration provided. No real memory handling exists */
     // attr->flags               = UCT_MD_FLAG_NEED_RKEY | UCT_MD_FLAG_ALLOC;
     attr->flags               = UCT_MD_FLAG_ALLOC;
@@ -64,6 +67,8 @@ static ucs_status_t uct_pcie_mem_alloc(
 {
     uct_pcie_alloc_handle_t *alloc_handle;
 
+    printf("uct_pcie_mem_alloc\n");
+
     alloc_handle = ucs_malloc(sizeof(*alloc_handle),
                               "uct_pcie_mem_alloc");
     if (NULL == alloc_handle) {
@@ -88,6 +93,9 @@ static ucs_status_t uct_pcie_mem_alloc(
 static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
 {
     uct_pcie_alloc_handle_t *alloc_handle = (uct_pcie_alloc_handle_t*) memh;
+
+    printf("uct_pcie_mem_free\n");
+
     free(alloc_handle->ptr);
     ucs_free(alloc_handle);
     return UCS_OK;
@@ -97,6 +105,7 @@ static ucs_status_t uct_pcie_md_rkey_unpack(uct_component_t *component,
     const void *rkey_buffer, uct_rkey_t *rkey_p,
     void **handle_p)
 {
+    printf("uct_pcie_md_rkey_unpack\n");
     /**
     * Pseudo stub function for the key unpacking
     * Need rkey == 0 due to work with same process to reuse

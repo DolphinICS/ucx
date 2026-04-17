@@ -168,6 +168,8 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super);
 
+    printf("ep init 1\n");
+
     /* If multiple processes can run this function simultaneously,
      * then this should be protected with a lock */
     ep_conn_index = iface->eps_init_cnt;
@@ -186,7 +188,9 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     if (ucs_ret != UCS_OK) {
         return ucs_ret;
     }
-    
+
+    printf("ep init 2\n");
+
     /* uct_pcie_ep_t *self */
     self->remote_seg_id = answer.segment_id;
     self->ep_conn_offset  = answer.ep_conn_offset;
@@ -208,6 +212,8 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
         iface->eps_init_cnt--;
         return UCS_ERR_NO_RESOURCE;
     }
+
+    printf("ep init 3\n");
     
     // do {
     //     DEBUG_PRINT("waiting to connect %d %s\n", sci_error,  SCIGetErrorString(sci_error));
@@ -387,7 +393,9 @@ ucs_status_t uct_pcie_ep_am_short(
     uct_pcie_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
     uint32_t packet_buf_offset;
     uint32_t send_start_buf_offset;
-    
+   
+    printf("uct_pcie_ep_am_short\n");
+
     if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
@@ -453,6 +461,8 @@ ssize_t uct_pcie_ep_am_bcopy(
     ssize_t length;
     uint32_t packet_buf_offset;
     uint32_t send_start_buf_offset;
+
+    printf("uct_pcie_ep_am_bcopy\n");
 
     if(ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
@@ -566,6 +576,8 @@ ucs_status_t uct_pcie_ep_am_zcopy(
     uint8_t *dest_buffer;
 
     size_t iov_total_len = uct_iov_total_length(iov, iovcnt);
+
+    printf("uct_pcie_ep_am_zcopy\n");
     
     if(ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
