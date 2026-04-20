@@ -38,15 +38,15 @@ static ucs_status_t uct_pcie_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
     printf("uct_pcie_md_query\n");
     /* Dummy memory registration provided. No real memory handling exists */
     // attr->flags               = UCT_MD_FLAG_NEED_RKEY | UCT_MD_FLAG_ALLOC;
-    attr->flags               = UCT_MD_FLAG_ALLOC;
+    attr->flags               = 0;
     attr->max_alloc           = 0;
-    attr->reg_mem_types       = UCS_BIT(UCS_MEMORY_TYPE_HOST);
-    attr->alloc_mem_types     = UCS_BIT(UCS_MEMORY_TYPE_HOST);
-    attr->access_mem_types    = UCS_BIT(UCS_MEMORY_TYPE_HOST);
+    attr->reg_mem_types       = 0;
+    attr->alloc_mem_types     = 0;
+    attr->access_mem_types    = 0;
     attr->detect_mem_types    = 0;
-    attr->max_reg             = ULONG_MAX;
+    attr->max_reg             = 0;
     attr->rkey_packed_size    = 0;
-    attr->reg_cost            = ucs_linear_func_make(0, 0);
+    attr->reg_cost = ucs_linear_func_make(1e9, 1e9);
     memset(&attr->local_cpus, 0xff, sizeof(attr->local_cpus));
     return UCS_OK;
 }
@@ -56,65 +56,65 @@ typedef struct {
     size_t length;
 } uct_pcie_alloc_handle_t;
 
-static ucs_status_t uct_pcie_mem_alloc(
-    uct_md_h uct_md,
-    size_t *length_p,
-    void **address_p,
-    ucs_memory_type_t mem_type,
-    unsigned flags,
-    const char *alloc_name,
-    uct_mem_h *memh_p)
-{
-    uct_pcie_alloc_handle_t *alloc_handle;
+// static ucs_status_t uct_pcie_mem_alloc(
+//     uct_md_h uct_md,
+//     size_t *length_p,
+//     void **address_p,
+//     ucs_memory_type_t mem_type,
+//     unsigned flags,
+//     const char *alloc_name,
+//     uct_mem_h *memh_p)
+// {
+//     uct_pcie_alloc_handle_t *alloc_handle;
 
-    printf("uct_pcie_mem_alloc\n");
+//     printf("uct_pcie_mem_alloc\n");
 
-    alloc_handle = ucs_malloc(sizeof(*alloc_handle),
-                              "uct_pcie_mem_alloc");
-    if (NULL == alloc_handle) {
-        ucs_error("failed to allocate memory for uct_pcie_mem_alloc");
-        return UCS_ERR_NO_MEMORY;
-    }
+//     alloc_handle = ucs_malloc(sizeof(*alloc_handle),
+//                               "uct_pcie_mem_alloc");
+//     if (NULL == alloc_handle) {
+//         ucs_error("failed to allocate memory for uct_pcie_mem_alloc");
+//         return UCS_ERR_NO_MEMORY;
+//     }
 
-    alloc_handle->ptr = malloc(*length_p);
-    if (alloc_handle->ptr == NULL) {
-        ucs_error("uct_pcie_mem_alloc, malloc failed");
-        ucs_free(alloc_handle);
-        return UCS_ERR_NO_MEMORY;
-    }
+//     alloc_handle->ptr = malloc(*length_p);
+//     if (alloc_handle->ptr == NULL) {
+//         ucs_error("uct_pcie_mem_alloc, malloc failed");
+//         ucs_free(alloc_handle);
+//         return UCS_ERR_NO_MEMORY;
+//     }
 
-    alloc_handle->length = *length_p;
+//     alloc_handle->length = *length_p;
 
-    *memh_p    = alloc_handle;
-    *address_p = (void*)alloc_handle->ptr;
-    return UCS_OK;
-}
+//     *memh_p    = alloc_handle;
+//     *address_p = (void*)alloc_handle->ptr;
+//     return UCS_OK;
+// }
 
-static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
-{
-    uct_pcie_alloc_handle_t *alloc_handle = (uct_pcie_alloc_handle_t*) memh;
+// static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
+// {
+//     uct_pcie_alloc_handle_t *alloc_handle = (uct_pcie_alloc_handle_t*) memh;
 
-    printf("uct_pcie_mem_free\n");
+//     printf("uct_pcie_mem_free\n");
 
-    free(alloc_handle->ptr);
-    ucs_free(alloc_handle);
-    return UCS_OK;
-}
+//     free(alloc_handle->ptr);
+//     ucs_free(alloc_handle);
+//     return UCS_OK;
+// }
 
-static ucs_status_t uct_pcie_md_rkey_unpack(uct_component_t *component,
-    const void *rkey_buffer, uct_rkey_t *rkey_p,
-    void **handle_p)
-{
-    printf("uct_pcie_md_rkey_unpack\n");
-    /**
-    * Pseudo stub function for the key unpacking
-    * Need rkey == 0 due to work with same process to reuse
-    * uct_base_[put|get|atomic]*
-    */
-    *rkey_p   = 0;
-    *handle_p = NULL;
-    return UCS_OK;
-}
+// static ucs_status_t uct_pcie_md_rkey_unpack(uct_component_t *component,
+//     const void *rkey_buffer, uct_rkey_t *rkey_p,
+//     void **handle_p)
+// {
+//     printf("uct_pcie_md_rkey_unpack\n");
+//     /**
+//     * Pseudo stub function for the key unpacking
+//     * Need rkey == 0 due to work with same process to reuse
+//     * uct_base_[put|get|atomic]*
+//     */
+//     *rkey_p   = 0;
+//     *handle_p = NULL;
+//     return UCS_OK;
+// }
 
 #if defined false
 
@@ -155,17 +155,19 @@ static ucs_status_t uct_pcie_md_open(
     static uct_md_ops_t md_ops = {
         .close              = uct_pcie_md_close, 
         .query              = uct_pcie_md_query,
-        .mem_alloc          = uct_pcie_mem_alloc,
-        .mem_free           = uct_pcie_mem_free,
-        .mkey_pack          = ucs_empty_function_return_success,
+        .mem_alloc          = ucs_empty_function_return_unsupported,
+        .mem_free           = ucs_empty_function_return_unsupported,
+        .mkey_pack          = ucs_empty_function_return_unsupported,
         .mem_reg            = ucs_empty_function_return_unsupported,
         .mem_dereg          = ucs_empty_function_return_unsupported,
         .detect_memory_type = ucs_empty_function_return_unsupported
     };
 
+    
     /* create sci memory domain struct */
     static uct_pcie_md_t md;
     sci_error_t errors;
+    printf("uct_pcie_md_open\n");
     SCIOpen(&md.sci_virtual_device, 0, &errors);
     if (errors != SCI_ERR_OK) {
         ucs_error("SCIOpen: %s/n", SCIGetErrorString(errors));
@@ -185,10 +187,10 @@ uct_component_t uct_pcie_component = {
     .query_md_resources = uct_md_query_single_md_resource, 
     .md_open            = uct_pcie_md_open,
     .cm_open            = ucs_empty_function_return_unsupported,
-    .rkey_unpack        = uct_pcie_md_rkey_unpack,
+    .rkey_unpack        = ucs_empty_function_return_unsupported,
     .rkey_ptr           = ucs_empty_function_return_unsupported, 
-    .rkey_release       = ucs_empty_function_return_success,
-    .rkey_compare       = uct_base_rkey_compare,
+    .rkey_release       = ucs_empty_function_return_unsupported,
+    .rkey_compare       = ucs_empty_function_return_unsupported,
     .name               = UCT_PCIE_NAME,
     .md_config          = UCT_MD_DEFAULT_CONFIG_INITIALIZER,
     .tl_list            = UCT_COMPONENT_TL_LIST_INITIALIZER(&uct_pcie_component),

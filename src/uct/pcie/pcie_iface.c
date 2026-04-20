@@ -541,6 +541,8 @@ static int uct_pcie_iface_is_reachable(
     const uct_device_addr_t *dev_addr,
     const uct_iface_addr_t *iface_addr)
 {
+    printf("uct_pcie_iface_is_reachable\n");
+
     return 1;
 }
 
@@ -550,6 +552,8 @@ ucs_status_t uct_pcie_get_device_address(
 {
     uct_pcie_iface_t* sci_iface = ucs_derived_of(iface, uct_pcie_iface_t);
     uct_pcie_device_addr_t* sci_addr = (uct_pcie_device_addr_t *) addr;
+
+    printf("uct_pcie_get_device_address\n");
     
     sci_addr->node_id = sci_iface->device_addr;
     
@@ -569,6 +573,8 @@ ucs_status_t uct_pcie_iface_get_address(
     uct_pcie_iface_t* iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
     
     uct_pcie_iface_addr_t* iface_addr = (uct_pcie_iface_addr_t *) addr;
+
+    printf("uct_pcie_iface_get_address\n");
     
     iface_addr->interrupt_no = iface->interrupt_no;
     
@@ -577,6 +583,7 @@ ucs_status_t uct_pcie_iface_get_address(
 
 
 void uct_pcie_iface_progress_enable(uct_iface_h iface, unsigned flags) {
+    printf("uct_pcie_iface_progress_enable\n");
     uct_base_iface_progress_enable(iface, flags);
 }
 
@@ -666,6 +673,8 @@ unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
     unsigned total_count = 0;
     unsigned partial_count;
 
+    printf("uct_pcie_iface_progress\n");
+
     do {
         partial_count = uct_pcie_iface_progress_aux(iface);
         total_count += partial_count;
@@ -680,15 +689,17 @@ static ucs_status_t uct_pcie_iface_query(
 {
     uct_pcie_iface_t* iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
 
+    static int cnt = 0;
+    cnt++;
+    printf("uct_pcie_iface_query %d\n", cnt);
+
     uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);   
     
     /* These flags advertises the functionality of our transport.
      * We currently only support the active message API  */
     attr->cap.flags =   UCT_IFACE_FLAG_CONNECT_TO_IFACE | 
                         UCT_IFACE_FLAG_AM_SHORT         |
-                        UCT_IFACE_FLAG_CB_SYNC          |
-                        UCT_IFACE_FLAG_AM_BCOPY         |
-                        UCT_IFACE_FLAG_AM_ZCOPY;
+                        UCT_IFACE_FLAG_AM_BCOPY;
     attr->cap.event_flags  = 0;
     attr->device_addr_len  = sizeof(uct_pcie_device_addr_t);
     attr->ep_addr_len      = sizeof(uct_pcie_ep_addr_t);
