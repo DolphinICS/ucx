@@ -686,7 +686,6 @@ static ucs_status_t uct_pcie_iface_query(
      * We currently only support the active message API  */
     attr->cap.flags =   UCT_IFACE_FLAG_CONNECT_TO_IFACE | 
                         UCT_IFACE_FLAG_AM_SHORT         |
-                        UCT_IFACE_FLAG_CB_SYNC          |
                         UCT_IFACE_FLAG_AM_BCOPY         |
                         UCT_IFACE_FLAG_AM_ZCOPY;
     attr->cap.event_flags  = 0;
