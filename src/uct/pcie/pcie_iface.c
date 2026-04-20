@@ -682,9 +682,16 @@ static ucs_status_t uct_pcie_iface_query(
 
     uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);   
     
+    /* Todo: UCT_IFACE_FLAG_CB_SYNC is specified in attr->cap.flags because it
+     * is needed by uct_perftest. Including it leads to bugs later on, however,
+     * because something in this model is not implemented correctly. More specifically
+     * when `ucp_ep_create` fails as it does currently, including the UCT_IFACE_FLAG_CB_SYNC
+     * flag results in a segfault on cleanup. */
+\
     /* These flags advertises the functionality of our transport.
      * We currently only support the active message API  */
-    attr->cap.flags =   UCT_IFACE_FLAG_CONNECT_TO_IFACE | 
+    attr->cap.flags =   UCT_IFACE_FLAG_CONNECT_TO_IFACE |
+                        UCT_IFACE_FLAG_CB_SYNC          |
                         UCT_IFACE_FLAG_AM_SHORT         |
                         UCT_IFACE_FLAG_AM_BCOPY         |
                         UCT_IFACE_FLAG_AM_ZCOPY;
