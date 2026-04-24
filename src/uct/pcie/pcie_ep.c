@@ -380,6 +380,7 @@ ucs_status_t uct_pcie_ep_am_short(
     const void *payload,
     unsigned length)
 {
+    /* Queue offset - am header metainfo - optional user metainfo (always sizeof(uint64_t)) - payload */
 
     uct_pcie_ep_t* ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
     uct_pcie_am_hdr_t* packet_am_hdr; 
@@ -393,10 +394,6 @@ ucs_status_t uct_pcie_ep_am_short(
     }
         
     packet_buf_offset = iface->packet_size_bytes * (ep->ep_conn_seq_num % iface->packet_queue_len);
-    packet_am_hdr = (uct_pcie_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
-    packet_am_hdr->am_id = id;
-    packet_am_hdr->am_length = length + sizeof(header);
-
     send_start_buf_offset = packet_buf_offset + sizeof(uct_pcie_am_hdr_t);
 
     uct_am_short_fill_data(
@@ -406,6 +403,9 @@ ucs_status_t uct_pcie_ep_am_short(
         length,
         UCS_ARCH_MEMCPY_NT_DEST);
 
+    packet_am_hdr = (uct_pcie_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
+    packet_am_hdr->am_id = id;
+    packet_am_hdr->am_length = length;
     packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     ep->ep_conn_seq_num++;
