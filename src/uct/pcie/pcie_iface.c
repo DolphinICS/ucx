@@ -625,7 +625,7 @@ static unsigned uct_pcie_iface_progress_aux(uct_pcie_iface_t* iface) {
         
         /* Packet offset + active message header + uint64_t (optional user header) */
         packet_payload_ptr = (void*)
-            &cd->packet_queue_buf[packet_offset + sizeof(uct_pcie_am_hdr_t) + sizeof(uint64_t)];
+            &cd->packet_queue_buf[packet_offset + sizeof(uct_pcie_am_hdr_t)];
 
         ucs_ret = uct_iface_invoke_am(
             &iface->super,
