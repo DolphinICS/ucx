@@ -511,7 +511,7 @@ static void uct_pcie_fill_buffer_with_packet(
     uct_pcie_am_hdr_t* dest_buf_packet_am_hdr = (uct_pcie_am_hdr_t*) packet_buffer;
     unsigned *dest_buf_header_len = (unsigned *) &dest_buf_packet_am_hdr[1];
     uint8_t *dest_buf_header = (uint8_t *) &dest_buf_header_len[1];
-    void *dest_buf_payload = (void *) &dest_buf_header[*dest_buf_header_len];
+    void *dest_buf_payload = (void *) &dest_buf_header[header_length];
 
     /*** AM packet header *****************************************************/
     dest_buf_packet_am_hdr->am_id = id;
