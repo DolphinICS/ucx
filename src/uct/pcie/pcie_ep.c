@@ -405,7 +405,7 @@ ucs_status_t uct_pcie_ep_am_short(
 
     packet_am_hdr = (uct_pcie_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
     packet_am_hdr->am_id = id;
-    packet_am_hdr->am_length = length;
+    packet_am_hdr->am_length = length + sizeof(header);
     packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     ep->ep_conn_seq_num++;
@@ -506,29 +506,38 @@ static void uct_pcie_fill_buffer_with_packet(
 {
     size_t bytes_copied;
     ucs_iov_iter_t uct_iov_iter;
-    uct_pcie_am_hdr_t* packet_am_hdr = (uct_pcie_am_hdr_t*) packet_buffer;
 
-    /* Convert the iov into a contiguous buffer */
-    ucs_iov_iter_init(&uct_iov_iter);
-    
-    /* Set uct_pcie packet prefix values, stored directly into the DMA buffer
-     * ready for sending */
-    packet_am_hdr->am_id = id;
-    packet_am_hdr->am_length = iov_total_len + header_length;
-    
-    /* Copy the uct header to the transfer buffer after prefix.
-     * Copied after uct_pcie packet prefix*/
+    /* AM packet header -- user defined header -- payload */
+    uct_pcie_am_hdr_t* dest_buf_packet_am_hdr = (uct_pcie_am_hdr_t*) packet_buffer;
+    uint8_t *dest_buf_header = (uint8_t *) &dest_buf_packet_am_hdr[1];
+    void *dest_buf_payload = (void *) &dest_buf_header[header_length];
+
+    /*** AM packet header *****************************************************/
+    dest_buf_packet_am_hdr->am_id = id;
+    dest_buf_packet_am_hdr->am_length = iov_total_len + header_length;
+
+    /*** User defined header **************************************************/
     if (header_length != 0) {
-        memcpy(&packet_buffer[sizeof(uct_pcie_am_hdr_t)], header, header_length);
+       memcpy(dest_buf_header, header, header_length);
     }
+
+    /*** Payload **************************************************************/
     
-    /* Copy package from iov to the the DMA buffer. That is,
-     * the rest of the data, after uct_pcie packet prefix and uct header */
+    /* Initialize the IOV iterator to initial values. It will be used by uct_iov_to_buffer
+     * To keep track of iov_index and buffer. It is just a simple iterator for uct_iov_to_buffer
+     * as it loops through the buffers. ucs_iov_iter_t is probably given by the caller
+     * so that the caller can reason about the end value, but it's not so important. */
+    ucs_iov_iter_init(&uct_iov_iter);
+
+    /* Where we want the payload to end up. */
+    // dest_buf_payload = packet_buffer + sizeof(uct_pcie_am_hdr_t) + header_length;
+
+    /* Memcopy each source buffer pointed to by iov into the destination buffer */
     bytes_copied = uct_iov_to_buffer(
         iov,
         iovcnt,
         &uct_iov_iter,
-        &packet_buffer[sizeof(uct_pcie_am_hdr_t) + header_length],
+        dest_buf_payload,
         bytes_to_send);
     assert(bytes_copied != bytes_to_send);
 }
@@ -563,7 +572,7 @@ ucs_status_t uct_pcie_ep_am_zcopy(
     uint32_t packet_buf_offset;
     size_t bytes_to_send;
     // sci_error_t sci_error;
-    uint8_t *dest_buffer;
+    uint8_t *packet_dest_buf;
 
     size_t iov_total_len = uct_iov_total_length(iov, iovcnt);
     
@@ -577,7 +586,7 @@ ucs_status_t uct_pcie_ep_am_zcopy(
 
     packet_buf_offset =
         iface->packet_size_bytes * (ep->ep_conn_seq_num % iface->packet_queue_len);
-    dest_buffer = &ep->remote_seg_buf[packet_buf_offset];
+    packet_dest_buf = &ep->remote_seg_buf[packet_buf_offset];
 
     uct_pcie_fill_buffer_with_packet(
         header,
@@ -587,11 +596,11 @@ ucs_status_t uct_pcie_ep_am_zcopy(
         iovcnt,
         iov_total_len,
         bytes_to_send,
-        dest_buffer);
+        packet_dest_buf);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     /* Notify other side that a message has been posted */
-    packet_am_hdr = (uct_pcie_am_hdr_t*)dest_buffer;
+    packet_am_hdr = (uct_pcie_am_hdr_t*)packet_dest_buf;
     ep->ep_conn_seq_num++;
     packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
