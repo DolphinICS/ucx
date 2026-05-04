@@ -405,7 +405,7 @@ ucs_status_t uct_pcie_ep_am_short(
 
     packet_am_hdr = (uct_pcie_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
     packet_am_hdr->am_id = id;
-    packet_am_hdr->am_length = length;
+    packet_am_hdr->am_length = length + sizeof(header);
     packet_am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     ep->ep_conn_seq_num++;
@@ -507,18 +507,14 @@ static void uct_pcie_fill_buffer_with_packet(
     size_t bytes_copied;
     ucs_iov_iter_t uct_iov_iter;
 
-    /* AM packet header -- user defined header len -- user defined header -- payload */
+    /* AM packet header -- user defined header -- payload */
     uct_pcie_am_hdr_t* dest_buf_packet_am_hdr = (uct_pcie_am_hdr_t*) packet_buffer;
-    unsigned *dest_buf_header_len = (unsigned *) &dest_buf_packet_am_hdr[1];
-    uint8_t *dest_buf_header = (uint8_t *) &dest_buf_header_len[1];
+    uint8_t *dest_buf_header = (uint8_t *) &dest_buf_packet_am_hdr[1];
     void *dest_buf_payload = (void *) &dest_buf_header[header_length];
 
     /*** AM packet header *****************************************************/
     dest_buf_packet_am_hdr->am_id = id;
     dest_buf_packet_am_hdr->am_length = iov_total_len + header_length;
-    
-    /*** User defined header len **********************************************/
-    *dest_buf_header_len = header_length;
 
     /*** User defined header **************************************************/
     if (header_length != 0) {
