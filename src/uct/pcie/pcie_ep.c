@@ -208,19 +208,6 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
         iface->eps_init_cnt--;
         return UCS_ERR_NO_RESOURCE;
     }
-    
-    // do {
-    //     DEBUG_PRINT("waiting to connect %d %s\n", sci_error,  SCIGetErrorString(sci_error));
-        
-    //     SCIConnectSegment(iface->vdev_ep, &self->remote_segment, self->remote_node_id, self->remote_seg_id, 
-    //                 UCT_PCIE_LOCAL_ADAPTER_NO, NULL, NULL, 0, 0, &sci_error);
-    // } while (sci_error != SCI_ERR_OK);
-
-    // self->buf = (uint8_t *) SCIMapRemoteSegment(self->remote_segment, &self->remote_seg_map, self->ep_conn_offset, iface->packet_size_bytes * self->packet_queue_len, NULL, 0, &sci_error);
-    // if (sci_error != SCI_ERR_OK) { 
-    //     ucs_error("SCI_MAP_REM_SEG: %s", SCIGetErrorString(sci_error));
-    //     return UCS_ERR_NO_RESOURCE;
-    // }
 
     ucs_debug("EP connected to segment %d at node %d\n",
         self->remote_seg_id,
@@ -365,13 +352,21 @@ ucs_status_t uct_pcie_ep_atomic_cswap32(
 /*  // SECTION Active messages */
 
 /**
- * @brief 
- * @param[inout] tl_ep 
- * @param[in] id 
- * @param[in] header 
- * @param[in] payload 
- * @param[in] length 
- * @return 
+ * @brief Send a short active message.
+ *
+ * Packet layout in the remote segment slot:
+ *   [ uct_pcie_am_hdr_t | header (uint64_t) | payload ]
+ *
+ * The header is a fixed-size uint64_t, unlike am_zcopy which takes a
+ * variable-length header.
+ *
+ * @param[inout] tl_ep   Endpoint to send on
+ * @param[in]    id      Active message handler ID on the remote side
+ * @param[in]    header  Fixed 8-byte user header
+ * @param[in]    payload Payload buffer
+ * @param[in]    length  Length of payload in bytes
+ * @return UCS_OK              on success
+ * @return UCS_ERR_NO_RESOURCE if the send queue is full
  */
 ucs_status_t uct_pcie_ep_am_short(
     uct_ep_h tl_ep,
@@ -380,115 +375,140 @@ ucs_status_t uct_pcie_ep_am_short(
     const void *payload,
     unsigned length)
 {
-    /* Queue offset - am header metainfo - optional user metainfo (always sizeof(uint64_t)) - payload */
+    uct_pcie_ep_t     *ep       = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t  *iface    = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uct_pcie_ctl_t    *ctl      = &iface->ctls[ep->ep_conn_index];
+    uct_pcie_am_hdr_t *am_hdr;
+    uint32_t           slot_offset;
+    uint32_t           payload_offset;
 
-    uct_pcie_ep_t* ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
-    uct_pcie_am_hdr_t* packet_am_hdr; 
-    uct_pcie_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
-    uct_pcie_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
-    uint32_t packet_buf_offset;
-    uint32_t send_start_buf_offset;
-    
+    /* Check that the send queue has room for one more packet */
     if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
-        
-    packet_buf_offset = iface->packet_size_bytes * (ep->ep_conn_seq_num % iface->packet_queue_len);
-    send_start_buf_offset = packet_buf_offset + sizeof(uct_pcie_am_hdr_t);
 
+    /* Locate the next available slot in the remote segment ring buffer.
+     * The ring index wraps using modulo, and each slot is packet_size_bytes wide. */
+    slot_offset    = iface->packet_size_bytes *
+                     (ep->ep_conn_seq_num % iface->packet_queue_len);
+    payload_offset = slot_offset + sizeof(uct_pcie_am_hdr_t);
+
+    /* Copy the fixed uint64_t header and payload into the slot */
     uct_am_short_fill_data(
-        &ep->remote_seg_buf[send_start_buf_offset],
+        &ep->remote_seg_buf[payload_offset],
         header,
         payload,
         length,
         UCS_ARCH_MEMCPY_NT_DEST);
 
-    packet_am_hdr = (uct_pcie_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
-    packet_am_hdr->am_id = id;
-    packet_am_hdr->am_length = length + sizeof(header);
-    packet_am_hdr->am_message_posted = 1;
+    /* Write the transport AM header and mark the slot as posted */
+    am_hdr                    = (uct_pcie_am_hdr_t *) &ep->remote_seg_buf[slot_offset];
+    am_hdr->am_id             = id;
+    am_hdr->am_length         = length + sizeof(header);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    am_hdr->am_message_posted = 1;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+
     ep->ep_conn_seq_num++;
 
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %d ep_conn_seq_num:%d\n",
-        ep->remote_seg_id,
-        ep->remote_node_id,
-        id,
-        packet_am_hdr->am_length,
-        ep->ep_conn_seq_num);
+    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u ep_conn_seq_num:%d\n",
+              ep->remote_seg_id, ep->remote_node_id, id,
+              am_hdr->am_length, ep->ep_conn_seq_num);
+
     return UCS_OK;
 }
 
+/**
+ * @brief Send a short active message from a scatter-gather list.
+ *
+ * Variant of am_short that takes an iov array instead of a flat
+ * header+payload. The iov buffers are gathered into a contiguous
+ * region in the remote segment slot.
+ *
+ * Packet layout in the remote segment slot:
+ *   [ uct_pcie_am_hdr_t | iov[0] | iov[1] | ... ]
+ *
+ * @param[inout] tl_ep  Endpoint to send on
+ * @param[in]    id     Active message handler ID on the remote side
+ * @param[in]    iov    Scatter-gather buffers, gathered in array order
+ * @param[in]    iovcnt Number of entries in iov
+ * @return UCS_OK              on success
+ * @return UCS_ERR_NO_RESOURCE if the send queue is full
+ */
 ucs_status_t uct_pcie_ep_am_short_iov(
     uct_ep_h tl_ep,
     uint8_t id,
     const uct_iov_t *iov,
     size_t iovcnt)
 {
-    uct_pcie_ep_t*    ep     = ucs_derived_of(tl_ep, uct_pcie_ep_t);
-    uct_pcie_iface_t* iface  = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
-    uct_pcie_ctl_t*   ctl    = &iface->ctls[ep->ep_conn_index];
-    uct_pcie_am_hdr_t* packet_am_hdr;
-    ucs_iov_iter_t    iov_iter;
-    uint32_t          packet_buf_offset;
-    uint32_t          send_start_buf_offset;
-    size_t            iov_total_len;
-    size_t            bytes_copied;
+    uct_pcie_ep_t     *ep      = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t  *iface   = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uct_pcie_ctl_t    *ctl     = &iface->ctls[ep->ep_conn_index];
+    uct_pcie_am_hdr_t *am_hdr;
+    ucs_iov_iter_t     iov_iter;
+    uint32_t           slot_offset;
+    uint32_t           payload_offset;
+    size_t             iov_total_len;
+    size_t             bytes_copied;
 
+    /* Check that the send queue has room for one more packet */
     if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 
     iov_total_len = uct_iov_total_length(iov, iovcnt);
 
-    UCT_CHECK_LENGTH(
-        iov_total_len + sizeof(uct_pcie_am_hdr_t),
-        0,
-        iface->packet_size_bytes,
-        "am_short_iov");
+    UCT_CHECK_LENGTH(iov_total_len + sizeof(uct_pcie_am_hdr_t),
+                     0, iface->packet_size_bytes, "am_short_iov");
     UCT_CHECK_AM_ID(id);
 
-    packet_buf_offset     = iface->packet_size_bytes *
-                            (ep->ep_conn_seq_num % iface->packet_queue_len);
-    send_start_buf_offset = packet_buf_offset + sizeof(uct_pcie_am_hdr_t);
+    /* Locate the next available slot in the remote segment ring buffer.
+     * The ring index wraps using modulo, and each slot is packet_size_bytes wide. */
+    slot_offset    = iface->packet_size_bytes *
+                     (ep->ep_conn_seq_num % iface->packet_queue_len);
+    payload_offset = slot_offset + sizeof(uct_pcie_am_hdr_t);
 
-    /* Scatter-gather copy of all iov buffers into the remote segment */
+    /* Gather-copy each iov buffer into the contiguous payload region of the slot */
     ucs_iov_iter_init(&iov_iter);
-    bytes_copied = uct_iov_to_buffer(
-        iov,
-        iovcnt,
-        &iov_iter,
-        &ep->remote_seg_buf[send_start_buf_offset],
-        iov_total_len);
+    bytes_copied = uct_iov_to_buffer(iov, iovcnt, &iov_iter,
+                                     &ep->remote_seg_buf[payload_offset],
+                                     iov_total_len);
     ucs_assert(bytes_copied == iov_total_len);
 
-    /* Write AM header last, then flush and mark posted */
-    packet_am_hdr                  = (uct_pcie_am_hdr_t*)
-                                     &ep->remote_seg_buf[packet_buf_offset];
-    packet_am_hdr->am_id           = id;
-    packet_am_hdr->am_length       = iov_total_len;
-    packet_am_hdr->am_message_posted = 1;
+    /* Write the transport AM header and mark the slot as posted */
+    am_hdr                    = (uct_pcie_am_hdr_t *) &ep->remote_seg_buf[slot_offset];
+    am_hdr->am_id             = id;
+    am_hdr->am_length         = iov_total_len;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    am_hdr->am_message_posted = 1;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+
     ep->ep_conn_seq_num++;
 
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %zu ep_conn_seq_num:%d\n",
-        ep->remote_seg_id,
-        ep->remote_node_id,
-        id,
-        iov_total_len,
-        ep->ep_conn_seq_num);
+    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u ep_conn_seq_num:%d\n",
+              ep->remote_seg_id, ep->remote_node_id, id,
+              am_hdr->am_length, ep->ep_conn_seq_num);
 
     return UCS_OK;
 }
 
 /**
- * @brief 
- * @param[inout] tl_ep
- * @param[in] id 
- * @param[in] pack_cb Callback to put specified data into 
- * @param[in] arg Data to copy.
- * @param[in] flags 
- * @return 
+ * @brief Send an active message using the bcopy (buffered copy) protocol.
+ *
+ * Calls a user-provided pack callback to write the payload directly into
+ * the remote segment slot, avoiding an intermediate staging buffer.
+ * The callback returns the number of bytes written.
+ *
+ * Packet layout in the remote segment slot:
+ *   [ uct_pcie_am_hdr_t | packed payload ]
+ *
+ * @param[inout] tl_ep   Endpoint to send on
+ * @param[in]    id      Active message handler ID on the remote side
+ * @param[in]    pack_cb Callback that packs data into the destination buffer
+ * @param[in]    arg     Argument passed through to pack_cb
+ * @param[in]    flags   UCT flags (unused)
+ * @return Number of bytes sent on success (>= 0)
+ * @return UCS_ERR_NO_RESOURCE if the send queue is full
  */
 ssize_t uct_pcie_ep_am_bcopy(
     uct_ep_h tl_ep,
@@ -497,40 +517,41 @@ ssize_t uct_pcie_ep_am_bcopy(
     void *arg,
     unsigned flags)
 {
-    uct_pcie_ep_t* ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
-    uct_pcie_am_hdr_t* packet_am_hdr;
-    uct_pcie_iface_t* iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
-    uct_pcie_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
-    ssize_t length;
-    uint32_t packet_buf_offset;
-    uint32_t send_start_buf_offset;
+    uct_pcie_ep_t     *ep      = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t  *iface   = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uct_pcie_ctl_t    *ctl     = &iface->ctls[ep->ep_conn_index];
+    uct_pcie_am_hdr_t *am_hdr;
+    uint32_t           slot_offset;
+    uint32_t           payload_offset;
+    ssize_t            length;
 
-    if(ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
+    /* Check that the send queue has room for one more packet */
+    if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 
-    packet_buf_offset =
-        iface->packet_size_bytes * (ep->ep_conn_seq_num % iface->packet_queue_len);
+    /* Locate the next available slot in the remote segment ring buffer.
+     * The ring index wraps using modulo, and each slot is packet_size_bytes wide. */
+    slot_offset    = iface->packet_size_bytes *
+                     (ep->ep_conn_seq_num % iface->packet_queue_len);
+    payload_offset = slot_offset + sizeof(uct_pcie_am_hdr_t);
 
-    packet_am_hdr = (uct_pcie_am_hdr_t*) &ep->remote_seg_buf[packet_buf_offset];
-    
-    send_start_buf_offset = packet_buf_offset + sizeof(uct_pcie_am_hdr_t);
-    
-    /* This is where the sending of the real data happends */
-    length = pack_cb(&ep->remote_seg_buf[send_start_buf_offset],  arg);
+    am_hdr = (uct_pcie_am_hdr_t *) &ep->remote_seg_buf[slot_offset];
 
-    /* Update meta information */
-    packet_am_hdr->am_id = id;
-    packet_am_hdr->am_length = length;
-    packet_am_hdr->am_message_posted = 1;
+    /* Invoke the pack callback to write the payload directly into the slot */
+    length = pack_cb(&ep->remote_seg_buf[payload_offset], arg);
+
+    /* Write the transport AM header and mark the slot as posted */
+    am_hdr->am_id             = id;
+    am_hdr->am_length         = length;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    am_hdr->am_message_posted = 1;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+
     ep->ep_conn_seq_num++;
 
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %d",
-        ep->remote_seg_id,
-        ep->remote_node_id,
-        id,
-        packet_am_hdr->am_length);
+    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u",
+              ep->remote_seg_id, ep->remote_node_id, id, am_hdr->am_length);
 
     return length;
 }
