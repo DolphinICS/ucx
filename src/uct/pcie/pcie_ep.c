@@ -425,9 +425,60 @@ ucs_status_t uct_pcie_ep_am_short_iov(
     const uct_iov_t *iov,
     size_t iovcnt)
 {
-    //TODO short_iov
-    printf("uct_pcie_ep_am_short_iov()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    uct_pcie_ep_t*    ep     = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t* iface  = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uct_pcie_ctl_t*   ctl    = &iface->ctls[ep->ep_conn_index];
+    uct_pcie_am_hdr_t* packet_am_hdr;
+    ucs_iov_iter_t    iov_iter;
+    uint32_t          packet_buf_offset;
+    uint32_t          send_start_buf_offset;
+    size_t            iov_total_len;
+    size_t            bytes_copied;
+
+    if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    iov_total_len = uct_iov_total_length(iov, iovcnt);
+
+    UCT_CHECK_LENGTH(
+        iov_total_len + sizeof(uct_pcie_am_hdr_t),
+        0,
+        iface->packet_size_bytes,
+        "am_short_iov");
+    UCT_CHECK_AM_ID(id);
+
+    packet_buf_offset     = iface->packet_size_bytes *
+                            (ep->ep_conn_seq_num % iface->packet_queue_len);
+    send_start_buf_offset = packet_buf_offset + sizeof(uct_pcie_am_hdr_t);
+
+    /* Scatter-gather copy of all iov buffers into the remote segment */
+    ucs_iov_iter_init(&iov_iter);
+    bytes_copied = uct_iov_to_buffer(
+        iov,
+        iovcnt,
+        &iov_iter,
+        &ep->remote_seg_buf[send_start_buf_offset],
+        iov_total_len);
+    ucs_assert(bytes_copied == iov_total_len);
+
+    /* Write AM header last, then flush and mark posted */
+    packet_am_hdr                  = (uct_pcie_am_hdr_t*)
+                                     &ep->remote_seg_buf[packet_buf_offset];
+    packet_am_hdr->am_id           = id;
+    packet_am_hdr->am_length       = iov_total_len;
+    packet_am_hdr->am_message_posted = 1;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    ep->ep_conn_seq_num++;
+
+    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %zu ep_conn_seq_num:%d\n",
+        ep->remote_seg_id,
+        ep->remote_node_id,
+        id,
+        iov_total_len,
+        ep->ep_conn_seq_num);
+
+    return UCS_OK;
 }
 
 /**
