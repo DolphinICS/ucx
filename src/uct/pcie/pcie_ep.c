@@ -529,17 +529,14 @@ static void uct_pcie_fill_buffer_with_packet(
      * so that the caller can reason about the end value, but it's not so important. */
     ucs_iov_iter_init(&uct_iov_iter);
 
-    /* Where we want the payload to end up. */
-    // dest_buf_payload = packet_buffer + sizeof(uct_pcie_am_hdr_t) + header_length;
-
     /* Memcopy each source buffer pointed to by iov into the destination buffer */
     bytes_copied = uct_iov_to_buffer(
         iov,
         iovcnt,
         &uct_iov_iter,
         dest_buf_payload,
-        bytes_to_send);
-    assert(bytes_copied != bytes_to_send);
+        iov_total_len);
+    ucs_assert(bytes_copied == iov_total_len);
 }
 
 /**
