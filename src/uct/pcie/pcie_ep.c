@@ -536,71 +536,22 @@ ssize_t uct_pcie_ep_am_bcopy(
 }
 
 /**
- * @brief 
- * @param[in] header 
- * @param[in] header_length 
- * @param[in] id 
- * @param[in] iov 
- * @param[in] iovcnt
- * @param[in] bytes_to_send
- * @param[out] packet_buffer 
- */
-static void uct_pcie_fill_buffer_with_packet(
-    const void *header,
-    unsigned header_length,
-    uint8_t id,
-    const uct_iov_t *iov,
-    size_t iovcnt,
-    size_t iov_total_len,
-    size_t bytes_to_send,
-    uint8_t* packet_buffer)
-{
-    size_t bytes_copied;
-    ucs_iov_iter_t uct_iov_iter;
-
-    /* AM packet header -- user defined header -- payload */
-    uct_pcie_am_hdr_t* dest_buf_packet_am_hdr = (uct_pcie_am_hdr_t*) packet_buffer;
-    uint8_t *dest_buf_header = (uint8_t *) &dest_buf_packet_am_hdr[1];
-    void *dest_buf_payload = (void *) &dest_buf_header[header_length];
-
-    /*** AM packet header *****************************************************/
-    dest_buf_packet_am_hdr->am_id = id;
-    dest_buf_packet_am_hdr->am_length = iov_total_len + header_length;
-
-    /*** User defined header **************************************************/
-    if (header_length != 0) {
-       memcpy(dest_buf_header, header, header_length);
-    }
-
-    /*** Payload **************************************************************/
-    
-    /* Initialize the IOV iterator to initial values. It will be used by uct_iov_to_buffer
-     * To keep track of iov_index and buffer. It is just a simple iterator for uct_iov_to_buffer
-     * as it loops through the buffers. ucs_iov_iter_t is probably given by the caller
-     * so that the caller can reason about the end value, but it's not so important. */
-    ucs_iov_iter_init(&uct_iov_iter);
-
-    /* Memcopy each source buffer pointed to by iov into the destination buffer */
-    bytes_copied = uct_iov_to_buffer(
-        iov,
-        iovcnt,
-        &uct_iov_iter,
-        dest_buf_payload,
-        iov_total_len);
-    ucs_assert(bytes_copied == iov_total_len);
-}
-
-/**
- * @brief 
- * @param[inout] uct_ep 
- * @param[in] id 
- * @param[in] header 
- * @param[in] header_length 
- * @param[in] iov 
- * @param[in] iovcnt 
- * @param[in] flags 
- * @param comp Unused 
- * @return 
+ * @brief Send an active message using the zero-copy protocol.
+ *
+ * Writes directly into the remote segment mapped via SISCI/PCIe.
+ * Packet layout in the remote segment slot:
+ *   [ uct_pcie_am_hdr_t | header (header_length bytes) | payload (iov) ]
+ *
+ * @param[inout] uct_ep        Endpoint to send on
+ * @param[in]    id            Active message handler ID on the remote side
+ * @param[in]    header        User-defined AM header copied before the payload
+ * @param[in]    header_length Length of header in bytes (may be 0)
+ * @param[in]    iov           Scatter-gather payload buffers
+ * @param[in]    iovcnt        Number of entries in iov
+ * @param[in]    flags         UCT flags (unused)
+ * @param[in]    comp          Completion handle (unused, send is synchronous)
+ * @return UCS_OK              on success
+ * @return UCS_ERR_NO_RESOURCE if the send queue is full
  */
 ucs_status_t uct_pcie_ep_am_zcopy(
     uct_ep_h uct_ep,
@@ -610,56 +561,63 @@ ucs_status_t uct_pcie_ep_am_zcopy(
     const uct_iov_t *iov,
     size_t iovcnt,
     unsigned flags,
-    uct_completion_t *comp) 
+    uct_completion_t *comp)
 {
+    uct_pcie_ep_t     *ep          = ucs_derived_of(uct_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t  *iface       = ucs_derived_of(uct_ep->iface, uct_pcie_iface_t);
+    uct_pcie_ctl_t    *ctl         = &iface->ctls[ep->ep_conn_index];
+    uct_pcie_am_hdr_t *am_hdr;
+    uint8_t           *dest_hdr;
+    void              *dest_payload;
+    ucs_iov_iter_t     iov_iter;
+    size_t             bytes_copied;
+    uint32_t           slot_offset;
+    size_t             iov_total_len = uct_iov_total_length(iov, iovcnt);
+    size_t             total_size    = sizeof(uct_pcie_am_hdr_t) + header_length + iov_total_len;
 
-    uct_pcie_ep_t* ep = ucs_derived_of(uct_ep, uct_pcie_ep_t);
-    uct_pcie_iface_t* iface = ucs_derived_of(uct_ep->iface, uct_pcie_iface_t);
-    uct_pcie_am_hdr_t* packet_am_hdr; 
-    uct_pcie_ctl_t* ctl = &iface->ctls[ep->ep_conn_index];
-    uint32_t packet_buf_offset;
-    size_t bytes_to_send;
-    // sci_error_t sci_error;
-    uint8_t *packet_dest_buf;
-
-    size_t iov_total_len = uct_iov_total_length(iov, iovcnt);
-    
-    if(ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
+    /* Check that the send queue has room for one more packet */
+    if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 
-    bytes_to_send = iov_total_len + header_length + sizeof(uct_pcie_am_hdr_t);
-    UCT_CHECK_LENGTH(bytes_to_send, 0 , iface->packet_size_bytes, "am_zcopy");
+    UCT_CHECK_LENGTH(total_size, 0, iface->packet_size_bytes, "am_zcopy");
     UCT_CHECK_AM_ID(id);
 
-    packet_buf_offset =
-        iface->packet_size_bytes * (ep->ep_conn_seq_num % iface->packet_queue_len);
-    packet_dest_buf = &ep->remote_seg_buf[packet_buf_offset];
+    /* Locate the next available slot in the remote segment ring buffer.
+     * The ring index wraps using modulo, and each slot is packet_size_bytes wide. */
+    slot_offset  = iface->packet_size_bytes *
+                   (ep->ep_conn_seq_num % iface->packet_queue_len);
 
-    uct_pcie_fill_buffer_with_packet(
-        header,
-        header_length,
-        id,
-        iov,
-        iovcnt,
-        iov_total_len,
-        bytes_to_send,
-        packet_dest_buf);
+    /* Lay out the three regions of the packet within the slot */
+    am_hdr       = (uct_pcie_am_hdr_t *) &ep->remote_seg_buf[slot_offset];
+    dest_hdr     = (uint8_t *) &am_hdr[1];
+    dest_payload = dest_hdr + header_length;
+
+    /* Write the transport AM header (id and total payload length) */
+    am_hdr->am_id     = id;
+    am_hdr->am_length = header_length + iov_total_len;
+
+    /* Copy the user-defined header into the slot, immediately after the AM header */
+    memcpy(dest_hdr, header, header_length);
+
+    /* Gather-copy each iov buffer into the contiguous payload region of the slot */
+    ucs_iov_iter_init(&iov_iter);
+    bytes_copied = uct_iov_to_buffer(iov, iovcnt, &iov_iter,
+                                     dest_payload, iov_total_len);
+    ucs_assert(bytes_copied == iov_total_len);
+
+    /* Update metadata informing the other side that the message has been sent */
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    am_hdr->am_message_posted = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
-    /* Notify other side that a message has been posted */
-    packet_am_hdr = (uct_pcie_am_hdr_t*)packet_dest_buf;
+    /* Advance the sequence number */
     ep->ep_conn_seq_num++;
-    packet_am_hdr->am_message_posted = 1;
-    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %d",
-        ep->remote_seg_id,
-        ep->remote_node_id,
-        id,
-        packet_am_hdr->am_length);
+    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u",
+              ep->remote_seg_id, ep->remote_node_id, id, am_hdr->am_length);
 
-    return UCS_OK;    
+    return UCS_OK;
 }
 
 /* //!SECTION*/
