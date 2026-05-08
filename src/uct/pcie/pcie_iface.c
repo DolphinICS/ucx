@@ -679,44 +679,40 @@ static ucs_status_t uct_pcie_iface_query(
     uct_iface_h tl_iface,
     uct_iface_attr_t *attr)
 {
-    uct_pcie_iface_t* iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
+    uct_pcie_iface_t *iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
 
-    uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);   
-    
-    /* Todo: UCT_IFACE_FLAG_CB_SYNC is specified in attr->cap.flags because it
-     * is needed by uct_perftest. Including it leads to bugs later on, however,
-     * because something in this model is not implemented correctly. More specifically
-     * when `ucp_ep_create` fails as it does currently, including the UCT_IFACE_FLAG_CB_SYNC
-     * flag results in a segfault on cleanup. */
-\
-    /* These flags advertises the functionality of our transport.
-     * We currently only support the active message API  */
-    attr->cap.flags =   UCT_IFACE_FLAG_CONNECT_TO_IFACE |
-                        UCT_IFACE_FLAG_CB_SYNC          |
-                        UCT_IFACE_FLAG_AM_SHORT         |
-                        UCT_IFACE_FLAG_AM_BCOPY         |
-                        UCT_IFACE_FLAG_AM_ZCOPY;
-    attr->cap.event_flags  = 0;
-    attr->device_addr_len  = sizeof(uct_pcie_device_addr_t);
-    attr->ep_addr_len      = sizeof(uct_pcie_ep_addr_t);
-    attr->iface_addr_len   = sizeof(uct_pcie_iface_addr_t);
-    
-    /* TODO: Change all these numbers to things that make sense */
-    
-    /* AM flags - TODO: these might need to be fine tuned at a later stage */
-    attr->cap.am.max_short = iface->packet_size_bytes;
-    attr->cap.am.max_bcopy = 2048;
-    attr->cap.am.min_zcopy = 512;
-    attr->cap.am.max_zcopy = iface->packet_size_bytes;
+    uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);
 
+    /* Advertise the active message operations this transport supports */
+    attr->cap.flags = UCT_IFACE_FLAG_CONNECT_TO_IFACE |
+                      UCT_IFACE_FLAG_CB_SYNC          |
+                      UCT_IFACE_FLAG_AM_SHORT         |
+                      UCT_IFACE_FLAG_AM_BCOPY         |
+                      UCT_IFACE_FLAG_AM_ZCOPY;
+    attr->cap.event_flags = 0;
+
+    attr->device_addr_len = sizeof(uct_pcie_device_addr_t);
+    attr->iface_addr_len  = sizeof(uct_pcie_iface_addr_t);
+    attr->ep_addr_len     = 0;
+
+    /* The usable payload per slot is the slot size minus the transport header.
+     * All three AM variants share the same slot size and therefore the same limit. */
+    attr->cap.am.max_short = iface->packet_size_bytes - sizeof(uct_pcie_am_hdr_t);
+    attr->cap.am.max_bcopy = iface->packet_size_bytes - sizeof(uct_pcie_am_hdr_t);
+    attr->cap.am.min_zcopy = 0;
+    attr->cap.am.max_zcopy = iface->packet_size_bytes - sizeof(uct_pcie_am_hdr_t);
     attr->cap.am.max_iov   = 10;
     attr->cap.am.max_hdr   = 100;
 
-    attr->latency                 = ucs_linear_func_make(0, 0);;
-    attr->bandwidth.dedicated     = 10 * UCS_MBYTE;
-    attr->bandwidth.shared        = 0;
-    attr->overhead                = 10e-9;
-    attr->priority                = 0;
+    /* Conservative PCIe performance estimates.
+     * Latency: ~1 microsecond for a PCIe round trip.
+     * Bandwidth: ~20 GB/s (conservative for PCIe 4.0 x16, actual numbers depends on slot width and gen).
+     */
+    attr->latency             = ucs_linear_func_make(1e-6, 0);
+    attr->bandwidth.dedicated = 20 * UCS_GBYTE;
+    attr->bandwidth.shared    = 0;
+    attr->overhead            = 1e-6;
+    attr->priority            = 0;
 
     return UCS_OK;
 }
