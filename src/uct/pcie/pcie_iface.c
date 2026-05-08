@@ -360,11 +360,10 @@ static UCS_CLASS_INIT_FUNC(
     for(i = 0; i < self->max_eps; i++) {
         self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
         self->sci_cds[i].ep_conn_offset = i * packet_queue_size_bytes; 
-        
         self->sci_cds[i].packet_queue_buf =
             &self->recv_buffer[self->sci_cds[i].ep_conn_offset];
-
         self->sci_cds[i].ep_conn_last_ack = 0;
+        self->ctls[i].ep_conn_ack = 0;
     }
 
     /* --- Initialize DMA related resources --- */
