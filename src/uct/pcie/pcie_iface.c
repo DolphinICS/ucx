@@ -581,98 +581,78 @@ void uct_pcie_iface_progress_enable(uct_iface_h iface, unsigned flags) {
 }
 
 /**
- * @brief 
- * @param[inout] iface
- * 
- * @details
- *  input fields are 
- *    - iface->packet_size_bytes
- *    - iface->packet_queue_len
- *    - iface->sci_cds[i].ep_conn_last_ack
- *  output fields are
- *    - iface->sci_cds[i].ctl_buf->status
- *    - iface->sci_cds[i].ctl_buf->ep_conn_ack
- *    - iface->sci_cds[i].ctl_buf->ep_conn_last_ack
- *    - packet stored in iface->ci_cds[i].ctl_buf + some offset
- * 
- * @return Number of messages received
+ * @brief Process all pending incoming packets across all connections.
+ *
+ * For each ready connection, drains all consecutively posted packets
+ * from the ring buffer slot by slot. For each packet, the AM handler
+ * is invoked and the ack counter is advanced so the remote sender
+ * can reuse the slot.
+ *
+ * Note: Only processes packets in order — stops at the first unposted
+ * slot, since the sender guarantees sequential posting.
+ *
+ * @return Number of packets processed
  */
-static unsigned uct_pcie_iface_progress_aux(uct_pcie_iface_t* iface) {
-    uint32_t packet_offset = 0;
-    uint32_t packet_queue_index = 0;
-    ucs_status_t ucs_ret;
-    unsigned count = 0;
-    uct_pcie_am_hdr_t* packet;
-    uct_pcie_conn_desc_t* cd;
-    void *packet_payload_ptr;
+unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
+    uct_pcie_iface_t     *iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
+    uct_pcie_conn_desc_t *cd;
+    uct_pcie_am_hdr_t    *packet;
+    void                 *packet_payload_ptr;
+    ucs_status_t          ucs_ret;
+    uint32_t              packet_queue_index;
+    uint32_t              packet_offset;
+    unsigned              count = 0;
 
     for (size_t i = 0; i < iface->connections; i++) {
         cd = &iface->sci_cds[i];
-        
-        /* Skip this cd if it does not correspond to a valid connection */
-        if(cd->cd_status != UCT_PCIE_CD_READY) {
+
+        if (cd->cd_status != UCT_PCIE_CD_READY) {
             continue;
         }
 
-        packet_queue_index =
-            ((cd->ep_conn_last_ack + 1) % iface->packet_queue_len);
-        packet_offset = iface->packet_size_bytes * packet_queue_index;
-        packet = (uct_pcie_am_hdr_t *)&cd->packet_queue_buf[packet_offset]; 
-        
-        if (packet->am_message_posted != 1) {
-            continue;
-        }
-        
-        /* Packet offset + active message header + uint64_t (optional user header) */
-        packet_payload_ptr = (void*)
-            &cd->packet_queue_buf[packet_offset + sizeof(uct_pcie_am_hdr_t)];
+        /* Drain all consecutively posted packets for this connection */
+        while (1) {
+            packet_queue_index = (cd->ep_conn_last_ack + 1) % iface->packet_queue_len;
+            packet_offset      = iface->packet_size_bytes * packet_queue_index;
+            packet             = (uct_pcie_am_hdr_t *) &cd->packet_queue_buf[packet_offset];
 
-        ucs_ret = uct_iface_invoke_am(
-            &iface->super,
-            packet->am_id,
-            packet_payload_ptr,
-            packet->am_length,
-            0);    
-        if(ucs_ret == UCS_INPROGRESS) {
-            ucs_debug("uct_pcie_iface_progress_aux in progress");
-            continue;
-        }
+            /* Stop if the next slot has not been posted by the sender yet */
+            if (packet->am_message_posted != 1) {
+                break;
+            }
 
-        if(ucs_ret != UCS_OK) {
-            ucs_error("uct_pcie_iface_progress_aux returned error %d", ucs_ret);
-            continue;
-        }
-        
-        packet->am_message_posted = 0;
-        /* Increment ack count and send it over to the remote endpoint */
-        /* TODO: Is this always single threaded? Should there be a lock?
-         * Atomic add? */
-        cd->ep_conn_last_ack++;
-        cd->ctl_buf->ep_conn_ack = cd->ep_conn_last_ack; 
-        SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+            packet_payload_ptr = (void *)
+                &cd->packet_queue_buf[packet_offset + sizeof(uct_pcie_am_hdr_t)];
 
-        count++;                
+            ucs_ret = uct_iface_invoke_am(
+                &iface->super,
+                packet->am_id,
+                packet_payload_ptr,
+                packet->am_length,
+                0);
+
+            if (ucs_ret == UCS_INPROGRESS) {
+                /* AM handler is not done with the buffer yet, retry next progress call */
+                ucs_debug("uct_pcie_iface_progress in progress");
+                break;
+            }
+
+            if (ucs_ret != UCS_OK) {
+                ucs_error("uct_pcie_iface_progress returned error %d", ucs_ret);
+                break;
+            }
+
+            /* Mark the slot as free and notify the sender by advancing the ack counter */
+            packet->am_message_posted = 0;
+            cd->ep_conn_last_ack++;
+            cd->ctl_buf->ep_conn_ack = cd->ep_conn_last_ack;
+            SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+
+            count++;
+        }
     }
 
     return count;
-}
-
-/**
- * @brief 
- * @param[inout] tl_iface
- * @return 
- */
-unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
-    uct_pcie_iface_t* iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
-    unsigned total_count = 0;
-    unsigned partial_count;
-
-    do {
-        partial_count = uct_pcie_iface_progress_aux(iface);
-        total_count += partial_count;
-    } while (partial_count != 0);
-    
-    return total_count;
 }
 
 static ucs_status_t uct_pcie_iface_query(
@@ -723,7 +703,7 @@ static uct_iface_ops_t uct_pcie_iface_ops = {
     .ep_get_bcopy             = uct_pcie_ep_get_bcopy, /* Stubbed */
     
     .ep_am_short              = uct_pcie_ep_am_short,
-    .ep_am_short_iov          = uct_pcie_ep_am_short_iov, /* Stubbed */
+    .ep_am_short_iov          = uct_pcie_ep_am_short_iov,
     .ep_am_bcopy              = uct_pcie_ep_am_bcopy,
     .ep_am_zcopy              = uct_pcie_ep_am_zcopy,
     
