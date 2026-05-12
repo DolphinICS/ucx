@@ -101,7 +101,7 @@ static ucs_status_t uct_pcie_ep_send_recv_conn_request(
         UCT_PCIE_NO_FLAGS,
         &sci_error);
     if(sci_error != SCI_ERR_OK) {
-        printf("SCI Trigger Interrupt: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCI Trigger Interrupt: %s", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
     
@@ -127,7 +127,7 @@ static ucs_status_t uct_pcie_ep_send_recv_conn_request(
         UCT_PCIE_NO_FLAGS,
         &sci_error);
     if(sci_error != SCI_ERR_OK) {
-        printf("SCI Wait For Interrupt: %s\n", SCIGetErrorString(sci_error));
+        ucs_error("SCI Wait For Interrupt: %s", SCIGetErrorString(sci_error));
         ucs_ret = UCS_ERR_NO_RESOURCE;
     }
     /* Done. Clean up data interrupt made in step 1 */
@@ -387,6 +387,10 @@ ucs_status_t uct_pcie_ep_am_short(
         return UCS_ERR_NO_RESOURCE;
     }
 
+    UCT_CHECK_LENGTH(sizeof(uct_pcie_am_hdr_t) + sizeof(uint64_t) + length,
+                 0, iface->packet_size_bytes, "am_short");
+    UCT_CHECK_AM_ID(id);
+
     /* Locate the next available slot in the remote segment ring buffer.
      * The ring index wraps using modulo, and each slot is packet_size_bytes wide. */
     slot_offset    = iface->packet_size_bytes *
@@ -395,7 +399,7 @@ ucs_status_t uct_pcie_ep_am_short(
 
     /* Copy the fixed uint64_t header and payload into the slot */
     uct_am_short_fill_data(
-        &ep->remote_seg_buf[payload_offset],
+        (void *)&ep->remote_seg_buf[payload_offset],
         header,
         payload,
         length,
@@ -471,7 +475,7 @@ ucs_status_t uct_pcie_ep_am_short_iov(
     /* Gather-copy each iov buffer into the contiguous payload region of the slot */
     ucs_iov_iter_init(&iov_iter);
     bytes_copied = uct_iov_to_buffer(iov, iovcnt, &iov_iter,
-                                     &ep->remote_seg_buf[payload_offset],
+                                     (void *)&ep->remote_seg_buf[payload_offset],
                                      iov_total_len);
     ucs_assert(bytes_copied == iov_total_len);
 
@@ -530,6 +534,8 @@ ssize_t uct_pcie_ep_am_bcopy(
         return UCS_ERR_NO_RESOURCE;
     }
 
+    UCT_CHECK_AM_ID(id);
+
     /* Locate the next available slot in the remote segment ring buffer.
      * The ring index wraps using modulo, and each slot is packet_size_bytes wide. */
     slot_offset    = iface->packet_size_bytes *
@@ -539,7 +545,7 @@ ssize_t uct_pcie_ep_am_bcopy(
     am_hdr = (uct_pcie_am_hdr_t *) &ep->remote_seg_buf[slot_offset];
 
     /* Invoke the pack callback to write the payload directly into the slot */
-    length = pack_cb(&ep->remote_seg_buf[payload_offset], arg);
+    length = pack_cb((void *)&ep->remote_seg_buf[payload_offset], arg);
 
     /* Write the transport AM header and mark the slot as posted */
     am_hdr->am_id             = id;

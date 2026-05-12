@@ -354,7 +354,7 @@ static UCS_CLASS_INIT_FUNC(
         (void**)&self->ctls);
     if (ret != 0) {
         ucs_error("Failed to set up receive segment");
-        goto err_remove_ctl_seg;
+        goto err_remove_recv_seg;
     }
 
     for(i = 0; i < self->max_eps; i++) {
@@ -376,7 +376,7 @@ static UCS_CLASS_INIT_FUNC(
         &self->dma_buffer);
     if (ret != 0) {
         ucs_error("Failed to set up receive segment");
-        goto err_remove_recv_seg;
+        goto err_remove_ctl_seg;
     }
 
     SCICreateDMAQueue(
@@ -430,10 +430,10 @@ err_remove_dma_queue:
     }
 err_remove_dma_seg:
     uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
-err_remove_recv_seg:
-    uct_pcie_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
 err_remove_ctl_seg:
     uct_pcie_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
+err_remove_recv_seg:
+    uct_pcie_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
 err_free_vdev_ctl:
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
 err_free_vdev_ep:
@@ -468,11 +468,13 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
     /* Remove connections set up by connection handler uct_pcie_conn_handler for
      * any connections initiated by a remote endpoint */
     for(ssize_t i = 0; i < self->connections; i++) {
-        self->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
-        uct_pcie_disconnect_segment(
-            self->sci_cds[i].ctl_segment,
-            self->sci_cds[i].ctl_segment_map);
-        self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
+        if (self->sci_cds[i].cd_status == UCT_PCIE_CD_READY) {
+            self->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
+            uct_pcie_disconnect_segment(
+                self->sci_cds[i].ctl_segment,
+                self->sci_cds[i].ctl_segment_map);
+            self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
+        }
     }
     
     /* ----  Remove other resources set up on init --- */
@@ -658,6 +660,7 @@ static ucs_status_t uct_pcie_iface_query(
     uct_iface_h tl_iface,
     uct_iface_attr_t *attr)
 {
+    size_t am_max;
     uct_pcie_iface_t *iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
 
     uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);
@@ -674,14 +677,18 @@ static ucs_status_t uct_pcie_iface_query(
     attr->iface_addr_len  = sizeof(uct_pcie_iface_addr_t);
     attr->ep_addr_len     = 0;
 
-    /* The usable payload per slot is the slot size minus the transport header.
-     * All three AM variants share the same slot size and therefore the same limit. */
-    attr->cap.am.max_short = iface->packet_size_bytes - sizeof(uct_pcie_am_hdr_t);
-    attr->cap.am.max_bcopy = iface->packet_size_bytes - sizeof(uct_pcie_am_hdr_t);
+    /* Each slot holds one uct_pcie_am_hdr_t followed by user data. UCT compares
+     * the total user-supplied data (including any user-defined sub-headers) against
+     * these limits, so the right bound for every variant is the space remaining in
+     * the slot after the transport header. max_hdr follows the same reasoning: a
+     * zcopy header is part of user data and is bounded by the same slot remainder. */
+    am_max = iface->packet_size_bytes - sizeof(uct_pcie_am_hdr_t);
+    attr->cap.am.max_short = am_max;
+    attr->cap.am.max_bcopy = am_max;
     attr->cap.am.min_zcopy = 0;
-    attr->cap.am.max_zcopy = iface->packet_size_bytes - sizeof(uct_pcie_am_hdr_t);
+    attr->cap.am.max_zcopy = am_max;
     attr->cap.am.max_iov   = 10;
-    attr->cap.am.max_hdr   = 100;
+    attr->cap.am.max_hdr   = am_max;
 
     /* Conservative PCIe performance estimates.
      * Latency: ~1 microsecond for a PCIe round trip.

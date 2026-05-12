@@ -18,7 +18,7 @@ typedef struct {
     unsigned int            remote_seg_id;
     sci_remote_segment_t    remote_segment;
     sci_map_t               remote_seg_map;
-    uint8_t*                remote_seg_buf;
+    volatile uint8_t*                remote_seg_buf;
     /* ep_conn_offset should be ep_conn_index * (iface->packet_size_bytes * iface->packet_queue_len) */
     unsigned int            ep_conn_offset;
     unsigned int            ep_conn_index;
