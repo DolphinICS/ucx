@@ -696,7 +696,7 @@ static ucs_status_t uct_pcie_iface_query(
      */
     attr->latency             = ucs_linear_func_make(1e-6, 0);
     attr->bandwidth.dedicated = 20 * UCS_GBYTE;
-    attr->bandwidth.shared    = 20 * UCS_GBYTE;
+    attr->bandwidth.shared    = 0;
     attr->overhead            = 1e-6;
     attr->priority            = 0;
 
