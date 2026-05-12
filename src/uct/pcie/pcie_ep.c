@@ -383,7 +383,7 @@ ucs_status_t uct_pcie_ep_am_short(
     uint32_t           payload_offset;
 
     /* Check that the send queue has room for one more packet */
-    if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
+    if (ep->ep_conn_seq_num - ctl->ep_conn_ack > iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -456,7 +456,7 @@ ucs_status_t uct_pcie_ep_am_short_iov(
     size_t             bytes_copied;
 
     /* Check that the send queue has room for one more packet */
-    if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
+    if (ep->ep_conn_seq_num - ctl->ep_conn_ack > iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -530,7 +530,7 @@ ssize_t uct_pcie_ep_am_bcopy(
     ssize_t            length;
 
     /* Check that the send queue has room for one more packet */
-    if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
+    if (ep->ep_conn_seq_num - ctl->ep_conn_ack > iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -603,7 +603,7 @@ ucs_status_t uct_pcie_ep_am_zcopy(
     size_t             total_size    = sizeof(uct_pcie_am_hdr_t) + header_length + iov_total_len;
 
     /* Check that the send queue has room for one more packet */
-    if (ep->ep_conn_seq_num - ctl->ep_conn_ack >= iface->packet_queue_len) {
+    if (ep->ep_conn_seq_num - ctl->ep_conn_ack > iface->packet_queue_len) {
         return UCS_ERR_NO_RESOURCE;
     }
 

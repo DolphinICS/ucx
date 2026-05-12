@@ -24,13 +24,13 @@ typedef struct {
 } UCS_S_PACKED uct_pcie_device_addr_t;
 
 typedef struct {
-    uint32_t     ep_conn_ack;
+    volatile uint32_t ep_conn_ack;
 } uct_pcie_ctl_t;
 
 typedef struct {
-    uint8_t     am_id;
-    uint8_t     am_message_posted;
-    unsigned    am_length;
+    uint8_t          am_id;
+    volatile uint8_t am_message_posted;
+    unsigned         am_length;
 } UCS_S_PACKED uct_pcie_am_hdr_t;
 
 typedef enum {
