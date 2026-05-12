@@ -23,7 +23,7 @@ typedef struct {
     unsigned int            ep_conn_offset;
     unsigned int            ep_conn_index;
     unsigned int            remote_node_id;
-    uint32_t                ep_conn_seq_num;
+    uint64_t                ep_conn_seq_num;
     //sci_map_t               ctl_segment_map;
     //uct_pcie_ctl_t*              sci_ctl;              
 } uct_pcie_ep_t;

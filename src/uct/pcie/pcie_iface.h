@@ -24,7 +24,7 @@ typedef struct {
 } UCS_S_PACKED uct_pcie_device_addr_t;
 
 typedef struct {
-    volatile uint32_t ep_conn_ack;
+    volatile uint64_t ep_conn_ack;
 } uct_pcie_ctl_t;
 
 typedef struct {
@@ -49,7 +49,7 @@ typedef enum {
 typedef struct {
     conn_desc_status_t      cd_status;
     int                     remote_node;
-    uint32_t                ep_conn_last_ack;
+    uint64_t                ep_conn_last_ack;
     
     /* Data transfer (used to send the actual data) */
 
@@ -145,7 +145,7 @@ typedef struct {
     pthread_mutex_t             lock;
     
     unsigned int                eps_init_cnt;
-    unsigned int                connections;
+    volatile unsigned int       connections;
     
     /* ctl segment. Used to send signals from iface to endpoint. Currently the
      * only such signal to go in that direction is the ack counter*/

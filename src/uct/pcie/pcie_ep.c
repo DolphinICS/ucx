@@ -191,8 +191,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     self->remote_seg_id = answer.segment_id;
     self->ep_conn_offset  = answer.ep_conn_offset;
     self->ep_conn_index = ep_conn_index;
-    /* quick fix for weird behaviour when queue size was 1...*/
-    self->ep_conn_seq_num               = iface->packet_queue_len > 1 ? 1 : 0;
+    self->ep_conn_seq_num = 1;
 
     ret = uct_pcie_connect_segment(
         iface->vdev_ep,
@@ -415,7 +414,7 @@ ucs_status_t uct_pcie_ep_am_short(
 
     ep->ep_conn_seq_num++;
 
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u ep_conn_seq_num:%d\n",
+    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u ep_conn_seq_num:%lu\n",
               ep->remote_seg_id, ep->remote_node_id, id,
               am_hdr->am_length, ep->ep_conn_seq_num);
 
@@ -489,7 +488,7 @@ ucs_status_t uct_pcie_ep_am_short_iov(
 
     ep->ep_conn_seq_num++;
 
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u ep_conn_seq_num:%d\n",
+    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u ep_conn_seq_num:%lu\n",
               ep->remote_seg_id, ep->remote_node_id, id,
               am_hdr->am_length, ep->ep_conn_seq_num);
 
