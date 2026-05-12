@@ -6,8 +6,26 @@
 #include "pcie_sisci_helper.h"
 #include "pcie_md.h"
 
+/* Discard callback for use when purging the pending queue on EP teardown.
+ * UCX's contract requires the user to call ep_pending_purge before destroying
+ * an EP, so this should never actually fire. It is here purely as a safety net. */
+static ucs_arbiter_cb_result_t
+uct_pcie_ep_pending_discard_cb(ucs_arbiter_t *arbiter, ucs_arbiter_group_t *group,
+                               ucs_arbiter_elem_t *elem, void *arg)
+{
+    ucs_warn("pcie EP destroyed with pending request still queued");
+    return UCS_ARBITER_CB_RESULT_REMOVE_ELEM;
+}
+
 static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
-{   
+{
+    uct_pcie_iface_t *iface = ucs_derived_of(self->super.super.iface, uct_pcie_iface_t);
+
+    /* UCX guarantees ep_pending_purge is called before ep_destroy, so the
+     * group should already be empty here. Drain defensively just in case. */
+    ucs_arbiter_group_purge(&iface->arbiter, &self->pending_q,
+                            uct_pcie_ep_pending_discard_cb, NULL);
+
     self->remote_seg_buf = NULL;
     uct_pcie_disconnect_segment(self->remote_segment, self->remote_seg_map);
     ucs_debug("ep deleted segment_id %d node_id %d\n",
@@ -192,6 +210,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     self->ep_conn_offset  = answer.ep_conn_offset;
     self->ep_conn_index = ep_conn_index;
     self->ep_conn_seq_num = 1;
+    ucs_arbiter_group_init(&self->pending_q);
 
     ret = uct_pcie_connect_segment(
         iface->vdev_ep,
@@ -647,4 +666,116 @@ ucs_status_t uct_pcie_ep_am_zcopy(
 }
 
 /* //!SECTION*/
+
+/* // SECTION Pending queue */
+
+/*
+ * The UCT pending API lets upper layers queue send requests when a transport
+ * is temporarily out of resources (e.g. our flow-control window is full).
+ *
+ * We use the standard ucs_arbiter_t mechanism:
+ *   - One ucs_arbiter_t lives on the iface (shared across all EPs).
+ *   - One ucs_arbiter_group_t lives on each EP (its private queue).
+ *   - The ucs_arbiter_elem_t is stored in-place inside req->priv, which UCT
+ *     reserves for transport use — no extra allocation needed.
+ *
+ * iface_progress drains the arbiter after processing incoming packets, so
+ * pending sends are retried as soon as ack slots free up.
+ */
+
+/* Recover the uct_pending_req_t from an arbiter element.
+ * The element lives at req->priv (cast to ucs_arbiter_elem_t*), so
+ * ucs_container_of reverses that cast. */
+static inline uct_pending_req_t *
+uct_pcie_pending_req_from_elem(ucs_arbiter_elem_t *elem)
+{
+    return ucs_container_of(elem, uct_pending_req_t, priv);
+}
+
+typedef struct {
+    uct_pending_purge_callback_t cb;
+    void                        *arg;
+} uct_pcie_pending_purge_args_t;
+
+/* Callback used by pending_purge: invokes the caller-supplied cancel function
+ * for each element then removes it from the arbiter. */
+static ucs_arbiter_cb_result_t
+uct_pcie_ep_pending_purge_cb(
+    ucs_arbiter_t       *arbiter,
+    ucs_arbiter_group_t *group,
+    ucs_arbiter_elem_t  *elem,
+    void                *arg)
+{
+    uct_pcie_pending_purge_args_t *args = arg;
+    uct_pending_req_t             *req  = uct_pcie_pending_req_from_elem(elem);
+
+    if (args->cb != NULL) {
+        args->cb(req, args->arg);
+    }
+    return UCS_ARBITER_CB_RESULT_REMOVE_ELEM;
+}
+
+/**
+ * @brief Add a send request to the per-EP pending queue.
+ *
+ * Called by UCX when an AM send returns UCS_ERR_NO_RESOURCE. We store the
+ * pending request in the EP's arbiter group so that uct_pcie_iface_progress
+ * can retry it once the flow-control window opens up.
+ *
+ * @return UCS_INPROGRESS  request was queued
+ * @return UCS_ERR_BUSY    window has room and no earlier requests are waiting;
+ *                         UCX will retry the send immediately without queuing
+ */
+ucs_status_t uct_pcie_ep_pending_add(
+    uct_ep_h tl_ep,
+    uct_pending_req_t *req,
+    unsigned flags)
+{
+    uct_pcie_ep_t    *ep    = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uct_pcie_ctl_t   *ctl   = &iface->ctls[ep->ep_conn_index];
+
+    /* If the window has room and no prior requests are waiting (which would
+     * need to go first to preserve ordering), tell UCX to retry directly. */
+    if (ucs_arbiter_group_is_empty(&ep->pending_q) &&
+        (ep->ep_conn_seq_num - ctl->ep_conn_ack <= iface->packet_queue_len)) {
+        return UCS_ERR_BUSY;
+    }
+
+    /* uct_pending_req_arb_group_push stores the arbiter element in req->priv
+     * (UCT-reserved space) and appends it to this EP's arbiter group. */
+    uct_pending_req_arb_group_push(&ep->pending_q, req);
+
+    /* Tell the iface arbiter to include this group in the next dispatch.
+     * Idempotent: safe to call even if the group is already scheduled. */
+    ucs_arbiter_group_schedule(&iface->arbiter, &ep->pending_q);
+
+    /* UCT contract: return UCS_OK (not UCS_INPROGRESS) to signal that the
+     * request was successfully queued. UCS_ERR_BUSY means "don't queue, retry
+     * directly". Any other value triggers assertion failures in the UCP layer. */
+    return UCS_OK;
+}
+
+/**
+ * @brief Cancel all pending requests for an EP.
+ *
+ * Drains the EP's arbiter group and invokes the caller-supplied callback for
+ * each request so the upper layer can clean up (e.g. free the request).
+ * Typically called during EP teardown or MPI error recovery.
+ */
+void uct_pcie_ep_pending_purge(
+    uct_ep_h tl_ep,
+    uct_pending_purge_callback_t cb,
+    void *arg)
+{
+    uct_pcie_ep_t                 *ep    = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t              *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uct_pcie_pending_purge_args_t  args  = {.cb = cb, .arg = arg};
+
+    ucs_arbiter_group_purge(&iface->arbiter, &ep->pending_q,
+                            uct_pcie_ep_pending_purge_cb,
+                            &args);
+}
+
+/* //!SECTION */
 

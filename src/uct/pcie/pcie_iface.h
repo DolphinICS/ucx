@@ -4,6 +4,7 @@
 #include "pthread.h"
 
 #include <uct/base/uct_iface.h>
+#include <ucs/datastruct/arbiter.h>
 
 #include <sisci_error.h> //TODO
 #include <sisci_api.h>
@@ -143,7 +144,12 @@ typedef struct {
     sci_desc_t                  vdev_ctl;
     
     pthread_mutex_t             lock;
-    
+
+    /* Arbiter for pending send requests. When an AM send returns
+     * UCS_ERR_NO_RESOURCE (flow-control window full), ep_pending_add queues
+     * the request here. uct_pcie_iface_progress drains it each tick. */
+    ucs_arbiter_t               arbiter;
+
     unsigned int                eps_init_cnt;
     volatile unsigned int       connections;
     

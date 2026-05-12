@@ -18,19 +18,31 @@ typedef struct {
     unsigned int            remote_seg_id;
     sci_remote_segment_t    remote_segment;
     sci_map_t               remote_seg_map;
-    volatile uint8_t*                remote_seg_buf;
+    volatile uint8_t*       remote_seg_buf;
     /* ep_conn_offset should be ep_conn_index * (iface->packet_size_bytes * iface->packet_queue_len) */
     unsigned int            ep_conn_offset;
     unsigned int            ep_conn_index;
     unsigned int            remote_node_id;
     uint64_t                ep_conn_seq_num;
-    //sci_map_t               ctl_segment_map;
-    //uct_pcie_ctl_t*              sci_ctl;              
+
+    /* Queue of pending send requests for this endpoint. Requests are added here
+     * when the flow-control window is full and drained by iface progress. */
+    ucs_arbiter_group_t     pending_q;
 } uct_pcie_ep_t;
 
 
 UCS_CLASS_DECLARE_NEW_FUNC(uct_pcie_ep_t, uct_ep_t, const uct_ep_params_t *);
 UCS_CLASS_DECLARE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
+
+ucs_status_t uct_pcie_ep_pending_add(
+    uct_ep_h tl_ep,
+    uct_pending_req_t *req,
+    unsigned flags);
+
+void uct_pcie_ep_pending_purge(
+    uct_ep_h tl_ep,
+    uct_pending_purge_callback_t cb,
+    void *arg);
 
 ucs_status_t uct_pcie_ep_am_short(
     uct_ep_h tl_ep,

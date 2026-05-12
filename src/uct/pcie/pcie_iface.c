@@ -290,6 +290,10 @@ static UCS_CLASS_INIT_FUNC(
         goto err;
     }
 
+    /* Arbiter for ep_pending_add/ep_pending_purge. Must be initialised before
+     * any EP can be created, since EPs schedule their groups here. */
+    ucs_arbiter_init(&self->arbiter);
+
     UCS_CLASS_CALL_SUPER_INIT(
             uct_base_iface_t, &uct_pcie_iface_ops, &uct_base_iface_internal_ops,
             md, worker, params,
@@ -501,6 +505,10 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
 
+    /* All EPs must have been destroyed (and their pending queues purged) before
+     * the iface is cleaned up, so the arbiter should be empty here. */
+    ucs_arbiter_cleanup(&self->arbiter);
+
     pthread_mutex_destroy(&self->lock);
 }
 
@@ -582,6 +590,40 @@ void uct_pcie_iface_progress_enable(uct_iface_h iface, unsigned flags) {
 }
 
 /**
+ * @brief Arbiter dispatch callback for pending send requests.
+ *
+ * Called by ucs_arbiter_dispatch once per pending element (quota=1 per group
+ * per progress tick). We call the request's own retry function. If the
+ * flow-control window is still full the group is rescheduled; otherwise the
+ * element is removed and UCX is notified that the send completed.
+ */
+static ucs_arbiter_cb_result_t
+uct_pcie_ep_dispatch_pending(
+    ucs_arbiter_t       *arbiter,
+    ucs_arbiter_group_t *group,
+    ucs_arbiter_elem_t  *elem,
+    void                *arg)
+{
+    uct_pending_req_t *req    = ucs_container_of(elem, uct_pending_req_t, priv);
+    ucs_status_t       status = req->func(req);
+
+    if (status == UCS_OK) {
+        /* Send succeeded: remove this element and let the arbiter move on. */
+        return UCS_ARBITER_CB_RESULT_REMOVE_ELEM;
+    } else if (status == UCS_INPROGRESS) {
+        /* Shouldn't normally happen for our synchronous sends, but handled
+         * for correctness: the request is partially in flight, skip the group
+         * for this round. */
+        return UCS_ARBITER_CB_RESULT_NEXT_GROUP;
+    } else {
+        /* UCS_ERR_NO_RESOURCE (window still full) or any other transient
+         * error: reschedule the group so it is retried on the next progress
+         * tick rather than spinning here. */
+        return UCS_ARBITER_CB_RESULT_RESCHED_GROUP;
+    }
+}
+
+/**
  * @brief Process all pending incoming packets across all connections.
  *
  * For each ready connection, drains all consecutively posted packets
@@ -653,6 +695,12 @@ unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
         }
     }
 
+    /* After draining incoming packets, ack counters have advanced, which may
+     * have opened up flow-control slots. Dispatch any pending send requests
+     * that were blocked. Quota=1 means at most one element per EP per tick,
+     * preventing any single EP from starving others. */
+    ucs_arbiter_dispatch(&iface->arbiter, 1, uct_pcie_ep_dispatch_pending, NULL);
+
     return count;
 }
 
@@ -723,8 +771,8 @@ static uct_iface_ops_t uct_pcie_iface_ops = {
     .ep_flush                 = uct_base_ep_flush,
     .ep_fence                 = uct_base_ep_fence,
     .ep_check                 = ucs_empty_function_return_success,
-    .ep_pending_add           = ucs_empty_function_return_busy,
-    .ep_pending_purge         = ucs_empty_function,
+    .ep_pending_add           = uct_pcie_ep_pending_add,
+    .ep_pending_purge         = uct_pcie_ep_pending_purge,
     .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_pcie_ep_t),
     .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_pcie_ep_t),
     .iface_flush              = uct_base_iface_flush,
