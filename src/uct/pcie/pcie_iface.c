@@ -713,23 +713,21 @@ static ucs_status_t uct_pcie_iface_query(
 
     uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);
 
-    /* Advertise the active message operations this transport supports */
     attr->cap.flags = UCT_IFACE_FLAG_CONNECT_TO_IFACE |
                       UCT_IFACE_FLAG_CB_SYNC          |
                       UCT_IFACE_FLAG_AM_SHORT         |
                       UCT_IFACE_FLAG_AM_BCOPY         |
-                      UCT_IFACE_FLAG_AM_ZCOPY;
+                      UCT_IFACE_FLAG_AM_ZCOPY         |
+                      UCT_IFACE_FLAG_PUT_SHORT        |
+                      UCT_IFACE_FLAG_PUT_BCOPY;
     attr->cap.event_flags = 0;
 
     attr->device_addr_len = sizeof(uct_pcie_device_addr_t);
     attr->iface_addr_len  = sizeof(uct_pcie_iface_addr_t);
     attr->ep_addr_len     = 0;
 
-    /* Each slot holds one uct_pcie_am_hdr_t followed by user data. UCT compares
-     * the total user-supplied data (including any user-defined sub-headers) against
-     * these limits, so the right bound for every variant is the space remaining in
-     * the slot after the transport header. max_hdr follows the same reasoning: a
-     * zcopy header is part of user data and is bounded by the same slot remainder. */
+    /* AM limits: each slot holds one uct_pcie_am_hdr_t followed by user data.
+     * All variants share the same slot-remainder bound. */
     am_max = iface->packet_size_bytes - sizeof(uct_pcie_am_hdr_t);
     attr->cap.am.max_short = am_max;
     attr->cap.am.max_bcopy = am_max;
@@ -737,6 +735,18 @@ static ucs_status_t uct_pcie_iface_query(
     attr->cap.am.max_zcopy = am_max;
     attr->cap.am.max_iov   = 10;
     attr->cap.am.max_hdr   = am_max;
+
+    /* Put limits: writes go directly into the remote SISCI segment through the
+     * PCIe MMIO window.  put_bcopy has no transport-level size limit (bounded
+     * only by the remote segment size).  put_short is limited to keep it a
+     * fast inline path. */
+    attr->cap.put.max_short        = UCT_PCIE_MAX_PUT_SHORT;
+    attr->cap.put.max_bcopy        = ULONG_MAX;
+    attr->cap.put.min_zcopy        = 0;
+    attr->cap.put.max_zcopy        = 0; /* not implemented */
+    attr->cap.put.opt_zcopy_align  = 1;
+    attr->cap.put.align_mtu        = 1;
+    attr->cap.put.max_iov          = 1;
 
     /* Conservative PCIe performance estimates.
      * Latency: ~1 microsecond for a PCIe round trip.
@@ -752,8 +762,8 @@ static ucs_status_t uct_pcie_iface_query(
 }
 
 static uct_iface_ops_t uct_pcie_iface_ops = {
-    .ep_put_short             = uct_pcie_ep_put_short, /* Stubbed */
-    .ep_put_bcopy             = uct_pcie_ep_put_bcopy, /* Stubbed */
+    .ep_put_short             = uct_pcie_ep_put_short,
+    .ep_put_bcopy             = uct_pcie_ep_put_bcopy,
     .ep_get_bcopy             = uct_pcie_ep_get_bcopy, /* Stubbed */
     
     .ep_am_short              = uct_pcie_ep_am_short,

@@ -13,6 +13,16 @@ typedef struct {
     uct_pcie_iface_addr_t iface_addr;
 }  UCS_S_PACKED uct_pcie_ep_addr_t;
 
+/* One entry in the per-EP cache of connected remote SISCI segments.
+ * Keyed by (node_id, segment_id); looked up on every put_short / put_bcopy. */
+typedef struct {
+    uint32_t             node_id;
+    uint32_t             segment_id;
+    sci_remote_segment_t remote_seg;
+    sci_map_t            remote_map;
+    void                *mapped_base; /* local VA of the remote segment window */
+} uct_pcie_remote_seg_t;
+
 typedef struct {
     uct_base_ep_t           super;
     unsigned int            remote_seg_id;
@@ -28,6 +38,11 @@ typedef struct {
     /* Queue of pending send requests for this endpoint. Requests are added here
      * when the flow-control window is full and drained by iface progress. */
     ucs_arbiter_group_t     pending_q;
+
+    /* Cache of connected remote SISCI segments for put/get operations.
+     * Populated lazily on first access to each (node_id, segment_id) pair. */
+    uct_pcie_remote_seg_t remote_seg_cache[UCT_PCIE_REMOTE_SEG_CACHE_SIZE];
+    unsigned int          remote_seg_cache_cnt;
 } uct_pcie_ep_t;
 
 

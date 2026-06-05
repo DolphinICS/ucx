@@ -16,6 +16,24 @@
 #define UCT_PCIE_NO_CALLBACK 0
 #define UCT_PCIE_MAX_EPS 28
 
+/* Maximum bytes for put_short (CPU inline write). Larger puts use put_bcopy. */
+#define UCT_PCIE_MAX_PUT_SHORT 512
+
+/* Per-EP cache of connected remote SISCI segments used for put/get. Linear
+ * search; 8 slots covers typical MPI one-sided workloads which rarely use
+ * more than a handful of distinct registered regions per peer. */
+#define UCT_PCIE_REMOTE_SEG_CACHE_SIZE 8
+
+/* Wire format of a packed rkey, produced by mkey_pack and consumed by
+ * rkey_unpack.  Identifies the remote SISCI segment and the virtual address
+ * base that UCX uses when computing segment offsets from remote_addr. */
+typedef struct {
+    uint32_t segment_id;
+    uint32_t node_id;
+    uint64_t base_va;   /* SCIMapLocalSegment pointer cast to uint64_t */
+    uint64_t length;    /* segment size, needed for SCIMapRemoteSegment */
+} UCS_S_PACKED uct_pcie_rkey_packed_t;
+
 typedef struct {
     unsigned int interrupt_no; /* Listening port of iface */
 } UCS_S_PACKED uct_pcie_iface_addr_t;
