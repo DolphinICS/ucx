@@ -22,6 +22,9 @@ static void uct_pcie_md_close(uct_md_h md) {
     uct_pcie_md_t *sci_md = ucs_derived_of(md, uct_pcie_md_t);
     sci_error_t sci_error;
 
+    uct_pcie_helper_remove_seg_set_unavail(sci_md->rseg,
+                                           sci_md->rseg_map);
+
     SCIClose(sci_md->sci_virtual_device, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_error("Error closing Virtual_Device error: %s",
@@ -31,26 +34,26 @@ static void uct_pcie_md_close(uct_md_h md) {
 
 static ucs_status_t uct_pcie_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
 {
-    /* UCT_MD_FLAG_NEED_RKEY tells UCX to call mkey_pack after mem_alloc so
-     * that the remote side can unpack a rkey and use it for put/get. */
-    attr->flags               = UCT_MD_FLAG_ALLOC | UCT_MD_FLAG_NEED_RKEY;
+    /* No rkey needed: put/get targets are identified via iface_addr (shared
+     * segment ID and base_va exchanged at EP creation time), not via rkeys. */
+    attr->flags               = UCT_MD_FLAG_ALLOC;
     attr->max_alloc           = 0;
     attr->reg_mem_types       = UCS_BIT(UCS_MEMORY_TYPE_HOST);
     attr->alloc_mem_types     = UCS_BIT(UCS_MEMORY_TYPE_HOST);
     attr->access_mem_types    = UCS_BIT(UCS_MEMORY_TYPE_HOST);
     attr->detect_mem_types    = 0;
     attr->max_reg             = ULONG_MAX;
-    attr->rkey_packed_size    = sizeof(uct_pcie_rkey_packed_t);
+    attr->rkey_packed_size    = 0;
     attr->reg_cost            = ucs_linear_func_make(0, 0);
     memset(&attr->local_cpus, 0xff, sizeof(attr->local_cpus));
     return UCS_OK;
 }
 
 /*
- * mem_alloc: allocate memory as a SISCI local segment so that remote nodes
- * can connect to it and write (put) or read (get) via their mapped pointer.
- * The segment is set available immediately so that rkey holders can connect
- * at any time after the rkey is exchanged.
+ * mem_alloc: bump-allocate from the MD's shared segment.
+ * The segment is pre-created and set available at md_open time.  Remote EPs
+ * connect to it during EP handshake using the segment ID and base_va published
+ * in uct_pcie_iface_addr_t, so no rkey is needed to perform puts.
  */
 static ucs_status_t uct_pcie_mem_alloc(
     uct_md_h uct_md,
@@ -61,9 +64,13 @@ static ucs_status_t uct_pcie_mem_alloc(
     const char *alloc_name,
     uct_mem_h *memh_p)
 {
-    uct_pcie_md_t       *md     = ucs_derived_of(uct_md, uct_pcie_md_t);
+    uct_pcie_md_t         *md     = ucs_derived_of(uct_md, uct_pcie_md_t);
     uct_pcie_mem_handle_t *handle;
-    int ret;
+    size_t                 offset;
+    size_t                 length;
+
+    /* Align to 64-byte cache line so concurrent allocations stay independent. */
+    length = (*length_p + 63) & ~(size_t)63;
 
     handle = ucs_malloc(sizeof(*handle), "uct_pcie_mem_alloc");
     if (handle == NULL) {
@@ -71,20 +78,20 @@ static ucs_status_t uct_pcie_mem_alloc(
         return UCS_ERR_NO_MEMORY;
     }
 
-    handle->length = *length_p;
-
-    ret = uct_pcie_helper_create_seg_set_avail(
-        md->sci_virtual_device,
-        &handle->segment,
-        &handle->segment_map,
-        *length_p,
-        &handle->segment_id,
-        &handle->ptr);
-    if (ret != 0) {
-        ucs_error("uct_pcie_mem_alloc: failed to create SISCI segment");
+    offset = md->rseg_allocated;
+    if (offset + length > UCT_PCIE_RSEG_SIZE) {
+        ucs_error("pcie shared segment exhausted (%zu/%d bytes used)",
+                  offset + length, UCT_PCIE_RSEG_SIZE);
         ucs_free(handle);
-        return UCS_ERR_NO_RESOURCE;
+        return UCS_ERR_NO_MEMORY;
     }
+
+    md->rseg_allocated += length;
+    handle->ptr    = (uint8_t *)md->rseg_buf + offset;
+    handle->length = length;
+
+    ucs_debug("mem_alloc: offset=%zu length=%zu ptr=%p",
+              offset, length, handle->ptr);
 
     *memh_p    = handle;
     *address_p = handle->ptr;
@@ -93,58 +100,32 @@ static ucs_status_t uct_pcie_mem_alloc(
 
 static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
 {
-    uct_pcie_mem_handle_t *handle = (uct_pcie_mem_handle_t *)memh;
-    uct_pcie_helper_remove_seg_set_unavail(handle->segment, handle->segment_map);
-    ucs_free(handle);
+    /* The shared segment persists until md_close; only the handle is freed. */
+    ucs_free(memh);
     return UCS_OK;
 }
 
-/*
- * mkey_pack: serialise the information needed to connect to this segment from
- * a remote node into the rkey buffer.  The buffer is exactly
- * sizeof(uct_pcie_rkey_packed_t) bytes (as reported in md_query).
- */
+/* mkey_pack and rkey_unpack are stubs — rkey_packed_size = 0 so UCX does not
+ * call them, but we keep them to satisfy the md_ops vtable. */
 static ucs_status_t uct_pcie_mkey_pack(uct_md_h uct_md, uct_mem_h memh,
                                         void *rkey_buffer, size_t rkey_buffer_size,
                                         const uct_md_mkey_pack_params_t *params,
                                         void *priv)
 {
-    uct_pcie_md_t         *md     = ucs_derived_of(uct_md, uct_pcie_md_t);
-    uct_pcie_mem_handle_t *handle = (uct_pcie_mem_handle_t *)memh;
-    uct_pcie_rkey_packed_t *rkey  = (uct_pcie_rkey_packed_t *)rkey_buffer;
-
-    rkey->segment_id = handle->segment_id;
-    rkey->node_id    = md->node_id;
-    rkey->base_va    = (uint64_t)(uintptr_t)handle->ptr;
-    rkey->length     = handle->length;
     return UCS_OK;
 }
 
-/*
- * rkey_unpack: deserialise a packed rkey received from the remote side.
- * We allocate a copy of the packed struct and store a pointer to it in
- * *rkey_p.  The put/get functions in pcie_ep.c cast rkey back to a pointer
- * to find the segment coordinates.  *handle_p receives the same pointer so
- * that rkey_release can free it.
- */
 static ucs_status_t uct_pcie_md_rkey_unpack(uct_component_t *component,
     const void *rkey_buffer, uct_rkey_t *rkey_p, void **handle_p)
 {
-    uct_pcie_rkey_packed_t *rkey = ucs_malloc(sizeof(*rkey), "pcie_rkey");
-    if (rkey == NULL) {
-        return UCS_ERR_NO_MEMORY;
-    }
-
-    *rkey    = *(const uct_pcie_rkey_packed_t *)rkey_buffer;
-    *rkey_p   = (uct_rkey_t)(uintptr_t)rkey;
-    *handle_p = rkey;
+    *rkey_p   = 0;
+    *handle_p = NULL;
     return UCS_OK;
 }
 
 static ucs_status_t uct_pcie_rkey_release(uct_component_t *component,
     uct_rkey_t rkey, void *handle)
 {
-    ucs_free(handle);
     return UCS_OK;
 }
 
@@ -170,7 +151,7 @@ static ucs_status_t uct_pcie_md_open(
 
     static uct_pcie_md_t md;
     sci_error_t errors;
-    unsigned int node_id;
+    int ret;
 
     SCIOpen(&md.sci_virtual_device, 0, &errors);
     if (errors != SCI_ERR_OK) {
@@ -178,20 +159,32 @@ static ucs_status_t uct_pcie_md_open(
         return UCS_ERR_NO_RESOURCE;
     }
 
-    SCIGetLocalNodeId(UCT_PCIE_LOCAL_ADAPTER_NO, &node_id, 0, &errors);
-    if (errors != SCI_ERR_OK) {
-        ucs_error("SCIGetLocalNodeId: %s", SCIGetErrorString(errors));
+    /* Pre-allocate the shared segment that all mem_alloc calls draw from.
+     * Set it available immediately so remote EPs can connect during handshake. */
+    ret = uct_pcie_helper_create_seg_set_avail(
+        md.sci_virtual_device,
+        &md.rseg,
+        &md.rseg_map,
+        UCT_PCIE_RSEG_SIZE,
+        &md.rseg_id,
+        &md.rseg_buf);
+    if (ret != 0) {
+        ucs_error("pcie MD: failed to create shared segment");
         SCIClose(md.sci_virtual_device, 0, &errors);
         return UCS_ERR_NO_RESOURCE;
     }
 
+    md.rseg_allocated  = 0;
     md.super.ops       = &md_ops;
     md.super.component = &uct_pcie_component;
     md.num_devices     = md_config->num_devices;
-    md.node_id         = node_id;
 
     *md_p   = &md.super;
     md_name = "pcie";
+
+    ucs_debug("MD open: rseg_id=%u rseg_buf=%p",
+              md.rseg_id, md.rseg_buf);
+
     return UCS_OK;
 }
 

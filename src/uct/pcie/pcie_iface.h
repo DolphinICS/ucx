@@ -19,23 +19,17 @@
 /* Maximum bytes for put_short (CPU inline write). Larger puts use put_bcopy. */
 #define UCT_PCIE_MAX_PUT_SHORT 512
 
-/* Per-EP cache of connected remote SISCI segments used for put/get. Linear
- * search; 8 slots covers typical MPI one-sided workloads which rarely use
- * more than a handful of distinct registered regions per peer. */
-#define UCT_PCIE_REMOTE_SEG_CACHE_SIZE 8
+/* Size of the shared segment pre-allocated in the MD.  All mem_alloc
+ * calls draw from this pool.  1 MB is generous for typical put workloads. */
+#define UCT_PCIE_RSEG_SIZE (1024 * 1024)
 
-/* Wire format of a packed rkey, produced by mkey_pack and consumed by
- * rkey_unpack.  Identifies the remote SISCI segment and the virtual address
- * base that UCX uses when computing segment offsets from remote_addr. */
+/* Iface address exchanged OOB before EP creation.  The shared segment info is
+ * included here so EPs can connect to the remote iface's pre-allocated shared
+ * segment immediately during handshake, with no rkey exchange needed. */
 typedef struct {
-    uint32_t segment_id;
-    uint32_t node_id;
-    uint64_t base_va;   /* SCIMapLocalSegment pointer cast to uint64_t */
-    uint64_t length;    /* segment size, needed for SCIMapRemoteSegment */
-} UCS_S_PACKED uct_pcie_rkey_packed_t;
-
-typedef struct {
-    unsigned int interrupt_no; /* Listening port of iface */
+    unsigned int interrupt_no;     /* Connection interrupt (existing) */
+    unsigned int rseg_id;  /* ID of the iface's shared segment */
+    uint64_t     rseg_base_va;     /* VA of the shared segment start (remote process) */
 } UCS_S_PACKED uct_pcie_iface_addr_t;
 
 typedef struct {

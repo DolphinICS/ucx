@@ -207,6 +207,37 @@ int uct_pcie_connect_segment(
     return 0;
 }
 
+int uct_pcie_connect_segment_full(
+    sci_desc_t sd,
+    unsigned int node_id,
+    unsigned int segment_id,
+    sci_remote_segment_t *segment,
+    sci_map_t *segment_map,
+    volatile void **buf)
+{
+    sci_error_t sci_error;
+    size_t seg_size;
+
+    do {
+        SCIConnectSegment(sd, segment, node_id, segment_id,
+                          UCT_PCIE_LOCAL_ADAPTER_NO,
+                          UCT_PCIE_NO_CALLBACK, NULL, 0,
+                          UCT_PCIE_NO_FLAGS, &sci_error);
+    } while (sci_error != SCI_ERR_OK);
+
+    seg_size = SCIGetRemoteSegmentSize(*segment);
+
+    *buf = SCIMapRemoteSegment(*segment, segment_map, 0, seg_size,
+                               NULL, 0, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIMapRemoteSegment: %s", SCIGetErrorString(sci_error));
+        SCIDisconnectSegment(*segment, UCT_PCIE_NO_FLAGS, &sci_error);
+        return -1;
+    }
+
+    return 0;
+}
+
 void uct_pcie_disconnect_segment(
     sci_remote_segment_t segment,
     sci_map_t segment_map)

@@ -71,24 +71,37 @@ void uct_pcie_helper_remove_seg_set_unavail(
     sci_map_t segment_map);
 
 /**
- * @brief Connects to and maps remote sisci segment.
- * 
+ * @brief Connects to and maps remote sisci segment at a given offset and size.
+ *
  * @note Tries to connect in a loop until it succeeds.
- * 
- * @param[in] sd 
- * @param[in] offset 
- * @param[in] segment_size 
- * @param[in] node_id 
- * @param[in] segment_id 
- * @param[out] segment 
- * @param[out] segment_map 
- * @param[out] buf 
- * @return 
  */
 int uct_pcie_connect_segment(
     sci_desc_t sd,
     size_t offset,
     size_t segment_size,
+    unsigned int node_id,
+    unsigned int segment_id,
+    sci_remote_segment_t *segment,
+    sci_map_t *segment_map,
+    volatile void **buf);
+
+/**
+ * @brief Connects to a remote SISCI segment, queries its full size via
+ *        SCIGetRemoteSegmentSize, and maps the entire segment from offset 0.
+ *
+ * Avoids the caller needing to know the segment size in advance — useful for
+ * put/get where size is not carried in the 8-byte wire rkey.
+ *
+ * @param[in]  sd           Open SISCI virtual device descriptor
+ * @param[in]  node_id      Remote SISCI node ID
+ * @param[in]  segment_id   Remote SISCI segment ID
+ * @param[out] segment      Connected remote segment handle
+ * @param[out] segment_map  Map handle for the connected segment
+ * @param[out] buf          Local VA of the mapped remote segment window
+ * @return 0 on success, -1 on failure
+ */
+int uct_pcie_connect_segment_full(
+    sci_desc_t sd,
     unsigned int node_id,
     unsigned int segment_id,
     sci_remote_segment_t *segment,

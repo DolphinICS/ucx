@@ -574,13 +574,14 @@ ucs_status_t uct_pcie_iface_get_address(
     uct_iface_h tl_iface,
     uct_iface_addr_t *addr)
 {
-    
-    uct_pcie_iface_t* iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
-    
-    uct_pcie_iface_addr_t* iface_addr = (uct_pcie_iface_addr_t *) addr;
-    
-    iface_addr->interrupt_no = iface->interrupt_no;
-    
+    uct_pcie_iface_t *iface    = ucs_derived_of(tl_iface, uct_pcie_iface_t);
+    uct_pcie_md_t    *md       = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    uct_pcie_iface_addr_t *iface_addr = (uct_pcie_iface_addr_t *)addr;
+
+    iface_addr->interrupt_no    = iface->interrupt_no;
+    iface_addr->rseg_id = md->rseg_id;
+    iface_addr->rseg_base_va    = (uint64_t)(uintptr_t)md->rseg_buf;
+
     return UCS_OK;
 }
 
@@ -646,10 +647,14 @@ unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
     uint32_t              packet_offset;
     unsigned              count = 0;
 
+    ucs_trace_poll("iface_progress: connections=%u", iface->connections);
+
     for (size_t i = 0; i < iface->connections; i++) {
         cd = &iface->sci_cds[i];
 
         if (cd->cd_status != UCT_PCIE_CD_READY) {
+            ucs_trace_poll("iface_progress: cd[%zu] not ready (status=%d)",
+                           i, cd->cd_status);
             continue;
         }
 

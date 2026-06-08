@@ -13,19 +13,6 @@ typedef struct {
     uct_pcie_iface_addr_t iface_addr;
 }  UCS_S_PACKED uct_pcie_ep_addr_t;
 
-/* One entry in the per-EP cache of connected remote SISCI segments.
- * This is the sender's view of a uct_pcie_mem_handle_t (pcie_md.h) that was
- * allocated on the remote node and whose segment_id was received via rkey.
- * Keyed by (node_id, segment_id); looked up on every put_short / put_bcopy.
- * Variable name rseg_cache_entry is used consistently at connect and disconnect
- * sites so that grep shows the full lifetime at a glance. */
-typedef struct {
-    uint32_t             node_id;
-    uint32_t             segment_id;
-    sci_remote_segment_t remote_seg;
-    sci_map_t            remote_map;
-    void                *mapped_base; /* local VA of the remote segment window */
-} uct_pcie_remote_seg_t;
 
 typedef struct {
     uct_base_ep_t           super;
@@ -43,10 +30,13 @@ typedef struct {
      * when the flow-control window is full and drained by iface progress. */
     ucs_arbiter_group_t     pending_q;
 
-    /* Cache of connected remote SISCI segments for put/get operations.
-     * Populated lazily on first access to each (node_id, segment_id) pair. */
-    uct_pcie_remote_seg_t remote_seg_cache[UCT_PCIE_REMOTE_SEG_CACHE_SIZE];
-    unsigned int          remote_seg_cache_cnt;
+    /* Connection to the remote iface's shared segment, established at EP
+     * creation time using rseg_id and rseg_base_va from iface_addr.
+     * All put_short / put_bcopy operations write into this segment. */
+    sci_remote_segment_t    remote_rseg;
+    sci_map_t               remote_rseg_map;
+    void                   *remote_rseg_buf;  /* local VA of remote shared window */
+    uint64_t                remote_rseg_base_va; /* remote VA of shared segment start */
 } uct_pcie_ep_t;
 
 
