@@ -26,10 +26,13 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
     ucs_arbiter_group_purge(&iface->arbiter, &self->pending_q,
                             uct_pcie_ep_pending_discard_cb, NULL);
 
-    /* Disconnect any remote segments that were connected for put/get. */
+    /* Disconnect remote segments connected for put/get (see uct_pcie_ep_get_remote_seg).
+     * Only iterates up to remote_seg_cache_cnt, so only established connections
+     * are touched — uninitialized slots are never reached. */
     for (unsigned int i = 0; i < self->remote_seg_cache_cnt; i++) {
-        uct_pcie_disconnect_segment(self->remote_seg_cache[i].remote_seg,
-                                    self->remote_seg_cache[i].remote_map);
+        uct_pcie_remote_seg_t *rseg_cache_entry = &self->remote_seg_cache[i];
+        uct_pcie_disconnect_segment(rseg_cache_entry->remote_seg,
+                                    rseg_cache_entry->remote_map);
     }
 
     self->remote_seg_buf = NULL;
@@ -262,14 +265,15 @@ uct_pcie_ep_get_remote_seg(uct_pcie_ep_t *ep, uct_pcie_iface_t *iface,
                             uint32_t node_id, uint32_t segment_id,
                             uint64_t length, void **mapped_base_p)
 {
-    uct_pcie_remote_seg_t *entry;
+    uct_pcie_remote_seg_t *rseg_cache_entry;
     unsigned int i;
     int ret;
 
     for (i = 0; i < ep->remote_seg_cache_cnt; i++) {
-        if (ep->remote_seg_cache[i].node_id    == node_id &&
-            ep->remote_seg_cache[i].segment_id == segment_id) {
-            *mapped_base_p = ep->remote_seg_cache[i].mapped_base;
+        rseg_cache_entry = &ep->remote_seg_cache[i];
+        if (rseg_cache_entry->node_id    == node_id &&
+            rseg_cache_entry->segment_id == segment_id) {
+            *mapped_base_p = rseg_cache_entry->mapped_base;
             return UCS_OK;
         }
     }
@@ -280,7 +284,7 @@ uct_pcie_ep_get_remote_seg(uct_pcie_ep_t *ep, uct_pcie_iface_t *iface,
         return UCS_ERR_NO_RESOURCE;
     }
 
-    entry = &ep->remote_seg_cache[ep->remote_seg_cache_cnt];
+    rseg_cache_entry = &ep->remote_seg_cache[ep->remote_seg_cache_cnt];
 
     ret = uct_pcie_connect_segment(
         iface->vdev_ep,
@@ -288,20 +292,20 @@ uct_pcie_ep_get_remote_seg(uct_pcie_ep_t *ep, uct_pcie_iface_t *iface,
         length,
         node_id,
         segment_id,
-        &entry->remote_seg,
-        &entry->remote_map,
-        (volatile void **)&entry->mapped_base);
+        &rseg_cache_entry->remote_seg,
+        &rseg_cache_entry->remote_map,
+        (volatile void **)&rseg_cache_entry->mapped_base);
     if (ret != 0) {
         ucs_error("pcie: failed to connect segment %u on node %u",
                   segment_id, node_id);
         return UCS_ERR_NO_RESOURCE;
     }
 
-    entry->node_id    = node_id;
-    entry->segment_id = segment_id;
+    rseg_cache_entry->node_id    = node_id;
+    rseg_cache_entry->segment_id = segment_id;
     ep->remote_seg_cache_cnt++;
 
-    *mapped_base_p = entry->mapped_base;
+    *mapped_base_p = rseg_cache_entry->mapped_base;
     return UCS_OK;
 }
 
@@ -324,6 +328,7 @@ ucs_status_t uct_pcie_ep_put_short(
     uct_pcie_iface_t       *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
     uct_pcie_rkey_packed_t *rk    = (uct_pcie_rkey_packed_t *)(uintptr_t)rkey;
     void                   *mapped_base;
+    size_t                  seg_offset;
     ucs_status_t            status;
 
     UCT_CHECK_LENGTH(length, 0, UCT_PCIE_MAX_PUT_SHORT, "put_short");
@@ -335,7 +340,10 @@ ucs_status_t uct_pcie_ep_put_short(
         return status;
     }
 
-    memcpy((uint8_t *)mapped_base + (remote_addr - rk->base_va), buffer, length);
+    seg_offset = (size_t)(remote_addr - rk->base_va);
+    ucs_assert(remote_addr >= rk->base_va);
+    ucs_assert(seg_offset + length <= rk->length);
+    memcpy((uint8_t *)mapped_base + seg_offset, buffer, length);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return UCS_OK;
 }
@@ -359,8 +367,9 @@ ssize_t uct_pcie_ep_put_bcopy(
     uct_pcie_iface_t       *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
     uct_pcie_rkey_packed_t *rk    = (uct_pcie_rkey_packed_t *)(uintptr_t)rkey;
     void                   *mapped_base;
-    ucs_status_t            status;
+    size_t                  seg_offset;
     ssize_t                 length;
+    ucs_status_t            status;
 
     status = uct_pcie_ep_get_remote_seg(ep, iface,
                                      rk->node_id, rk->segment_id,
@@ -369,7 +378,10 @@ ssize_t uct_pcie_ep_put_bcopy(
         return status;
     }
 
-    length = pack_cb((uint8_t *)mapped_base + (remote_addr - rk->base_va), arg);
+    seg_offset = (size_t)(remote_addr - rk->base_va);
+    ucs_assert(remote_addr >= rk->base_va);
+    ucs_assert(seg_offset <= rk->length);
+    length = pack_cb((uint8_t *)mapped_base + seg_offset, arg);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return length;
 }

@@ -16,8 +16,9 @@ typedef struct {
     uint32_t   node_id; /* local SISCI node ID, needed when packing rkeys */
 } uct_pcie_md_t;
 
-/* Handle returned by mem_alloc, tracking the SISCI segment that backs the
- * allocation.  Passed back to mkey_pack and mem_free. */
+/* Local registered memory handle, created by mem_alloc and freed by mem_free.
+ * The SISCI segment here is what a remote peer sees as its rseg_cache_entry
+ * (uct_pcie_remote_seg_t in pcie_ep.h) when it connects for put/get. */
 typedef struct {
     void                *ptr;
     size_t               length;

@@ -14,7 +14,11 @@ typedef struct {
 }  UCS_S_PACKED uct_pcie_ep_addr_t;
 
 /* One entry in the per-EP cache of connected remote SISCI segments.
- * Keyed by (node_id, segment_id); looked up on every put_short / put_bcopy. */
+ * This is the sender's view of a uct_pcie_mem_handle_t (pcie_md.h) that was
+ * allocated on the remote node and whose segment_id was received via rkey.
+ * Keyed by (node_id, segment_id); looked up on every put_short / put_bcopy.
+ * Variable name rseg_cache_entry is used consistently at connect and disconnect
+ * sites so that grep shows the full lifetime at a glance. */
 typedef struct {
     uint32_t             node_id;
     uint32_t             segment_id;
