@@ -647,14 +647,10 @@ unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
     uint32_t              packet_offset;
     unsigned              count = 0;
 
-    ucs_trace_poll("iface_progress: connections=%u", iface->connections);
-
     for (size_t i = 0; i < iface->connections; i++) {
         cd = &iface->sci_cds[i];
 
         if (cd->cd_status != UCT_PCIE_CD_READY) {
-            ucs_trace_poll("iface_progress: cd[%zu] not ready (status=%d)",
-                           i, cd->cd_status);
             continue;
         }
 

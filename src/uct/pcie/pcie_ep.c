@@ -290,9 +290,6 @@ ucs_status_t uct_pcie_ep_put_short(
     ucs_assert(remote_addr >= ep->remote_rseg_base_va);
     seg_offset = (size_t)(remote_addr - ep->remote_rseg_base_va);
 
-    ucs_debug("put_short: remote_addr=0x%lx offset=%zu length=%u",
-              (unsigned long)remote_addr, seg_offset, length);
-
     memcpy((uint8_t *)ep->remote_rseg_buf + seg_offset, buffer, length);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return UCS_OK;
@@ -458,9 +455,7 @@ ucs_status_t uct_pcie_ep_am_short(
         return UCS_ERR_NO_RESOURCE;
     }
 
-    ucs_debug("am_short: id=%u length=%u seq=%lu ack=%lu node=%u",
-              id, length, ep->ep_conn_seq_num, ctl->ep_conn_ack,
-              ep->remote_node_id);
+
 
     UCT_CHECK_LENGTH(sizeof(uct_pcie_am_hdr_t) + sizeof(uint64_t) + length,
                  0, iface->packet_size_bytes, "am_short");
@@ -489,10 +484,6 @@ ucs_status_t uct_pcie_ep_am_short(
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     ep->ep_conn_seq_num++;
-
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u ep_conn_seq_num:%lu\n",
-              ep->remote_seg_id, ep->remote_node_id, id,
-              am_hdr->am_length, ep->ep_conn_seq_num);
 
     return UCS_OK;
 }
@@ -564,10 +555,6 @@ ucs_status_t uct_pcie_ep_am_short_iov(
 
     ep->ep_conn_seq_num++;
 
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u ep_conn_seq_num:%lu\n",
-              ep->remote_seg_id, ep->remote_node_id, id,
-              am_hdr->am_length, ep->ep_conn_seq_num);
-
     return UCS_OK;
 }
 
@@ -630,9 +617,6 @@ ssize_t uct_pcie_ep_am_bcopy(
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     ep->ep_conn_seq_num++;
-
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u",
-              ep->remote_seg_id, ep->remote_node_id, id, am_hdr->am_length);
 
     return length;
 }
@@ -715,9 +699,6 @@ ucs_status_t uct_pcie_ep_am_zcopy(
 
     /* Advance the sequence number */
     ep->ep_conn_seq_num++;
-
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u",
-              ep->remote_seg_id, ep->remote_node_id, id, am_hdr->am_length);
 
     return UCS_OK;
 }

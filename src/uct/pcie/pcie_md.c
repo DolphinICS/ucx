@@ -90,9 +90,6 @@ static ucs_status_t uct_pcie_mem_alloc(
     handle->ptr    = (uint8_t *)md->rseg_buf + offset;
     handle->length = length;
 
-    ucs_debug("mem_alloc: offset=%zu length=%zu ptr=%p",
-              offset, length, handle->ptr);
-
     *memh_p    = handle;
     *address_p = handle->ptr;
     return UCS_OK;
