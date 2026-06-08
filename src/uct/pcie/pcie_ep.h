@@ -30,13 +30,13 @@ typedef struct {
      * when the flow-control window is full and drained by iface progress. */
     ucs_arbiter_group_t     pending_q;
 
-    /* Connection to the remote iface's shared segment, established at EP
-     * creation time using rseg_id and rseg_base_va from iface_addr.
-     * All put_short / put_bcopy operations write into this segment. */
-    sci_remote_segment_t    remote_rseg;
-    sci_map_t               remote_rseg_map;
-    void                   *remote_rseg_buf;  /* local VA of remote shared window */
-    uint64_t                remote_rseg_base_va; /* remote VA of shared segment start */
+    /* RMA segment: connection to the remote iface's shared segment, established
+     * at EP creation time using rma_seg_id and rma_base_va from iface_addr.
+     * put_short / put_bcopy write into it; get_bcopy reads from it. */
+    sci_remote_segment_t    rma_seg;
+    sci_map_t               rma_seg_map;
+    void                   *rma_buf;      /* local VA of the remote segment window */
+    uint64_t                rma_base_va;  /* remote VA of segment start */
 } uct_pcie_ep_t;
 
 
@@ -94,6 +94,13 @@ ssize_t uct_pcie_ep_put_bcopy(
     uct_ep_h ep,
     uct_pack_callback_t pack_cb,
     void *arg,
+    uint64_t remote_addr,
+    uct_rkey_t rkey);
+
+ucs_status_t uct_pcie_ep_get_short(
+    uct_ep_h tl_ep,
+    void *buffer,
+    unsigned length,
     uint64_t remote_addr,
     uct_rkey_t rkey);
 

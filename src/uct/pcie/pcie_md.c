@@ -22,8 +22,8 @@ static void uct_pcie_md_close(uct_md_h md) {
     uct_pcie_md_t *sci_md = ucs_derived_of(md, uct_pcie_md_t);
     sci_error_t sci_error;
 
-    uct_pcie_helper_remove_seg_set_unavail(sci_md->rseg,
-                                           sci_md->rseg_map);
+    uct_pcie_helper_remove_seg_set_unavail(sci_md->rma_seg,
+                                           sci_md->rma_seg_map);
 
     SCIClose(sci_md->sci_virtual_device, 0, &sci_error);
     if (sci_error != SCI_ERR_OK) {
@@ -78,16 +78,16 @@ static ucs_status_t uct_pcie_mem_alloc(
         return UCS_ERR_NO_MEMORY;
     }
 
-    offset = md->rseg_allocated;
-    if (offset + length > UCT_PCIE_RSEG_SIZE) {
+    offset = md->rma_allocated;
+    if (offset + length > UCT_PCIE_RMA_SEG_SIZE) {
         ucs_error("pcie shared segment exhausted (%zu/%d bytes used)",
-                  offset + length, UCT_PCIE_RSEG_SIZE);
+                  offset + length, UCT_PCIE_RMA_SEG_SIZE);
         ucs_free(handle);
         return UCS_ERR_NO_MEMORY;
     }
 
-    md->rseg_allocated += length;
-    handle->ptr    = (uint8_t *)md->rseg_buf + offset;
+    md->rma_allocated += length;
+    handle->ptr    = (uint8_t *)md->rma_buf + offset;
     handle->length = length;
 
     *memh_p    = handle;
@@ -160,18 +160,18 @@ static ucs_status_t uct_pcie_md_open(
      * Set it available immediately so remote EPs can connect during handshake. */
     ret = uct_pcie_helper_create_seg_set_avail(
         md.sci_virtual_device,
-        &md.rseg,
-        &md.rseg_map,
-        UCT_PCIE_RSEG_SIZE,
-        &md.rseg_id,
-        &md.rseg_buf);
+        &md.rma_seg,
+        &md.rma_seg_map,
+        UCT_PCIE_RMA_SEG_SIZE,
+        &md.rma_seg_id,
+        &md.rma_buf);
     if (ret != 0) {
         ucs_error("pcie MD: failed to create shared segment");
         SCIClose(md.sci_virtual_device, 0, &errors);
         return UCS_ERR_NO_RESOURCE;
     }
 
-    md.rseg_allocated  = 0;
+    md.rma_allocated  = 0;
     md.super.ops       = &md_ops;
     md.super.component = &uct_pcie_component;
     md.num_devices     = md_config->num_devices;
@@ -179,8 +179,8 @@ static ucs_status_t uct_pcie_md_open(
     *md_p   = &md.super;
     md_name = "pcie";
 
-    ucs_debug("MD open: rseg_id=%u rseg_buf=%p",
-              md.rseg_id, md.rseg_buf);
+    ucs_debug("MD open: rma_seg_id=%u rma_buf=%p",
+              md.rma_seg_id, md.rma_buf);
 
     return UCS_OK;
 }

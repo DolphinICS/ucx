@@ -26,7 +26,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
     ucs_arbiter_group_purge(&iface->arbiter, &self->pending_q,
                             uct_pcie_ep_pending_discard_cb, NULL);
 
-    uct_pcie_disconnect_segment(self->remote_rseg, self->remote_rseg_map);
+    uct_pcie_disconnect_segment(self->rma_seg, self->rma_seg_map);
 
     self->remote_seg_buf = NULL;
     uct_pcie_disconnect_segment(self->remote_segment, self->remote_seg_map);
@@ -220,21 +220,21 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     ret = uct_pcie_connect_segment_full(
         iface->vdev_ep,
         self->remote_node_id,
-        iface_addr->rseg_id,
-        &self->remote_rseg,
-        &self->remote_rseg_map,
-        (volatile void **)&self->remote_rseg_buf);
+        iface_addr->rma_seg_id,
+        &self->rma_seg,
+        &self->rma_seg_map,
+        (volatile void **)&self->rma_buf);
     if (ret != 0) {
         ucs_error("EP: failed to connect to remote shared segment %u on node %u",
-                  iface_addr->rseg_id, self->remote_node_id);
+                  iface_addr->rma_seg_id, self->remote_node_id);
         iface->eps_init_cnt--;
         return UCS_ERR_NO_RESOURCE;
     }
-    self->remote_rseg_base_va = iface_addr->rseg_base_va;
+    self->rma_base_va = iface_addr->rma_base_va;
 
     ucs_debug("EP shared: connected seg=%u node=%u base_va=0x%lx",
-              iface_addr->rseg_id, self->remote_node_id,
-              (unsigned long)self->remote_rseg_base_va);
+              iface_addr->rma_seg_id, self->remote_node_id,
+              (unsigned long)self->rma_base_va);
 
     ret = uct_pcie_connect_segment(
         iface->vdev_ep,
@@ -247,7 +247,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
         (volatile void**)&self->remote_seg_buf);
     if (ret != UCS_OK) {
         ucs_error("Endpoint failed to connect and map to remote sisci segment");
-        uct_pcie_disconnect_segment(self->remote_rseg, self->remote_rseg_map);
+        uct_pcie_disconnect_segment(self->rma_seg, self->rma_seg_map);
         iface->eps_init_cnt--;
         return UCS_ERR_NO_RESOURCE;
     }
@@ -270,7 +270,7 @@ UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
 
 /*
  * The remote shared segment is connected eagerly at EP creation time
- * (uct_pcie_ep_t.remote_rseg_*).  put_short and put_bcopy just compute the
+ * (uct_pcie_ep_t.rma_seg_*).  put_short and put_bcopy just compute the
  * offset from remote_addr and the remote iface's base VA, then write directly
  * into the already-mapped window.  No rkey lookup is needed.
  */
@@ -287,10 +287,10 @@ ucs_status_t uct_pcie_ep_put_short(
 
     UCT_CHECK_LENGTH(length, 0, UCT_PCIE_MAX_PUT_SHORT, "put_short");
 
-    ucs_assert(remote_addr >= ep->remote_rseg_base_va);
-    seg_offset = (size_t)(remote_addr - ep->remote_rseg_base_va);
+    ucs_assert(remote_addr >= ep->rma_base_va);
+    seg_offset = (size_t)(remote_addr - ep->rma_base_va);
 
-    memcpy((uint8_t *)ep->remote_rseg_buf + seg_offset, buffer, length);
+    memcpy((uint8_t *)ep->rma_buf + seg_offset, buffer, length);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return UCS_OK;
 }
@@ -306,15 +306,32 @@ ssize_t uct_pcie_ep_put_bcopy(
     size_t seg_offset;
     ssize_t length;
 
-    ucs_assert(remote_addr >= ep->remote_rseg_base_va);
-    seg_offset = (size_t)(remote_addr - ep->remote_rseg_base_va);
+    ucs_assert(remote_addr >= ep->rma_base_va);
+    seg_offset = (size_t)(remote_addr - ep->rma_base_va);
 
-    length = pack_cb((uint8_t *)ep->remote_rseg_buf + seg_offset, arg);
+    length = pack_cb((uint8_t *)ep->rma_buf + seg_offset, arg);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return length;
 }
 
 /* //!SECTION Put / Get (one-sided) */
+
+ucs_status_t uct_pcie_ep_get_short(
+    uct_ep_h tl_ep,
+    void *buffer,
+    unsigned length,
+    uint64_t remote_addr,
+    uct_rkey_t rkey)
+{
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    size_t seg_offset;
+
+    ucs_assert(remote_addr >= ep->rma_base_va);
+    seg_offset = (size_t)(remote_addr - ep->rma_base_va);
+
+    memcpy(buffer, (const uint8_t *)ep->rma_buf + seg_offset, length);
+    return UCS_OK;
+}
 
 ucs_status_t uct_pcie_ep_get_bcopy(
     uct_ep_h tl_ep,
@@ -325,9 +342,16 @@ ucs_status_t uct_pcie_ep_get_bcopy(
     uct_rkey_t rkey,
     uct_completion_t *comp)
 {
-    //TODO
-    printf("uct_pcie_ep_get_bcopy()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    size_t seg_offset;
+
+    ucs_assert(remote_addr >= ep->rma_base_va);
+    seg_offset = (size_t)(remote_addr - ep->rma_base_va);
+
+    /* Read directly from the PCIe-mapped remote segment window.
+     * The operation is synchronous so comp is not invoked. */
+    unpack_cb(arg, (const uint8_t *)ep->rma_buf + seg_offset, length);
+    return UCS_OK;
 }
 
 

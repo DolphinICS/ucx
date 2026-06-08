@@ -579,8 +579,8 @@ ucs_status_t uct_pcie_iface_get_address(
     uct_pcie_iface_addr_t *iface_addr = (uct_pcie_iface_addr_t *)addr;
 
     iface_addr->interrupt_no    = iface->interrupt_no;
-    iface_addr->rseg_id = md->rseg_id;
-    iface_addr->rseg_base_va    = (uint64_t)(uintptr_t)md->rseg_buf;
+    iface_addr->rma_seg_id = md->rma_seg_id;
+    iface_addr->rma_base_va    = (uint64_t)(uintptr_t)md->rma_buf;
 
     return UCS_OK;
 }
@@ -720,7 +720,9 @@ static ucs_status_t uct_pcie_iface_query(
                       UCT_IFACE_FLAG_AM_BCOPY         |
                       UCT_IFACE_FLAG_AM_ZCOPY         |
                       UCT_IFACE_FLAG_PUT_SHORT        |
-                      UCT_IFACE_FLAG_PUT_BCOPY;
+                      UCT_IFACE_FLAG_PUT_BCOPY        |
+                      UCT_IFACE_FLAG_GET_SHORT        |
+                      UCT_IFACE_FLAG_GET_BCOPY;
     attr->cap.event_flags = 0;
 
     attr->device_addr_len = sizeof(uct_pcie_device_addr_t);
@@ -749,6 +751,16 @@ static ucs_status_t uct_pcie_iface_query(
     attr->cap.put.align_mtu        = 1;
     attr->cap.put.max_iov          = 1;
 
+    /* Get limits: reads go directly from the remote SISCI segment window.
+     * Synchronous, no zcopy variant. */
+    attr->cap.get.max_short        = UCT_PCIE_MAX_PUT_SHORT;
+    attr->cap.get.max_bcopy        = ULONG_MAX;
+    attr->cap.get.min_zcopy        = 0;
+    attr->cap.get.max_zcopy        = 0;
+    attr->cap.get.opt_zcopy_align  = 1;
+    attr->cap.get.align_mtu        = 1;
+    attr->cap.get.max_iov          = 1;
+
     /* Conservative PCIe performance estimates.
      * Latency: ~1 microsecond for a PCIe round trip.
      * Bandwidth: ~20 GB/s (conservative for PCIe 4.0 x16, actual numbers depends on slot width and gen).
@@ -765,7 +777,8 @@ static ucs_status_t uct_pcie_iface_query(
 static uct_iface_ops_t uct_pcie_iface_ops = {
     .ep_put_short             = uct_pcie_ep_put_short,
     .ep_put_bcopy             = uct_pcie_ep_put_bcopy,
-    .ep_get_bcopy             = uct_pcie_ep_get_bcopy, /* Stubbed */
+    .ep_get_short             = uct_pcie_ep_get_short,
+    .ep_get_bcopy             = uct_pcie_ep_get_bcopy,
     
     .ep_am_short              = uct_pcie_ep_am_short,
     .ep_am_short_iov          = uct_pcie_ep_am_short_iov,

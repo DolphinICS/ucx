@@ -21,15 +21,15 @@
 
 /* Size of the shared segment pre-allocated in the MD.  All mem_alloc
  * calls draw from this pool.  1 MB is generous for typical put workloads. */
-#define UCT_PCIE_RSEG_SIZE (1024 * 1024)
+#define UCT_PCIE_RMA_SEG_SIZE (1024 * 1024)
 
 /* Iface address exchanged OOB before EP creation.  The shared segment info is
  * included here so EPs can connect to the remote iface's pre-allocated shared
  * segment immediately during handshake, with no rkey exchange needed. */
 typedef struct {
     unsigned int interrupt_no;     /* Connection interrupt (existing) */
-    unsigned int rseg_id;  /* ID of the iface's shared segment */
-    uint64_t     rseg_base_va;     /* VA of the shared segment start (remote process) */
+    unsigned int rma_seg_id;   /* ID of the iface's RMA segment */
+    uint64_t     rma_base_va;  /* VA of the RMA segment start (remote process) */
 } UCS_S_PACKED uct_pcie_iface_addr_t;
 
 typedef struct {
