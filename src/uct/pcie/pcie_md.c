@@ -87,7 +87,7 @@ static ucs_status_t uct_pcie_mem_alloc(
     }
 
     md->rma_allocated += length;
-    handle->ptr    = (uint8_t *)md->rma_buf + offset;
+    handle->ptr    = (uint8_t *)md->rma_buf_local + offset;
     handle->length = length;
 
     *memh_p    = handle;
@@ -164,7 +164,7 @@ static ucs_status_t uct_pcie_md_open(
         &md.rma_seg_map,
         UCT_PCIE_RMA_SEG_SIZE,
         &md.rma_seg_id,
-        &md.rma_buf);
+        &md.rma_buf_local);
     if (ret != 0) {
         ucs_error("pcie MD: failed to create shared segment");
         SCIClose(md.sci_virtual_device, 0, &errors);
@@ -179,8 +179,8 @@ static ucs_status_t uct_pcie_md_open(
     *md_p   = &md.super;
     md_name = "pcie";
 
-    ucs_debug("MD open: rma_seg_id=%u rma_buf=%p",
-              md.rma_seg_id, md.rma_buf);
+    ucs_debug("MD open: rma_seg_id=%u rma_buf_local=%p",
+              md.rma_seg_id, md.rma_buf_local);
 
     return UCS_OK;
 }

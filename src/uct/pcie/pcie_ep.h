@@ -35,8 +35,9 @@ typedef struct {
      * put_short / put_bcopy write into it; get_bcopy reads from it. */
     sci_remote_segment_t    rma_seg;
     sci_map_t               rma_seg_map;
-    void                   *rma_buf;      /* local VA of the remote segment window */
-    uint64_t                rma_base_va;  /* remote VA of segment start */
+    void                   *rma_buf_local;  /* local VA of the remote segment window (this process) */
+    /* [LIBPERF_RKEY_QUIRK] see rma_local_base in uct_pcie_iface_addr_t */
+    uint64_t                rma_local_base;
 } uct_pcie_ep_t;
 
 

@@ -580,7 +580,7 @@ ucs_status_t uct_pcie_iface_get_address(
 
     iface_addr->interrupt_no    = iface->interrupt_no;
     iface_addr->rma_seg_id = md->rma_seg_id;
-    iface_addr->rma_base_va    = (uint64_t)(uintptr_t)md->rma_buf;
+    iface_addr->rma_local_base    = (uint64_t)(uintptr_t)md->rma_buf_local;
 
     return UCS_OK;
 }

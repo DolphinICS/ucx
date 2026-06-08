@@ -27,9 +27,16 @@
  * included here so EPs can connect to the remote iface's pre-allocated shared
  * segment immediately during handshake, with no rkey exchange needed. */
 typedef struct {
-    unsigned int interrupt_no;     /* Connection interrupt (existing) */
-    unsigned int rma_seg_id;   /* ID of the iface's RMA segment */
-    uint64_t     rma_base_va;  /* VA of the RMA segment start (remote process) */
+    unsigned int interrupt_no;    /* Connection interrupt (existing) */
+    unsigned int rma_seg_id;     /* ID of the iface's RMA segment */
+    /* [LIBPERF_RKEY_QUIRK] This field exists only because libperf dereferences
+     * *address_p locally (e.g. memset/verify), so mem_alloc must return a real
+     * local VA (rma_buf_local + offset) rather than a plain segment offset.
+     * That bakes rma_buf_local into remote_addr. rma_local_base cancels it:
+     *   seg_offset = remote_addr - rma_local_base
+     * In a correct implementation remote_addr would be an offset from zero
+     * and this field would not exist. */
+    uint64_t     rma_local_base;
 } UCS_S_PACKED uct_pcie_iface_addr_t;
 
 typedef struct {

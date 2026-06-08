@@ -223,18 +223,17 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
         iface_addr->rma_seg_id,
         &self->rma_seg,
         &self->rma_seg_map,
-        (volatile void **)&self->rma_buf);
+        (volatile void **)&self->rma_buf_local);
     if (ret != 0) {
         ucs_error("EP: failed to connect to remote shared segment %u on node %u",
                   iface_addr->rma_seg_id, self->remote_node_id);
         iface->eps_init_cnt--;
         return UCS_ERR_NO_RESOURCE;
     }
-    self->rma_base_va = iface_addr->rma_base_va;
+    self->rma_local_base = iface_addr->rma_local_base; /* [LIBPERF_RKEY_QUIRK] */
 
-    ucs_debug("EP shared: connected seg=%u node=%u base_va=0x%lx",
-              iface_addr->rma_seg_id, self->remote_node_id,
-              (unsigned long)self->rma_base_va);
+    ucs_debug("EP shared: connected seg=%u node=%u rma_buf_local=%p",
+              iface_addr->rma_seg_id, self->remote_node_id, self->rma_buf_local);
 
     ret = uct_pcie_connect_segment(
         iface->vdev_ep,
@@ -269,17 +268,32 @@ UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
 /* // SECTION Put / Get (one-sided) */
 
 /*
- * The remote shared segment is connected eagerly at EP creation time
- * (uct_pcie_ep_t.rma_seg_*).  put_short and put_bcopy just compute the
- * offset from remote_addr and the remote iface's base VA, then write directly
- * into the already-mapped window.  No rkey lookup is needed.
+ * [UCT_REMOTE_ADDR] NOTE on the parameter named "remote_addr" in put/get functions below:
+ *
+ * Despite its name, remote_addr is NOT a SISCI remote address and does NOT
+ * point into any SISCI-mapped memory window.  In SISCI terms, a "remote
+ * address" would mean a pointer obtained via SCIMapRemoteSegment — something
+ * you can dereference locally to access physical memory on another node.
+ * remote_addr is none of that.
+ *
+ * The name is the official UCT API parameter name, carried over from the
+ * InfiniBand transport model where the NIC uses a remote VA directly.  Here
+ * it is simply an opaque integer that encodes a segment offset.  It must be
+ * converted before use:
+ *
+ *   seg_offset = remote_addr - ep->rma_local_base  [LIBPERF_RKEY_QUIRK]
+ *   local_ptr  = ep->rma_buf_local + seg_offset
+ *
+ * ep->rma_buf_local is the actual local VA of the PCIe-mapped window into the
+ * remote node's segment.  That is the SISCI remote address.  See
+ * [LIBPERF_RKEY_QUIRK] in uct_pcie_iface_addr_t for why rma_local_base exists.
  */
 
 ucs_status_t uct_pcie_ep_put_short(
     uct_ep_h tl_ep,
     const void *buffer,
     unsigned length,
-    uint64_t remote_addr,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
     uct_rkey_t rkey)
 {
     uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
@@ -287,10 +301,10 @@ ucs_status_t uct_pcie_ep_put_short(
 
     UCT_CHECK_LENGTH(length, 0, UCT_PCIE_MAX_PUT_SHORT, "put_short");
 
-    ucs_assert(remote_addr >= ep->rma_base_va);
-    seg_offset = (size_t)(remote_addr - ep->rma_base_va);
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
 
-    memcpy((uint8_t *)ep->rma_buf + seg_offset, buffer, length);
+    memcpy((uint8_t *)ep->rma_buf_local + seg_offset, buffer, length);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return UCS_OK;
 }
@@ -299,17 +313,17 @@ ssize_t uct_pcie_ep_put_bcopy(
     uct_ep_h tl_ep,
     uct_pack_callback_t pack_cb,
     void *arg,
-    uint64_t remote_addr,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
     uct_rkey_t rkey)
 {
     uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
     size_t seg_offset;
     ssize_t length;
 
-    ucs_assert(remote_addr >= ep->rma_base_va);
-    seg_offset = (size_t)(remote_addr - ep->rma_base_va);
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
 
-    length = pack_cb((uint8_t *)ep->rma_buf + seg_offset, arg);
+    length = pack_cb((uint8_t *)ep->rma_buf_local + seg_offset, arg);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return length;
 }
@@ -320,16 +334,16 @@ ucs_status_t uct_pcie_ep_get_short(
     uct_ep_h tl_ep,
     void *buffer,
     unsigned length,
-    uint64_t remote_addr,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
     uct_rkey_t rkey)
 {
     uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
     size_t seg_offset;
 
-    ucs_assert(remote_addr >= ep->rma_base_va);
-    seg_offset = (size_t)(remote_addr - ep->rma_base_va);
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
 
-    memcpy(buffer, (const uint8_t *)ep->rma_buf + seg_offset, length);
+    memcpy(buffer, (const uint8_t *)ep->rma_buf_local + seg_offset, length);
     return UCS_OK;
 }
 
@@ -338,19 +352,16 @@ ucs_status_t uct_pcie_ep_get_bcopy(
     uct_unpack_callback_t unpack_cb,
     void *arg,
     size_t length,
-    uint64_t remote_addr,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
     uct_rkey_t rkey,
     uct_completion_t *comp)
 {
     uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
     size_t seg_offset;
 
-    ucs_assert(remote_addr >= ep->rma_base_va);
-    seg_offset = (size_t)(remote_addr - ep->rma_base_va);
-
-    /* Read directly from the PCIe-mapped remote segment window.
-     * The operation is synchronous so comp is not invoked. */
-    unpack_cb(arg, (const uint8_t *)ep->rma_buf + seg_offset, length);
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+    unpack_cb(arg, (const uint8_t *)ep->rma_buf_local + seg_offset, length);
     return UCS_OK;
 }
 

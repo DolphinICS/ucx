@@ -21,7 +21,7 @@ typedef struct {
      * mem_alloc bump-allocates from it; remote EPs connect to it for put/get. */
     sci_local_segment_t  rma_seg;
     sci_map_t            rma_seg_map;
-    void                *rma_buf;        /* local VA of segment start */
+    void                *rma_buf_local;  /* local VA of segment start (this process) */
     unsigned int         rma_seg_id;
     size_t               rma_allocated;  /* bump allocator pointer (bytes used) */
 } uct_pcie_md_t;
@@ -29,7 +29,7 @@ typedef struct {
 /* Handle returned by mem_alloc.  Points into the MD's shared segment;
  * mem_free releases only the handle struct, not the underlying segment. */
 typedef struct {
-    void   *ptr;    /* = md->rma_buf + offset */
+    void   *ptr;    /* = md->rma_buf_local + offset */
     size_t  length;
 } uct_pcie_mem_handle_t;
 
