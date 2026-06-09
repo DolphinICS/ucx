@@ -271,10 +271,10 @@ UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
  * [UCT_REMOTE_ADDR] NOTE on the parameter named "remote_addr" in put/get functions below:
  *
  * Despite its name, remote_addr is NOT a SISCI remote address and does NOT
- * point into any SISCI-mapped memory window.  In SISCI terms, a "remote
- * address" would mean a pointer obtained via SCIMapRemoteSegment — something
- * you can dereference locally to access physical memory on another node.
- * remote_addr is none of that.
+ * point into any SISCI-remotely-mapped memory window.  In SISCI terms, a
+ * "remote address" would mean a pointer obtained via SCIMapRemoteSegment,
+ * i.e something you can dereference locally to access physical memory on
+ * another node. remote_addr is none of that.
  *
  * The name is the official UCT API parameter name, carried over from the
  * InfiniBand transport model where the NIC uses a remote VA directly.  Here
