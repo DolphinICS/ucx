@@ -23,19 +23,27 @@
  * calls draw from this pool.  1 MB is generous for typical put workloads. */
 #define UCT_PCIE_RMA_SEG_SIZE (1024 * 1024)
 
-/* Iface address exchanged OOB before EP creation.  The shared segment info is
- * included here so EPs can connect to the remote iface's pre-allocated shared
- * segment immediately during handshake, with no rkey exchange needed. */
+/* Iface address exchanged OOB before EP creation.
+ * Were ucx_perftest to follow the UCT rkey contract, this struct would only
+ * carry interrupt_no. The two extra fields are workarounds for libperf bugs. */
 typedef struct {
-    unsigned int interrupt_no;    /* Connection interrupt (existing) */
-    unsigned int rma_seg_id;     /* ID of the iface's RMA segment */
-    /* [LIBPERF_RKEY_QUIRK] This field exists only because libperf dereferences
-     * *address_p locally (e.g. memset/verify), so mem_alloc must return a real
-     * local VA (rma_buf_local + offset) rather than a plain segment offset.
-     * That bakes rma_buf_local into remote_addr. rma_local_base cancels it:
-     *   seg_offset = remote_addr - rma_local_base
-     * In a correct implementation remote_addr would be an offset from zero
-     * and this field would not exist. */
+    unsigned int interrupt_no;   /* Connection interrupt */
+
+    /* [LIBPERF_RKEY_QUIRK] quirk 1: rma_seg_id belongs in the rkey, not here.
+     * libperf sends the rkey buffer to the remote side before calling mkey_pack,
+     * so the remote side always receives zeros. Segment identity therefore cannot
+     * travel via rkey and is piggybacked on iface_addr instead. */
+    unsigned int rma_seg_id;
+
+    /* [LIBPERF_RKEY_QUIRK] quirk 2: this field exists only to cancel noise
+     * introduced by a second libperf quirk. libperf dereferences *address_p
+     * locally (memset, verify), so mem_alloc must return a real local VA
+     * (rma_buf_local + offset) rather than a plain segment offset. That bakes
+     * rma_buf_local into the value the initiator receives as remote_addr.
+     * rma_local_base = rma_buf_local on the target, sent here so the initiator
+     * can recover the plain offset:  seg_offset = remote_addr - rma_local_base
+     * Were libperf not to dereference *address_p, remote_addr could be a plain
+     * offset from zero and this field would not exist. */
     uint64_t     rma_local_base;
 } UCS_S_PACKED uct_pcie_iface_addr_t;
 
