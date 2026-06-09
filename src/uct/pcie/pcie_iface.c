@@ -217,6 +217,18 @@ static sci_callback_action_t uct_pcie_conn_handler(
     return SCI_CALLBACK_CONTINUE;
 }
 
+/*
+ * Called by UCX before creating an EP to decide whether it is worth attempting
+ * a connection to a remote iface. The question is not "is the connection
+ * guaranteed to succeed?" but rather "is there any reason to believe it might?"
+ * Returning 1 is therefore not a promise — it is permission to try. If the
+ * attempt fails, EP creation returns an error in the normal way.
+ *
+ * When a device address is supplied we probe the remote SISCI node directly
+ * with SCIProbeNode, which checks whether the node is reachable across the
+ * PCIe fabric. Without an address there is nothing to probe, so we return 1
+ * and let the connection attempt determine reachability on its own.
+ */
 static int
 uct_pcie_ipc_iface_is_reachable_v2(
     const uct_iface_h tl_iface,
