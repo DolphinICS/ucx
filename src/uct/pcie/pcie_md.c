@@ -102,8 +102,13 @@ static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
     return UCS_OK;
 }
 
-/* mkey_pack and rkey_unpack are stubs — rkey_packed_size = 0 so UCX does not
- * call them, but we keep them to satisfy the md_ops vtable. */
+/* [LIBPERF_RKEY_QUIRK] The three functions below are stubs. RMA is fully
+ * supported by this transport, but segment identity is communicated through
+ * iface_addr rather than through the rkey mechanism. See the comment on
+ * uct_pcie_iface_addr_t in pcie_iface.h for the full explanation. As a
+ * consequence, rkey_packed_size = 0 (see md_query), UCX never calls mkey_pack
+ * or rkey_unpack in practice, and rkey_release has nothing to free. The vtable
+ * slots must still be filled, hence these no-op stubs. */
 static ucs_status_t uct_pcie_mkey_pack(uct_md_h uct_md, uct_mem_h memh,
                                         void *rkey_buffer, size_t rkey_buffer_size,
                                         const uct_md_mkey_pack_params_t *params,

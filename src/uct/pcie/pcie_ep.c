@@ -6,36 +6,6 @@
 #include "pcie_sisci_helper.h"
 #include "pcie_md.h"
 
-/* Discard callback for use when purging the pending queue on EP teardown.
- * UCX's contract requires the user to call ep_pending_purge before destroying
- * an EP, so this should never actually fire. It is here purely as a safety net. */
-static ucs_arbiter_cb_result_t
-uct_pcie_ep_pending_discard_cb(ucs_arbiter_t *arbiter, ucs_arbiter_group_t *group,
-                               ucs_arbiter_elem_t *elem, void *arg)
-{
-    ucs_warn("pcie EP destroyed with pending request still queued");
-    return UCS_ARBITER_CB_RESULT_REMOVE_ELEM;
-}
-
-static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
-{
-    uct_pcie_iface_t *iface = ucs_derived_of(self->super.super.iface, uct_pcie_iface_t);
-
-    /* UCX guarantees ep_pending_purge is called before ep_destroy, so the
-     * group should already be empty here. Drain defensively just in case. */
-    ucs_arbiter_group_purge(&iface->arbiter, &self->pending_q,
-                            uct_pcie_ep_pending_discard_cb, NULL);
-
-    uct_pcie_disconnect_segment(self->rma_seg, self->rma_seg_map);
-
-    self->remote_seg_buf = NULL;
-    uct_pcie_disconnect_segment(self->remote_segment, self->remote_seg_map);
-    ucs_debug("ep deleted segment_id %d node_id %d\n",
-        self->remote_seg_id,
-        self->remote_node_id);
-}
-
-
 /**
  * @brief 
  * @param[in] iface 
@@ -156,6 +126,22 @@ static ucs_status_t uct_pcie_ep_send_recv_conn_request(
     return ucs_ret;
 }
 
+/* Fires from SISCI's interrupt thread when the remote segment changes state.
+ * We only care about disconnect: the remote side has gone away and the EP is
+ * no longer usable. All other reasons are ignored. */
+static sci_callback_action_t
+uct_pcie_ep_remote_segment_cb(void *arg,
+                               sci_remote_segment_t segment,
+                               sci_segment_cb_reason_t reason,
+                               sci_error_t status)
+{
+    uct_pcie_ep_t *ep = (uct_pcie_ep_t *)arg;
+    if (reason == SCI_CB_DISCONNECT) {
+        ep->is_connected = 0;
+    }
+    return SCI_CALLBACK_CONTINUE;
+}
+
 static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
 {
     ucs_status_t ucs_ret;
@@ -243,19 +229,52 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
         self->remote_seg_id,
         &self->remote_segment,
         &self->remote_seg_map,
-        (volatile void**)&self->remote_seg_buf);
+        (volatile void**)&self->remote_seg_buf,
+        uct_pcie_ep_remote_segment_cb,
+        self);
     if (ret != UCS_OK) {
         ucs_error("Endpoint failed to connect and map to remote sisci segment");
         uct_pcie_disconnect_segment(self->rma_seg, self->rma_seg_map);
         iface->eps_init_cnt--;
         return UCS_ERR_NO_RESOURCE;
     }
+    self->is_connected = 1;
 
     ucs_debug("EP connected to segment %d at node %d\n",
         self->remote_seg_id,
         self->remote_node_id);
 
     return UCS_OK;
+}
+
+/* Discard callback for use when purging the pending queue on EP teardown.
+ * UCX's contract requires the user to call ep_pending_purge before destroying
+ * an EP, so this should never actually fire. It is here purely as a safety net. */
+static ucs_arbiter_cb_result_t
+uct_pcie_ep_pending_discard_cb(ucs_arbiter_t *arbiter, ucs_arbiter_group_t *group,
+                               ucs_arbiter_elem_t *elem, void *arg)
+{
+    ucs_warn("pcie EP destroyed with pending request still queued");
+    return UCS_ARBITER_CB_RESULT_REMOVE_ELEM;
+}
+
+
+static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
+{
+    uct_pcie_iface_t *iface = ucs_derived_of(self->super.super.iface, uct_pcie_iface_t);
+
+    /* UCX guarantees ep_pending_purge is called before ep_destroy, so the
+     * group should already be empty here. Drain defensively just in case. */
+    ucs_arbiter_group_purge(&iface->arbiter, &self->pending_q,
+                            uct_pcie_ep_pending_discard_cb, NULL);
+
+    uct_pcie_disconnect_segment(self->rma_seg, self->rma_seg_map);
+
+    self->remote_seg_buf = NULL;
+    uct_pcie_disconnect_segment(self->remote_segment, self->remote_seg_map);
+    ucs_debug("ep deleted segment_id %d node_id %d\n",
+        self->remote_seg_id,
+        self->remote_node_id);
 }
 
 

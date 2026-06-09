@@ -30,6 +30,11 @@ typedef struct {
      * when the flow-control window is full and drained by iface progress. */
     ucs_arbiter_group_t     pending_q;
 
+    /* Set to 1 after EP creation completes, cleared to 0 by the SISCI
+     * disconnect callback on remote_segment. Read by ep_is_connected.
+     * volatile because the callback fires from SISCI's interrupt thread. */
+    volatile int            is_connected;
+
     /* RMA segment: connection to the remote iface's shared segment, established
      * at EP creation time using rma_seg_id and rma_base_va from iface_addr.
      * put_short / put_bcopy write into it; get_bcopy reads from it. */

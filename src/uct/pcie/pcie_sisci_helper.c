@@ -172,19 +172,23 @@ int uct_pcie_connect_segment(
     unsigned int segment_id,
     sci_remote_segment_t *segment,
     sci_map_t *segment_map,
-    volatile void **buf)
+    volatile void **buf,
+    sci_cb_remote_segment_t callback,
+    void *callback_arg)
 {
-    sci_error_t sci_error;
+    sci_error_t  sci_error;
+    unsigned int flags = (callback != NULL) ? SCI_FLAG_USE_CALLBACK
+                                            : UCT_PCIE_NO_FLAGS;
     do {
         SCIConnectSegment(sd,
             segment,
             node_id,
             segment_id,
             UCT_PCIE_LOCAL_ADAPTER_NO,
-            UCT_PCIE_NO_CALLBACK,
-            NULL,
+            callback,
+            callback_arg,
             0,
-            UCT_PCIE_NO_FLAGS,
+            flags,
             &sci_error);
     } while (sci_error != SCI_ERR_OK);
 

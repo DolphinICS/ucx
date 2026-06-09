@@ -206,7 +206,8 @@ static sci_callback_action_t uct_pcie_conn_handler(
         request->ctl_segment_id,
         &sci_cd->ctl_segment,
         &sci_cd->ctl_segment_map,
-        (volatile void **)&sci_cd->ctl_buf);
+        (volatile void **)&sci_cd->ctl_buf,
+        NULL, NULL);
     if (ret != 0) {
         ucs_error("Failed to connect to remote control buffer");
         uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
@@ -230,7 +231,7 @@ static sci_callback_action_t uct_pcie_conn_handler(
  * and let the connection attempt determine reachability on its own.
  */
 static int
-uct_pcie_ipc_iface_is_reachable_v2(
+uct_pcie_iface_is_reachable_v2(
     const uct_iface_h tl_iface,
     const uct_iface_is_reachable_params_t *params)
 {
@@ -262,11 +263,12 @@ uct_pcie_ipc_iface_is_reachable_v2(
     return reachable;
 }
 
-int uct_pcie_ipc_ep_is_connected(
+int uct_pcie_ep_is_connected(
     const uct_ep_h tl_ep,
     const uct_ep_is_connected_params_t *params)
 {
-    return 1;
+    const uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    return ep->is_connected;
 }
 
 static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
@@ -275,8 +277,8 @@ static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
     .ep_query              = (uct_ep_query_func_t)ucs_empty_function_return_unsupported,
     .ep_invalidate         = (uct_ep_invalidate_func_t)ucs_empty_function_return_unsupported,
     .ep_connect_to_ep_v2   = ucs_empty_function_return_unsupported,
-    .iface_is_reachable_v2 = uct_pcie_ipc_iface_is_reachable_v2,
-    .ep_is_connected       = uct_pcie_ipc_ep_is_connected
+    .iface_is_reachable_v2 = uct_pcie_iface_is_reachable_v2,
+    .ep_is_connected       = uct_pcie_ep_is_connected
 };
 
 /**
@@ -582,12 +584,17 @@ static ucs_status_t uct_pcie_query_devices(
     return status; 
 }
 
+/* v1 of the reachability API — kept because the vtable slot must be filled.
+ * UCX provides uct_base_iface_is_reachable as a bridge that packages the
+ * legacy (dev_addr, iface_addr) arguments into a params struct and forwards
+ * the call to iface_is_reachable_v2 above. There is therefore no separate v1
+ * logic to maintain; all actual reachability checking lives in v2. */
 static int uct_pcie_iface_is_reachable(
     const uct_iface_h tl_iface,
     const uct_device_addr_t *dev_addr,
     const uct_iface_addr_t *iface_addr)
 {
-    return 1;
+    return uct_base_iface_is_reachable(tl_iface, dev_addr, iface_addr);
 }
 
 ucs_status_t uct_pcie_get_device_address(

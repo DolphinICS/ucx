@@ -74,6 +74,11 @@ void uct_pcie_helper_remove_seg_set_unavail(
  * @brief Connects to and maps remote sisci segment at a given offset and size.
  *
  * @note Tries to connect in a loop until it succeeds.
+ *
+ * @param callback     Optional SISCI remote segment callback. Pass NULL for no
+ *                     callback. When non-NULL, SCI_FLAG_USE_CALLBACK is set
+ *                     automatically.
+ * @param callback_arg User argument forwarded to the callback.
  */
 int uct_pcie_connect_segment(
     sci_desc_t sd,
@@ -83,7 +88,9 @@ int uct_pcie_connect_segment(
     unsigned int segment_id,
     sci_remote_segment_t *segment,
     sci_map_t *segment_map,
-    volatile void **buf);
+    volatile void **buf,
+    sci_cb_remote_segment_t callback,
+    void *callback_arg);
 
 /**
  * @brief Connects to a remote SISCI segment, queries its full size via
