@@ -141,6 +141,14 @@ static ucs_status_t uct_pcie_md_open(
         .mem_alloc          = uct_pcie_mem_alloc,
         .mem_free           = uct_pcie_mem_free,
         .mkey_pack          = uct_pcie_mkey_pack,
+        /* mem_reg is not implemented. SISCI can expose arbitrary memory regions
+         * as segments (SCIAttachPhysicalMemory), but doing so requires the
+         * caller to supply the PCI bus address of the region, not just a
+         * virtual address. That information is not available for ordinary
+         * heap or stack allocations, so there is no general-purpose path here.
+         * Registration would only be feasible for memory whose IO address is
+         * already known (e.g. device-mapped buffers, CUDA memory via the SISCI
+         * CUDA flag). */
         .mem_reg            = ucs_empty_function_return_unsupported,
         .mem_dereg          = ucs_empty_function_return_unsupported,
         .detect_memory_type = ucs_empty_function_return_unsupported

@@ -16,8 +16,14 @@
 #define UCT_PCIE_NO_CALLBACK 0
 #define UCT_PCIE_MAX_EPS 28
 
-/* Maximum bytes for put_short (CPU inline write). Larger puts use put_bcopy. */
-#define UCT_PCIE_MAX_PUT_SHORT 512
+/* Maximum bytes for put_short. This threshold is arbitrary for a PIO
+ * transport: put_short and put_bcopy both do a memcpy into the MMIO window,
+ * so there is no physical reason to prefer one over the other at any
+ * particular size. The UCT distinction is API shape: put_short takes a plain
+ * (buffer, length) pair while put_bcopy takes a pack callback that writes
+ * directly into the destination. 4096 is a reasonable default; it can be
+ * raised further without consequence. */
+#define UCT_PCIE_MAX_PUT_SHORT 4096
 
 /* Size of the shared segment pre-allocated in the MD.  All mem_alloc
  * calls draw from this pool.  1 MB is generous for typical put workloads. */

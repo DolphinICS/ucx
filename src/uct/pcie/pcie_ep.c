@@ -303,6 +303,7 @@ ucs_status_t uct_pcie_ep_put_short(
 
     ucs_assert(remote_addr >= ep->rma_local_base);
     seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
 
     memcpy((uint8_t *)ep->rma_buf_local + seg_offset, buffer, length);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
@@ -324,6 +325,7 @@ ssize_t uct_pcie_ep_put_bcopy(
     seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
 
     length = pack_cb((uint8_t *)ep->rma_buf_local + seg_offset, arg);
+    ucs_assert(seg_offset + (size_t)length <= UCT_PCIE_RMA_SEG_SIZE);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return length;
 }
@@ -342,8 +344,38 @@ ucs_status_t uct_pcie_ep_get_short(
 
     ucs_assert(remote_addr >= ep->rma_local_base);
     seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
 
     memcpy(buffer, (const uint8_t *)ep->rma_buf_local + seg_offset, length);
+    return UCS_OK;
+}
+
+ucs_status_t uct_pcie_ep_put_zcopy(
+    uct_ep_h tl_ep,
+    const uct_iov_t *iov,
+    size_t iovcnt,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
+    uct_rkey_t rkey,
+    uct_completion_t *comp)
+{
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    ucs_iov_iter_t iov_iter;
+    size_t seg_offset;
+    size_t total_len;
+
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+
+    total_len = uct_iov_total_length(iov, iovcnt);
+    ucs_assert(seg_offset + total_len <= UCT_PCIE_RMA_SEG_SIZE);
+    ucs_iov_iter_init(&iov_iter);
+    uct_iov_to_buffer(iov, iovcnt, &iov_iter,
+                      (uint8_t *)ep->rma_buf_local + seg_offset, total_len);
+
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    if (comp != NULL) {
+        uct_invoke_completion(comp, UCS_OK);
+    }
     return UCS_OK;
 }
 
@@ -361,6 +393,7 @@ ucs_status_t uct_pcie_ep_get_bcopy(
 
     ucs_assert(remote_addr >= ep->rma_local_base);
     seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
     unpack_cb(arg, (const uint8_t *)ep->rma_buf_local + seg_offset, length);
     return UCS_OK;
 }
@@ -368,7 +401,23 @@ ucs_status_t uct_pcie_ep_get_bcopy(
 
 /*//!SECTION*/
 
-/* //SECTION ATOMICS*/
+/*
+ * [NO_ATOMICS] Atomic operations are not implemented in this transport and
+ * will not be implemented in the foreseeable future.
+ *
+ * SISCI is a pure shared-memory-over-PCIe API: it provides segment creation,
+ * remote mapping, and DMA transfer primitives. It exposes no facility for
+ * atomic read-modify-write operations across the PCIe fabric.
+ *
+ * This transport therefore does not advertise any UCT_IFACE_FLAG_ATOMIC_*
+ * capabilities. UCX's upper layers (UCP) detect the absence of those flags and
+ * fall back to their own software emulation: atomic operations are carried out
+ * via active messages routed through whichever transport supports AM, with the
+ * target side performing the operation locally using CPU atomics and returning
+ * the result. That path is correct, well-tested, and not meaningfully slower
+ * than anything we could build here. The stubs below exist only to satisfy the
+ * iface_ops vtable; they are never called in practice.
+ */
 
 ucs_status_t uct_pcie_ep_atomic32_post(
     uct_ep_h ep,
@@ -377,9 +426,7 @@ ucs_status_t uct_pcie_ep_atomic32_post(
     uint64_t remote_addr,
     uct_rkey_t rkey)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic32_post()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 ucs_status_t uct_pcie_ep_atomic64_post(
@@ -389,9 +436,7 @@ ucs_status_t uct_pcie_ep_atomic64_post(
     uint64_t remote_addr,
     uct_rkey_t rkey)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic64_post()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 ucs_status_t uct_pcie_ep_atomic64_fetch(
@@ -403,9 +448,7 @@ ucs_status_t uct_pcie_ep_atomic64_fetch(
     uct_rkey_t rkey,
     uct_completion_t *comp)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic64_fetch()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 ucs_status_t uct_pcie_ep_atomic32_fetch(
@@ -417,9 +460,7 @@ ucs_status_t uct_pcie_ep_atomic32_fetch(
     uct_rkey_t rkey,
     uct_completion_t *comp)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic32_fetch()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 ucs_status_t uct_pcie_ep_atomic_cswap64(
@@ -431,9 +472,7 @@ ucs_status_t uct_pcie_ep_atomic_cswap64(
     uint64_t *result,
     uct_completion_t *comp)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic_cswap64()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 ucs_status_t uct_pcie_ep_atomic_cswap32(
@@ -445,9 +484,7 @@ ucs_status_t uct_pcie_ep_atomic_cswap32(
     uint32_t *result,
     uct_completion_t *comp)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic_cswap32()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 /* //!SECTION */

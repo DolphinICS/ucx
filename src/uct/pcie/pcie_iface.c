@@ -721,6 +721,7 @@ static ucs_status_t uct_pcie_iface_query(
                       UCT_IFACE_FLAG_AM_ZCOPY         |
                       UCT_IFACE_FLAG_PUT_SHORT        |
                       UCT_IFACE_FLAG_PUT_BCOPY        |
+                      UCT_IFACE_FLAG_PUT_ZCOPY        |
                       UCT_IFACE_FLAG_GET_SHORT        |
                       UCT_IFACE_FLAG_GET_BCOPY;
     attr->cap.event_flags = 0;
@@ -744,9 +745,9 @@ static ucs_status_t uct_pcie_iface_query(
      * only by the remote segment size).  put_short is limited to keep it a
      * fast inline path. */
     attr->cap.put.max_short        = UCT_PCIE_MAX_PUT_SHORT;
-    attr->cap.put.max_bcopy        = ULONG_MAX;
+    attr->cap.put.max_bcopy        = UCT_PCIE_RMA_SEG_SIZE;
     attr->cap.put.min_zcopy        = 0;
-    attr->cap.put.max_zcopy        = 0; /* not implemented */
+    attr->cap.put.max_zcopy        = UCT_PCIE_RMA_SEG_SIZE;
     attr->cap.put.opt_zcopy_align  = 1;
     attr->cap.put.align_mtu        = 1;
     attr->cap.put.max_iov          = 1;
@@ -754,7 +755,7 @@ static ucs_status_t uct_pcie_iface_query(
     /* Get limits: reads go directly from the remote SISCI segment window.
      * Synchronous, no zcopy variant. */
     attr->cap.get.max_short        = UCT_PCIE_MAX_PUT_SHORT;
-    attr->cap.get.max_bcopy        = ULONG_MAX;
+    attr->cap.get.max_bcopy        = UCT_PCIE_RMA_SEG_SIZE;
     attr->cap.get.min_zcopy        = 0;
     attr->cap.get.max_zcopy        = 0;
     attr->cap.get.opt_zcopy_align  = 1;
@@ -777,6 +778,7 @@ static ucs_status_t uct_pcie_iface_query(
 static uct_iface_ops_t uct_pcie_iface_ops = {
     .ep_put_short             = uct_pcie_ep_put_short,
     .ep_put_bcopy             = uct_pcie_ep_put_bcopy,
+    .ep_put_zcopy             = uct_pcie_ep_put_zcopy,
     .ep_get_short             = uct_pcie_ep_get_short,
     .ep_get_bcopy             = uct_pcie_ep_get_bcopy,
     

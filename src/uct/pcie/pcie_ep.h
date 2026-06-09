@@ -98,6 +98,14 @@ ssize_t uct_pcie_ep_put_bcopy(
     uint64_t remote_addr,
     uct_rkey_t rkey);
 
+ucs_status_t uct_pcie_ep_put_zcopy(
+    uct_ep_h tl_ep,
+    const uct_iov_t *iov,
+    size_t iovcnt,
+    uint64_t remote_addr,
+    uct_rkey_t rkey,
+    uct_completion_t *comp);
+
 ucs_status_t uct_pcie_ep_get_short(
     uct_ep_h tl_ep,
     void *buffer,
