@@ -222,7 +222,32 @@ uct_pcie_ipc_iface_is_reachable_v2(
     const uct_iface_h tl_iface,
     const uct_iface_is_reachable_params_t *params)
 {
-    return 1;
+    uct_pcie_iface_t             *iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
+    uct_pcie_md_t                *md    = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    const uct_pcie_device_addr_t *dev_addr;
+    sci_error_t                   sci_error;
+    int                           reachable;
+
+    if (!(params->field_mask & UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR)) {
+        return 1; /* no address to probe — assume reachable */
+    }
+
+    dev_addr  = (const uct_pcie_device_addr_t *)params->device_addr;
+    reachable = SCIProbeNode(md->sci_virtual_device,
+                             UCT_PCIE_LOCAL_ADAPTER_NO,
+                             dev_addr->node_id,
+                             UCT_PCIE_NO_FLAGS,
+                             &sci_error);
+
+    if (!reachable &&
+        (params->field_mask & UCT_IFACE_IS_REACHABLE_FIELD_INFO_STRING) &&
+        (params->field_mask & UCT_IFACE_IS_REACHABLE_FIELD_INFO_STRING_LENGTH)) {
+        ucs_snprintf_zero(params->info_string, params->info_string_length,
+                          "SISCI node %u is not reachable via PCIe adapter %u",
+                          dev_addr->node_id, UCT_PCIE_LOCAL_ADAPTER_NO);
+    }
+
+    return reachable;
 }
 
 int uct_pcie_ipc_ep_is_connected(
