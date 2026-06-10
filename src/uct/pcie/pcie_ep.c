@@ -392,9 +392,40 @@ ucs_status_t uct_pcie_ep_put_zcopy(
                       (uint8_t *)ep->rma_buf_local + seg_offset, total_len);
 
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
-    if (comp != NULL) {
-        uct_invoke_completion(comp, UCS_OK);
+    /* Do not invoke comp here. UCX zcopy contract: comp is only invoked when
+     * returning UCS_INPROGRESS (async DMA path). UCS_OK means synchronous
+     * completion; the caller uses the return value, not the callback. */
+    return UCS_OK;
+}
+
+ucs_status_t uct_pcie_ep_get_zcopy(
+    uct_ep_h tl_ep,
+    const uct_iov_t *iov,
+    size_t iovcnt,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
+    uct_rkey_t rkey,
+    uct_completion_t *comp)
+{
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    size_t seg_offset;
+    size_t total_len;
+    size_t i, src_offset;
+
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+
+    total_len = uct_iov_total_length(iov, iovcnt);
+    ucs_assert(seg_offset + total_len <= UCT_PCIE_RMA_SEG_SIZE);
+
+    src_offset = 0;
+    for (i = 0; i < iovcnt; i++) {
+        memcpy(iov[i].buffer,
+               (const uint8_t *)ep->rma_buf_local + seg_offset + src_offset,
+               iov[i].length);
+        src_offset += iov[i].length;
     }
+
+    /* Do not invoke comp here — same reasoning as put_zcopy above. */
     return UCS_OK;
 }
 

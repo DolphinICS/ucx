@@ -767,7 +767,8 @@ static ucs_status_t uct_pcie_iface_query(
                       UCT_IFACE_FLAG_PUT_BCOPY        |
                       UCT_IFACE_FLAG_PUT_ZCOPY        |
                       UCT_IFACE_FLAG_GET_SHORT        |
-                      UCT_IFACE_FLAG_GET_BCOPY;
+                      UCT_IFACE_FLAG_GET_BCOPY        |
+                      UCT_IFACE_FLAG_GET_ZCOPY;
     attr->cap.event_flags = 0;
 
     attr->device_addr_len = sizeof(uct_pcie_device_addr_t);
@@ -797,11 +798,11 @@ static ucs_status_t uct_pcie_iface_query(
     attr->cap.put.max_iov          = 1;
 
     /* Get limits: reads go directly from the remote SISCI segment window.
-     * Synchronous, no zcopy variant. */
+     * Synchronous PIO; zcopy scatters into caller-supplied iov buffers. */
     attr->cap.get.max_short        = UCT_PCIE_MAX_PUT_SHORT;
     attr->cap.get.max_bcopy        = UCT_PCIE_RMA_SEG_SIZE;
     attr->cap.get.min_zcopy        = 0;
-    attr->cap.get.max_zcopy        = 0;
+    attr->cap.get.max_zcopy        = UCT_PCIE_RMA_SEG_SIZE;
     attr->cap.get.opt_zcopy_align  = 1;
     attr->cap.get.align_mtu        = 1;
     attr->cap.get.max_iov          = 1;
@@ -825,6 +826,7 @@ static uct_iface_ops_t uct_pcie_iface_ops = {
     .ep_put_zcopy             = uct_pcie_ep_put_zcopy,
     .ep_get_short             = uct_pcie_ep_get_short,
     .ep_get_bcopy             = uct_pcie_ep_get_bcopy,
+    .ep_get_zcopy             = uct_pcie_ep_get_zcopy,
     
     .ep_am_short              = uct_pcie_ep_am_short,
     .ep_am_short_iov          = uct_pcie_ep_am_short_iov,
