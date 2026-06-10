@@ -3,6 +3,9 @@
 /* To get ucs print outs */
 #include <ucs/type/status.h>
 
+/******************************************************************************/
+/*** Local segment operations *************************************************/
+
 /**
  * @brief Creates, prepares and maps a local sisci segment. Gets sisci to
  *        automatically assign a segment ID that is unique to this node.
@@ -163,6 +166,9 @@ void uct_pcie_helper_remove_seg_set_unavail(
     }
     uct_pcie_helper_remove_segment(segment, segment_map);
 }
+
+/******************************************************************************/
+/*** Remote segment operations ************************************************/
 
 int uct_pcie_connect_segment(
     sci_desc_t sd,

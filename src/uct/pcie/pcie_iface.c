@@ -38,6 +38,9 @@ static ucs_config_field_t uct_pcie_iface_config_table[] = {
     {NULL}
 };
 
+/******************************************************************************/
+/*** Connection handling ******************************************************/
+
 /**
  * @brief Reserve a uct_pcie control descriptor from the uct_pcie_iface's list
  *        of control descriptor.
@@ -218,6 +221,9 @@ static sci_callback_action_t uct_pcie_conn_handler(
     return SCI_CALLBACK_CONTINUE;
 }
 
+/******************************************************************************/
+/*** Reachability and connectivity ********************************************/
+
 /**
  * @brief Probe whether a remote SISCI node is reachable via the PCIe fabric.
  *
@@ -287,6 +293,9 @@ int uct_pcie_ep_is_connected(
     return ep->is_connected;
 }
 
+/******************************************************************************/
+/*** Iface lifecycle **********************************************************/
+
 static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
     .iface_estimate_perf   = uct_base_iface_estimate_perf,
     .iface_vfs_refresh     = (uct_iface_vfs_refresh_func_t)ucs_empty_function,
@@ -298,12 +307,13 @@ static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
 };
 
 /**
- * @brief Construct a new ucs class init func object
- * 
- * @param md 
- * @param worker 
- * @param params 
- * @param tl_config 
+ * @brief Construct a PCIE interface and set up all SISCI resources.
+ *
+ * Creates the receive and control segments, initializes the connection
+ * descriptor table, sets up the DMA engine (reserved for future use), and
+ * installs the connection interrupt that accepts incoming EP connections.
+ *
+ * self is a uct_pcie_iface_t * — injected by the UCS_CLASS_INIT_FUNC macro.
  */
 static UCS_CLASS_INIT_FUNC(
     uct_pcie_iface_t,
@@ -319,17 +329,17 @@ static UCS_CLASS_INIT_FUNC(
     ssize_t i = 0;
     sci_error_t sci_error;
     unsigned dma_seg_id;
-    sci_cb_data_interrupt_t callback = uct_pcie_conn_handler;
-    uct_pcie_iface_config_t* config = ucs_derived_of(tl_config, uct_pcie_iface_config_t); 
-    uct_pcie_md_t * sci_md = ucs_derived_of(md, uct_pcie_md_t);
+    uct_pcie_iface_config_t* config = ucs_derived_of(tl_config, uct_pcie_iface_config_t);
+    uct_pcie_md_t* sci_md = ucs_derived_of(md, uct_pcie_md_t);
 
     size_t packet_queue_size_bytes;
     size_t recv_segment_size;
     size_t control_segment_size;
 
+    /* --- Validate open parameters --- */
     UCT_CHECK_PARAM(params->field_mask & UCT_IFACE_PARAM_FIELD_OPEN_MODE,
                     "UCT_IFACE_PARAM_FIELD_OPEN_MODE is not defined");
-    
+
     if (!(params->open_mode & UCT_IFACE_OPEN_MODE_DEVICE)) {
         ucs_error("only UCT_IFACE_OPEN_MODE_DEVICE is supported");
         return UCS_ERR_UNSUPPORTED;
@@ -340,13 +350,14 @@ static UCS_CLASS_INIT_FUNC(
         return UCS_ERR_INVALID_PARAM;
     }
 
+    /* --- Initialize synchronization primitives --- */
     if (pthread_mutex_init(&self->lock, NULL) != 0) {
         ucs_error("pthread_mutex_init failed");
         goto err;
     }
 
-    /* Arbiter for ep_pending_add/ep_pending_purge. Must be initialised before
-     * any EP can be created, since EPs schedule their groups here. */
+    /* Arbiter must be ready before any EP is created, since EPs schedule
+     * their pending groups here. */
     ucs_arbiter_init(&self->arbiter);
 
     UCS_CLASS_CALL_SUPER_INIT(
@@ -356,38 +367,38 @@ static UCS_CLASS_INIT_FUNC(
                     (params->field_mask & UCT_IFACE_PARAM_FIELD_STATS_ROOT) ?
                             params->stats_root :
                             NULL) UCS_STATS_ARG(UCT_PCIE_NAME));
-    
 
-
+    /* --- Query local SISCI node ID --- */
     SCIGetLocalNodeId(adapterID, &nodeID, flags, &sci_error);
-    if (sci_error != SCI_ERR_OK) { 
-        ucs_error("SCI_IFACE_INIT: %s", SCIGetErrorString(sci_error));
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIGetLocalNodeId: %s", SCIGetErrorString(sci_error));
         goto err_destroy_mutex;
     }
 
-    /* uct_pcie_iface_t *self */
+    /* uct_pcie_iface_t *self — store configuration */
     self->device_addr = nodeID;
     self->packet_size_bytes = config->packet_size_bytes;
-    self->eps_init_cnt = 0;
+    self->packet_queue_len = config->packet_queue_len;
     self->max_eps = MIN(UCT_PCIE_MAX_EPS, config->max_eps);
+    self->eps_init_cnt = 0;
     self->connections = 0;
-    self->packet_queue_len  = config->packet_queue_len;
 
+    /* --- Open SISCI virtual devices --- */
     SCIOpen(&self->vdev_ep, 0, &sci_error);
-    if (sci_error != SCI_ERR_OK) { 
-        ucs_error("SCIOpen: %s", SCIGetErrorString(sci_error));
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIOpen (vdev_ep): %s", SCIGetErrorString(sci_error));
         goto err_destroy_mutex;
     }
 
     SCIOpen(&self->vdev_ctl, 0, &sci_error);
-    if (sci_error != SCI_ERR_OK) { 
-        ucs_error("SCIOpen: %s", SCIGetErrorString(sci_error));
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIOpen (vdev_ctl): %s", SCIGetErrorString(sci_error));
         goto err_free_vdev_ep;
-    }     
+    }
 
     packet_queue_size_bytes = self->packet_size_bytes * self->packet_queue_len;
 
-    /*  recv segment    */
+    /* --- Receive segment: remote EPs write AM packets into this --- */
     recv_segment_size = self->max_eps * packet_queue_size_bytes;
     ret = uct_pcie_helper_create_seg_set_avail(
         sci_md->sci_virtual_device,
@@ -395,13 +406,13 @@ static UCS_CLASS_INIT_FUNC(
         &self->local_map,
         recv_segment_size,
         &self->segment_id,
-        (void**)&self->recv_buffer);
+        (void **)&self->recv_buffer);
     if (ret != 0) {
         ucs_error("Failed to set up receive segment");
         goto err_free_vdev_ctl;
     }
 
-    /* ctl segment */
+    /* --- Control segment: remote ifaces write ack counters into this --- */
     control_segment_size = sizeof(uct_pcie_ctl_t) * self->max_eps;
     ret = uct_pcie_helper_create_seg_set_avail(
         sci_md->sci_virtual_device,
@@ -409,15 +420,16 @@ static UCS_CLASS_INIT_FUNC(
         &self->ctl_segment_map,
         control_segment_size,
         &self->ctl_segment_id,
-        (void**)&self->ctls);
+        (void **)&self->ctls);
     if (ret != 0) {
-        ucs_error("Failed to set up receive segment");
+        ucs_error("Failed to set up control segment");
         goto err_remove_recv_seg;
     }
 
-    for(i = 0; i < self->max_eps; i++) {
+    /* Pre-assign each connection descriptor its slice of the receive segment */
+    for (i = 0; i < self->max_eps; i++) {
         self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
-        self->sci_cds[i].ep_conn_offset = i * packet_queue_size_bytes; 
+        self->sci_cds[i].ep_conn_offset = i * packet_queue_size_bytes;
         self->sci_cds[i].packet_queue_buf =
             &self->recv_buffer[self->sci_cds[i].ep_conn_offset];
         self->sci_cds[i].ep_conn_last_ack = 0;
@@ -437,7 +449,7 @@ static UCS_CLASS_INIT_FUNC(
         &dma_seg_id,
         &self->dma_buffer);
     if (ret != 0) {
-        ucs_error("Failed to set up receive segment");
+        ucs_error("Failed to set up DMA staging segment");
         goto err_remove_ctl_seg;
     }
 
@@ -448,35 +460,25 @@ static UCS_CLASS_INIT_FUNC(
         10,
         UCT_PCIE_NO_FLAGS,
         &sci_error);
-    if(sci_error != SCI_ERR_OK) {
-        ucs_error("CreateDMAQueue: %s", SCIGetErrorString(sci_error));
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCICreateDMAQueue: %s", SCIGetErrorString(sci_error));
         goto err_remove_dma_seg;
-    } 
+    }
 
-    /* --- Initialize data interrupts for managing incoming connections --- */
+    /* --- Connection interrupt: entry point for incoming EP connections --- */
     SCICreateDataInterrupt(
         sci_md->sci_virtual_device,
         &self->interrupt,
         0,
-        &self->interrupt_no,  
-        callback,
+        &self->interrupt_no,
+        uct_pcie_conn_handler,
         self,
         SCI_FLAG_USE_CALLBACK,
         &sci_error);
-    if(sci_error != SCI_ERR_OK) {
+    if (sci_error != SCI_ERR_OK) {
         ucs_error("SCICreateDataInterrupt: %s", SCIGetErrorString(sci_error));
         goto err_remove_dma_queue;
     }
-
-    /*Need to find out how mpool works and how it is used by the underlying systems in ucx*/
-    /*status = uct_iface_param_am_alignment(params, self->packet_size_bytes, 0, 0,
-                                          &alignment, &align_offset);
-
-
-    if (status != UCS_OK) {
-        printf("failed to init sci mpool\n");
-        return status;
-    }*/
 
     ucs_debug("iface_addr: %d dev_addr: %d segment_size %zd\n",
         self->interrupt_no,
@@ -487,8 +489,8 @@ static UCS_CLASS_INIT_FUNC(
 
 err_remove_dma_queue:
     SCIRemoveDMAQueue(self->dma_queue, UCT_PCIE_NO_FLAGS, &sci_error);
-    if(sci_error != SCI_ERR_OK) {
-        printf("SCIRemoveDMAQueue failed: %s\n", SCIGetErrorString(sci_error));
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIRemoveDMAQueue: %s", SCIGetErrorString(sci_error));
     }
 err_remove_dma_seg:
     uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
@@ -508,28 +510,24 @@ err:
 
 
 /**
- * @brief Construct a new ucs class cleanup func object
- * 
+ * @brief Destroy a PCIE interface and release all SISCI resources.
+ *
+ * self is a uct_pcie_iface_t * — injected by the UCS_CLASS_CLEANUP_FUNC macro.
  */
-
 static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
 {
     sci_error_t sci_error;
-    
-    /* Cleanup for uct_pcie_iface_progress_enable */
+
     uct_base_iface_progress_disable(&self->super.super,
-                                    UCT_PROGRESS_SEND |
-                                    UCT_PROGRESS_RECV);
-    
-    /* Remove data interrupt used for connection handling. This was set up in
-     * init, but it makes sense to clean it up before disconnecting from
-     * segments. Since removing this data interrupt effectively stops any new
-     * connections from being set up. */
+                                    UCT_PROGRESS_SEND | UCT_PROGRESS_RECV);
+
+    /* Remove the connection interrupt first: this stops any new incoming
+     * connections before we start tearing down segments. */
     SCIRemoveDataInterrupt(self->interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
 
-    /* Remove connections set up by connection handler uct_pcie_conn_handler for
-     * any connections initiated by a remote endpoint */
-    for(ssize_t i = 0; i < self->connections; i++) {
+    /* Disconnect from every control segment that was connected during the
+     * handshake (one per active incoming connection). */
+    for (ssize_t i = 0; i < self->connections; i++) {
         if (self->sci_cds[i].cd_status == UCT_PCIE_CD_READY) {
             self->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
             uct_pcie_disconnect_segment(
@@ -538,26 +536,17 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
             self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
         }
     }
-    
-    /* ----  Remove other resources set up on init --- */
 
-    /* Clean up DMA related resources */
+    /* DMA engine */
     SCIRemoveDMAQueue(self->dma_queue, UCT_PCIE_NO_FLAGS, &sci_error);
-    if(sci_error != SCI_ERR_OK) {
+    if (sci_error != SCI_ERR_OK) {
         ucs_error("SCIRemoveDMAQueue: %s", SCIGetErrorString(sci_error));
     }
     uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
 
-
-    /* Remove data segment where iface receives packages from endpoint */
-    uct_pcie_helper_remove_seg_set_unavail(
-        self->local_segment,
-        self->local_map);
-
-    /* Remove control segment where iface sends acknowledgements */
-    uct_pcie_helper_remove_seg_set_unavail(
-        self->ctl_segment,
-        self->ctl_segment_map);
+    /* Receive and control segments */
+    uct_pcie_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
+    uct_pcie_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
 
     /* Closing device descriptors used for connections */
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
@@ -584,6 +573,9 @@ static UCS_CLASS_DEFINE_NEW_FUNC(
     const uct_iface_params_t*,
     const uct_iface_config_t*);
 
+
+/******************************************************************************/
+/*** Iface operations *********************************************************/
 
 /**
  * @brief Enumerate transport devices visible to this MD.
@@ -912,12 +904,13 @@ static uct_iface_ops_t uct_pcie_iface_ops = {
     .ep_am_bcopy              = uct_pcie_ep_am_bcopy,
     .ep_am_zcopy              = uct_pcie_ep_am_zcopy,
     
-    .ep_atomic_cswap64        = uct_pcie_ep_atomic_cswap64, /* Stubbed */
-    .ep_atomic64_post         = uct_pcie_ep_atomic64_post, /* Stubbed */
-    .ep_atomic64_fetch        = uct_pcie_ep_atomic64_fetch, /* Stubbed */
-    .ep_atomic_cswap32        = uct_pcie_ep_atomic_cswap32, /* Stubbed */
-    .ep_atomic32_post         = uct_pcie_ep_atomic32_post, /* Stubbed */
-    .ep_atomic32_fetch        = uct_pcie_ep_atomic32_fetch, /* Stubbed */
+    /* [NO_ATOMICS] Transport will not implement atomics. */
+    .ep_atomic_cswap64        = uct_pcie_ep_atomic_cswap64,
+    .ep_atomic64_post         = uct_pcie_ep_atomic64_post,
+    .ep_atomic64_fetch        = uct_pcie_ep_atomic64_fetch,
+    .ep_atomic_cswap32        = uct_pcie_ep_atomic_cswap32,
+    .ep_atomic32_post         = uct_pcie_ep_atomic32_post,
+    .ep_atomic32_fetch        = uct_pcie_ep_atomic32_fetch,
 
     .ep_flush                 = uct_base_ep_flush,
     .ep_fence                 = uct_base_ep_fence,

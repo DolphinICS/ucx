@@ -18,6 +18,9 @@ typedef struct uct_pcie_md_config {
     size_t          num_devices;
 } uct_pcie_md_config_t;
 
+/******************************************************************************/
+/*** MD operations ************************************************************/
+
 /**
  * @brief Close the memory domain and release all SISCI resources.
  *
@@ -142,6 +145,9 @@ static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
     return UCS_OK;
 }
 
+/******************************************************************************/
+/*** Rkey stubs ***************************************************************/
+
 /* [LIBPERF_RKEY_QUIRK] The three functions below are stubs. RMA is fully
  * supported by this transport, but segment identity is communicated through
  * iface_addr rather than through the rkey mechanism. See the comment on
@@ -170,6 +176,9 @@ static ucs_status_t uct_pcie_rkey_release(uct_component_t *component,
 {
     return UCS_OK;
 }
+
+/******************************************************************************/
+/*** MD open ******************************************************************/
 
 /**
  * @brief Open the SISCI PCIe memory domain.
