@@ -6,7 +6,7 @@
 #include <uct/base/uct_iface.h>
 #include <ucs/datastruct/arbiter.h>
 
-#include <sisci_error.h> //TODO
+#include <sisci_error.h>
 #include <sisci_api.h>
 
 #define UCT_PCIE_NAME "pcie"
@@ -132,7 +132,6 @@ typedef struct {
 } uct_pcie_iface_config_t;
 
 typedef struct {
-    /* UCT TCP AM header */
     uct_pcie_am_hdr_t              super;
     /* Local UCT completion object */
     uct_completion_t              *comp;
@@ -146,36 +145,51 @@ typedef struct {
 
 typedef struct {
     uct_base_iface_t            super;
-    /* Unique identifier for the instance */
-    unsigned int                segment_id;
-    /* Node ID */
+
+    /* Local SISCI node ID, obtained from SCIGetLocalNodeId at init time. */
     unsigned int                device_addr;
-    /* Maximum size for payload */
+
+    /* Per-slot byte size for the AM ring buffer. Each AM send occupies one
+     * slot; the slot holds a uct_pcie_am_hdr_t followed by the payload. */
     size_t                      packet_size_bytes;
+    /* Number of ring-buffer slots per endpoint connection. */
     uint32_t                    packet_queue_len;
+    /* Maximum number of simultaneously connected endpoints. */
     unsigned int                max_eps;
 
-    /* Messages memory pool */
-    //ucs_mpool_t                 msg_mp;
-    
+    /* Receive segment: the local SISCI segment that remote EPs write AM
+     * packets into. Divided into max_eps sub-regions, one per connection. */
     uint8_t*                    recv_buffer;
-    
-    sci_local_segment_t         local_segment; 
+    sci_local_segment_t         local_segment;
     sci_map_t                   local_map;
-    
+    /* SISCI segment ID of the receive segment, published in iface_addr so
+     * remote EPs can connect to it during the handshake. */
+    unsigned int                segment_id;
+
+    /* DMA engine — initialized at iface creation, reserved for future async
+     * put_zcopy / get operations. The staging segment gives SISCI a pinned
+     * local buffer; the queue serializes per-iface DMA requests. */
     sci_dma_queue_t             dma_queue;
     sci_local_segment_t         dma_segment;
     sci_map_t                   dma_map;
     void*                       dma_buffer;
 
-    uct_pcie_conn_desc_t         sci_cds[UCT_PCIE_MAX_EPS];
+    /* One descriptor per potential incoming connection, allocated round-robin
+     * by the connection handler. */
+    uct_pcie_conn_desc_t        sci_cds[UCT_PCIE_MAX_EPS];
 
-    sci_local_data_interrupt_t  interrupt; 
+    /* Data interrupt that receives incoming connection requests. The interrupt
+     * number is published in iface_addr so remote EPs know where to send them. */
+    sci_local_data_interrupt_t  interrupt;
     unsigned int                interrupt_no;
 
+    /* Separate SISCI virtual devices for EP-side and ctl-side segment
+     * operations, keeping their SISCI descriptor namespaces independent. */
     sci_desc_t                  vdev_ep;
     sci_desc_t                  vdev_ctl;
-    
+
+    /* Protects connections count and sci_cds slot allocation in the
+     * connection handler, which runs on SISCI's interrupt thread. */
     pthread_mutex_t             lock;
 
     /* Arbiter for pending send requests. When an AM send returns
@@ -183,15 +197,18 @@ typedef struct {
      * the request here. uct_pcie_iface_progress drains it each tick. */
     ucs_arbiter_t               arbiter;
 
+    /* Monotonically increasing count of EPs ever created on this iface.
+     * Used to assign each new EP a unique ep_conn_index. */
     unsigned int                eps_init_cnt;
+    /* Number of currently active incoming connections. */
     volatile unsigned int       connections;
-    
-    /* ctl segment. Used to send signals from iface to endpoint. Currently the
-     * only such signal to go in that direction is the ack counter*/
+
+    /* Control segment: a local segment that remote EPs map and write
+     * acknowledgement counters into. One uct_pcie_ctl_t slot per EP. */
     unsigned int                ctl_segment_id;
     sci_local_segment_t         ctl_segment;
     sci_map_t                   ctl_segment_map;
-    uct_pcie_ctl_t*              ctls;
+    uct_pcie_ctl_t*             ctls;
 } uct_pcie_iface_t;
 
 

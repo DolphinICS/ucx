@@ -18,6 +18,14 @@ typedef struct uct_pcie_md_config {
     size_t          num_devices;
 } uct_pcie_md_config_t;
 
+/**
+ * @brief Close the memory domain and release all SISCI resources.
+ *
+ * Sets the shared RMA segment unavailable, removes it, then closes the SISCI
+ * virtual device opened at md_open time.
+ *
+ * @param[in] md  Memory domain handle.
+ */
 static void uct_pcie_md_close(uct_md_h md) {
     uct_pcie_md_t *sci_md = ucs_derived_of(md, uct_pcie_md_t);
     sci_error_t sci_error;
@@ -32,6 +40,17 @@ static void uct_pcie_md_close(uct_md_h md) {
     }
 }
 
+/**
+ * @brief Report memory domain capabilities to UCX.
+ *
+ * Allocation from the shared SISCI RMA segment is supported; memory
+ * registration is not (see mem_reg comment in the vtable). rkey_packed_size
+ * is 0 because segment identity is communicated through iface_addr at EP
+ * creation time, not through rkeys.
+ *
+ * @param[in]  md    Memory domain handle.
+ * @param[out] attr  Attribute structure to populate.
+ */
 static ucs_status_t uct_pcie_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
 {
     /* No rkey needed: put/get targets are identified via iface_addr (shared
@@ -49,11 +68,22 @@ static ucs_status_t uct_pcie_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
     return UCS_OK;
 }
 
-/*
- * mem_alloc: bump-allocate from the MD's shared segment.
- * The segment is pre-created and set available at md_open time.  Remote EPs
- * connect to it during EP handshake using the segment ID and base_va published
- * in uct_pcie_iface_addr_t, so no rkey is needed to perform puts.
+/**
+ * @brief Bump-allocate from the MD's pre-created shared SISCI segment.
+ *
+ * The segment is created and made available at md_open time. Remote EPs
+ * connect to it during the handshake using the segment ID and base VA
+ * published in uct_pcie_iface_addr_t, so no rkey is needed for put/get.
+ * Allocations are aligned to 64-byte cache lines to keep concurrent
+ * allocations independent.
+ *
+ * @param[in]     uct_md     Memory domain handle.
+ * @param[in,out] length_p   Requested size; updated to the aligned allocation size.
+ * @param[out]    address_p  Set to the allocated buffer address on success.
+ * @param[in]     mem_type   Must be UCS_MEMORY_TYPE_HOST.
+ * @param[in]     flags      Allocation flags (unused).
+ * @param[in]     alloc_name Debug name for the allocation (unused).
+ * @param[out]    memh_p     Set to a uct_pcie_mem_handle_t on success.
  */
 static ucs_status_t uct_pcie_mem_alloc(
     uct_md_h uct_md,
@@ -95,6 +125,16 @@ static ucs_status_t uct_pcie_mem_alloc(
     return UCS_OK;
 }
 
+/**
+ * @brief Release a memory handle allocated by uct_pcie_mem_alloc.
+ *
+ * Only the uct_pcie_mem_handle_t wrapper is freed here. The underlying shared
+ * segment is not reclaimed; it persists until the MD closes and is removed as
+ * a whole in uct_pcie_md_close.
+ *
+ * @param[in] md    Memory domain handle (unused).
+ * @param[in] memh  Handle returned by uct_pcie_mem_alloc.
+ */
 static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
 {
     /* The shared segment persists until md_close; only the handle is freed. */
@@ -131,6 +171,21 @@ static ucs_status_t uct_pcie_rkey_release(uct_component_t *component,
     return UCS_OK;
 }
 
+/**
+ * @brief Open the SISCI PCIe memory domain.
+ *
+ * Opens a SISCI virtual device and pre-allocates the shared RMA segment that
+ * all subsequent mem_alloc calls draw from. The segment is made available
+ * immediately so that remote EPs can connect to it during the handshake
+ * without any additional setup step.
+ *
+ * The MD is a static singleton — there is at most one PCIE MD per process.
+ *
+ * @param[in]  component  UCX component handle.
+ * @param[in]  md_name    Device name (ignored; always "pcie").
+ * @param[in]  config     MD configuration table.
+ * @param[out] md_p       Set to the opened MD on success.
+ */
 static ucs_status_t uct_pcie_md_open(
     uct_component_t *component,
     const char *md_name,

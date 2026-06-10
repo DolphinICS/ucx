@@ -218,17 +218,22 @@ static sci_callback_action_t uct_pcie_conn_handler(
     return SCI_CALLBACK_CONTINUE;
 }
 
-/*
- * Called by UCX before creating an EP to decide whether it is worth attempting
- * a connection to a remote iface. The question is not "is the connection
- * guaranteed to succeed?" but rather "is there any reason to believe it might?"
- * Returning 1 is therefore not a promise — it is permission to try. If the
- * attempt fails, EP creation returns an error in the normal way.
+/**
+ * @brief Probe whether a remote SISCI node is reachable via the PCIe fabric.
  *
- * When a device address is supplied we probe the remote SISCI node directly
- * with SCIProbeNode, which checks whether the node is reachable across the
- * PCIe fabric. Without an address there is nothing to probe, so we return 1
- * and let the connection attempt determine reachability on its own.
+ * Called by UCX before creating an EP to decide whether a connection attempt
+ * is worth making. When a device address is supplied, calls SCIProbeNode to
+ * check whether the node is visible across the PCIe fabric. Without an
+ * address there is nothing to probe, so the function returns 1 and lets the
+ * connection attempt determine reachability on its own.
+ *
+ * Returning 1 is not a promise — it is permission to try. If the attempt
+ * fails, EP creation returns an error in the normal way.
+ *
+ * @param[in] tl_iface  Local interface handle.
+ * @param[in] params    Query parameters; may carry a device address and an
+ *                      info_string buffer for a human-readable failure reason.
+ * @return 1 if the remote node is (likely) reachable, 0 otherwise.
  */
 static int
 uct_pcie_iface_is_reachable_v2(
@@ -263,6 +268,17 @@ uct_pcie_iface_is_reachable_v2(
     return reachable;
 }
 
+/**
+ * @brief Report whether the endpoint's remote peer is still connected.
+ *
+ * Reads the volatile is_connected flag maintained by the SISCI disconnect
+ * callback (uct_pcie_ep_remote_segment_cb). The flag is set to 1 after EP
+ * creation and drops to 0 when the remote segment disappears.
+ *
+ * @param[in] tl_ep  Endpoint handle.
+ * @param[in] params Query parameters (field_mask is not used here).
+ * @return 1 if still connected, 0 if the remote peer has disconnected.
+ */
 int uct_pcie_ep_is_connected(
     const uct_ep_h tl_ep,
     const uct_ep_is_connected_params_t *params)
@@ -325,7 +341,7 @@ static UCS_CLASS_INIT_FUNC(
     }
 
     if (pthread_mutex_init(&self->lock, NULL) != 0) {
-        printf("\n mutex init failed\n");
+        ucs_error("pthread_mutex_init failed");
         goto err;
     }
 
@@ -343,7 +359,6 @@ static UCS_CLASS_INIT_FUNC(
     
 
 
-    //---------- IFACE sci --------------------------
     SCIGetLocalNodeId(adapterID, &nodeID, flags, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         ucs_error("SCI_IFACE_INIT: %s", SCIGetErrorString(sci_error));
@@ -409,7 +424,11 @@ static UCS_CLASS_INIT_FUNC(
         self->ctls[i].ep_conn_ack = 0;
     }
 
-    /* --- Initialize DMA related resources --- */
+    /* --- DMA engine (reserved for future async put_zcopy / get) ---
+     * The staging segment provides SISCI with a pinned local buffer to use as
+     * the DMA source or destination. The DMA queue serializes transfer requests
+     * per iface. Both are created now and torn down in the iface destructor,
+     * but remain idle until a DMA code path is wired in. */
     ret = uct_pcie_helper_create_segment(
         sci_md->sci_virtual_device,
         &self->dma_segment,
@@ -566,6 +585,17 @@ static UCS_CLASS_DEFINE_NEW_FUNC(
     const uct_iface_config_t*);
 
 
+/**
+ * @brief Enumerate transport devices visible to this MD.
+ *
+ * This transport exposes a single virtual device named "pcie" that represents
+ * the local SISCI adapter. All remote nodes are reached through it using their
+ * SISCI node IDs; there is no per-node device entry.
+ *
+ * @param[in]  md            Memory domain handle.
+ * @param[out] devices_p     Allocated array of device descriptors (caller frees).
+ * @param[out] num_devices_p Number of entries written.
+ */
 static ucs_status_t uct_pcie_query_devices(
     uct_md_h md,
     uct_tl_device_resource_t **devices_p,
@@ -584,11 +614,19 @@ static ucs_status_t uct_pcie_query_devices(
     return status; 
 }
 
-/* v1 of the reachability API — kept because the vtable slot must be filled.
- * UCX provides uct_base_iface_is_reachable as a bridge that packages the
- * legacy (dev_addr, iface_addr) arguments into a params struct and forwards
- * the call to iface_is_reachable_v2 above. There is therefore no separate v1
- * logic to maintain; all actual reachability checking lives in v2. */
+/**
+ * @brief UCT v1 reachability bridge.
+ *
+ * The v1 signature (dev_addr, iface_addr) is required by the iface_ops vtable.
+ * uct_base_iface_is_reachable packs those arguments into a params struct and
+ * forwards to uct_pcie_iface_is_reachable_v2. All reachability logic lives
+ * there; nothing needs to be maintained here.
+ *
+ * @param[in] tl_iface   Local interface handle.
+ * @param[in] dev_addr   Remote device address (forwarded to v2).
+ * @param[in] iface_addr Remote interface address (forwarded to v2; unused).
+ * @return 1 if reachable, 0 otherwise.
+ */
 static int uct_pcie_iface_is_reachable(
     const uct_iface_h tl_iface,
     const uct_device_addr_t *dev_addr,
@@ -597,6 +635,16 @@ static int uct_pcie_iface_is_reachable(
     return uct_base_iface_is_reachable(tl_iface, dev_addr, iface_addr);
 }
 
+/**
+ * @brief Write the local SISCI node ID into a device address buffer.
+ *
+ * The device address is used by remote nodes to identify this machine on the
+ * PCIe fabric. It is a single uint32_t node ID obtained from SCIGetLocalNodeId
+ * during iface init.
+ *
+ * @param[in]  iface  Interface handle.
+ * @param[out] addr   Device address buffer (sizeof(uct_pcie_device_addr_t)).
+ */
 ucs_status_t uct_pcie_get_device_address(
     uct_iface_h iface,
     uct_device_addr_t *addr)
@@ -611,8 +659,18 @@ ucs_status_t uct_pcie_get_device_address(
 
 
 /**
- * @brief returns the ID used for the connection interrupt
- *  
+ * @brief Fill in the interface address exported to connecting endpoints.
+ *
+ * The interface address carries three fields that a remote EP needs at
+ * creation time:
+ *   - interrupt_no:   data interrupt number to send connection requests to.
+ *   - rma_seg_id:     SISCI segment ID of this node's shared RMA segment.
+ *   - rma_local_base: local VA of the RMA segment on this node (used to
+ *                     decode remote_addr in put/get calls; see
+ *                     [LIBPERF_RKEY_QUIRK] in pcie_iface.h).
+ *
+ * @param[in]  tl_iface  Interface handle.
+ * @param[out] addr       Interface address buffer (sizeof(uct_pcie_iface_addr_t)).
  */
 ucs_status_t uct_pcie_iface_get_address(
     uct_iface_h tl_iface,
@@ -630,6 +688,16 @@ ucs_status_t uct_pcie_iface_get_address(
 }
 
 
+/**
+ * @brief Enable progress callbacks for this interface.
+ *
+ * Forwards to uct_base_iface_progress_enable, which registers
+ * uct_pcie_iface_progress with the worker's progress engine so that
+ * incoming AM packets are processed and the pending send arbiter is dispatched.
+ *
+ * @param[in] iface  Interface handle.
+ * @param[in] flags  UCT_PROGRESS_SEND | UCT_PROGRESS_RECV or a subset.
+ */
 void uct_pcie_iface_progress_enable(uct_iface_h iface, unsigned flags) {
     uct_base_iface_progress_enable(iface, flags);
 }
@@ -749,6 +817,17 @@ unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
     return count;
 }
 
+/**
+ * @brief Report interface capabilities and performance parameters.
+ *
+ * Advertises AM and put operations in short, bcopy, and zcopy variants, plus
+ * get in all three variants via CPU reads through the PCIe MMIO window.
+ * Atomics are not advertised (see [NO_ATOMICS] in pcie_ep.c). Latency and
+ * bandwidth figures are conservative estimates for a PCIe 4.0 x16 link.
+ *
+ * @param[in]  tl_iface  Interface handle.
+ * @param[out] attr       Attribute structure to populate.
+ */
 static ucs_status_t uct_pcie_iface_query(
     uct_iface_h tl_iface,
     uct_iface_attr_t *attr)

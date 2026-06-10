@@ -7,11 +7,19 @@
 #include "pcie_md.h"
 
 /**
- * @brief 
- * @param[in] iface 
- * @param[in] node_id 
- * @param[in] remote_interrupt_no 
- * @return 
+ * @brief Fire a connection request data interrupt at a remote iface.
+ *
+ * Connects to the remote iface's data interrupt (identified by
+ * remote_interrupt_no on node_id), triggers it with the prepared request
+ * struct, then disconnects. The payload tells the remote iface which local
+ * node is connecting, which ctl segment to connect back to, and which reply
+ * interrupt to use for the answer.
+ *
+ * @param[in] request              Populated connection request to send.
+ * @param[in] node_id              SISCI node ID of the target iface.
+ * @param[in] remote_interrupt_no  Interrupt number exported by the target iface.
+ * @param[in] sci_virtual_device   Local SISCI descriptor to use for the trigger.
+ * @return UCS_OK on success, UCS_ERR_NO_RESOURCE if the trigger failed.
  */
 static ucs_status_t uct_pcie_ep_send_conn_request(
     uct_pcie_conn_req_t *request,
@@ -57,12 +65,20 @@ static ucs_status_t uct_pcie_ep_send_conn_request(
 }
 
 /**
- * @brief 
- * @param[in] request 
- * @param[in] node_id 
- * @param[in] remote_interrupt_no 
- * @param[in] sci_virtual_device 
- * @param[out] answer 
+ * @brief Perform the full connection request/response handshake.
+ *
+ * Creates a local reply interrupt so the remote iface knows where to send
+ * the answer, fires the connection request via uct_pcie_ep_send_conn_request,
+ * then blocks on the reply interrupt until the answer arrives. The answer
+ * carries the remote segment ID and the offset within it that this EP owns.
+ *
+ * @param[in]  request              Connection request (node_id, ctl_segment_id,
+ *                                  ep_conn_index, and reply interrupt filled in).
+ * @param[in]  node_id              SISCI node ID of the target iface.
+ * @param[in]  remote_interrupt_no  Connection interrupt number of the target iface.
+ * @param[in]  sci_virtual_device   Local SISCI descriptor.
+ * @param[out] answer               Filled with segment_id and ep_conn_offset on success.
+ * @return UCS_OK on success, UCS_ERR_NO_RESOURCE on any SISCI failure.
  */
 static ucs_status_t uct_pcie_ep_send_recv_conn_request(
     uct_pcie_conn_req_t request,
@@ -308,6 +324,19 @@ UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
  * [LIBPERF_RKEY_QUIRK] in uct_pcie_iface_addr_t for why rma_local_base exists.
  */
 
+/**
+ * @brief Write a small buffer directly into the remote SISCI segment (PIO).
+ *
+ * Copies up to UCT_PCIE_MAX_PUT_SHORT bytes into the PCIe MMIO window that
+ * maps the remote node's shared segment, then flushes the CPU write buffers.
+ * See [UCT_REMOTE_ADDR] for how remote_addr is decoded.
+ *
+ * @param[in] tl_ep       Endpoint handle.
+ * @param[in] buffer      Source buffer.
+ * @param[in] length      Number of bytes to write (≤ UCT_PCIE_MAX_PUT_SHORT).
+ * @param[in] remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in] rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ */
 ucs_status_t uct_pcie_ep_put_short(
     uct_ep_h tl_ep,
     const void *buffer,
@@ -329,6 +358,20 @@ ucs_status_t uct_pcie_ep_put_short(
     return UCS_OK;
 }
 
+/**
+ * @brief Pack and write data into the remote SISCI segment via a callback (PIO).
+ *
+ * Invokes pack_cb to write the payload directly into the PCIe MMIO window at
+ * the computed segment offset, avoiding an intermediate staging buffer.
+ * Flushes CPU write buffers after the pack callback returns.
+ *
+ * @param[in] tl_ep       Endpoint handle.
+ * @param[in] pack_cb     Callback that writes the payload into the destination.
+ * @param[in] arg         Opaque argument forwarded to pack_cb.
+ * @param[in] remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in] rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ * @return Bytes written (≥ 0) on success, negative error code on failure.
+ */
 ssize_t uct_pcie_ep_put_bcopy(
     uct_ep_h tl_ep,
     uct_pack_callback_t pack_cb,
@@ -351,6 +394,19 @@ ssize_t uct_pcie_ep_put_bcopy(
 
 /* //!SECTION Put / Get (one-sided) */
 
+/**
+ * @brief Read a small region from the remote SISCI segment into a local buffer.
+ *
+ * Copies up to UCT_PCIE_MAX_PUT_SHORT bytes from the PCIe MMIO window (which
+ * maps the remote node's shared segment) into the caller's buffer. The read
+ * is a synchronous CPU load through the PCIe fabric.
+ *
+ * @param[in]  tl_ep       Endpoint handle.
+ * @param[out] buffer      Destination buffer.
+ * @param[in]  length      Number of bytes to read (≤ UCT_PCIE_MAX_PUT_SHORT).
+ * @param[in]  remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in]  rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ */
 ucs_status_t uct_pcie_ep_get_short(
     uct_ep_h tl_ep,
     void *buffer,
@@ -369,6 +425,24 @@ ucs_status_t uct_pcie_ep_get_short(
     return UCS_OK;
 }
 
+/**
+ * @brief Gather-write an iov array into the remote SISCI segment (PIO).
+ *
+ * Copies each iov buffer in order into the PCIe MMIO window at the computed
+ * segment offset using uct_iov_to_buffer, then flushes CPU write buffers.
+ * Completes synchronously and returns UCS_OK; comp is not invoked (see
+ * put_zcopy comment about UCX zcopy completion semantics).
+ *
+ * When a DMA path is added, this function will post a DMA transfer and return
+ * UCS_INPROGRESS, at which point comp will be invoked from iface_progress.
+ *
+ * @param[in] tl_ep       Endpoint handle.
+ * @param[in] iov         Scatter-gather source buffers.
+ * @param[in] iovcnt      Number of iov entries.
+ * @param[in] remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in] rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ * @param[in] comp        Completion handle (not invoked for synchronous UCS_OK).
+ */
 ucs_status_t uct_pcie_ep_put_zcopy(
     uct_ep_h tl_ep,
     const uct_iov_t *iov,
@@ -398,6 +472,21 @@ ucs_status_t uct_pcie_ep_put_zcopy(
     return UCS_OK;
 }
 
+/**
+ * @brief Read from the remote SISCI segment and scatter into an iov array.
+ *
+ * Copies length bytes from the PCIe MMIO window into each iov buffer in order.
+ * Completes synchronously; comp is not invoked (see put_zcopy for the UCX
+ * zcopy completion convention). When a DMA path is added this function will
+ * return UCS_INPROGRESS and invoke comp from iface_progress.
+ *
+ * @param[in]  tl_ep       Endpoint handle.
+ * @param[out] iov         Scatter-gather destination buffers.
+ * @param[in]  iovcnt      Number of iov entries.
+ * @param[in]  remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in]  rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ * @param[in]  comp        Completion handle (not invoked for synchronous UCS_OK).
+ */
 ucs_status_t uct_pcie_ep_get_zcopy(
     uct_ep_h tl_ep,
     const uct_iov_t *iov,
