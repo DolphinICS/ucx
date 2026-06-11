@@ -36,7 +36,7 @@ static void uct_pcie_md_close(uct_md_h md) {
     uct_pcie_helper_remove_seg_set_unavail(sci_md->rma_seg,
                                            sci_md->rma_seg_map);
 
-    SCIClose(sci_md->sci_virtual_device, 0, &sci_error);
+    SCIClose(sci_md->sci_virtual_device, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_error("Error closing Virtual_Device error: %s",
             SCIGetErrorString(sci_error));
@@ -227,7 +227,7 @@ static ucs_status_t uct_pcie_md_open(
     sci_error_t errors;
     int ret;
 
-    SCIOpen(&md.sci_virtual_device, 0, &errors);
+    SCIOpen(&md.sci_virtual_device, UCT_PCIE_NO_FLAGS, &errors);
     if (errors != SCI_ERR_OK) {
         ucs_error("SCIOpen: %s", SCIGetErrorString(errors));
         return UCS_ERR_NO_RESOURCE;

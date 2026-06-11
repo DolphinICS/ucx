@@ -132,10 +132,10 @@ static int uct_pcie_send_answer_to_request(
             sci_virtual_device,
             &ans_interrupt,
             request->node_id,
-            0,
+            UCT_PCIE_LOCAL_ADAPTER_NO,
             request->interrupt,
             1000,
-            0,
+            UCT_PCIE_NO_FLAGS,
             &sci_error);
     } while (sci_error != SCI_ERR_OK);
 
@@ -390,13 +390,13 @@ static UCS_CLASS_INIT_FUNC(
     self->connections = 0;
 
     /* --- Open SISCI virtual devices --- */
-    SCIOpen(&self->vdev_ep, 0, &sci_error);
+    SCIOpen(&self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_error("SCIOpen (vdev_ep): %s", SCIGetErrorString(sci_error));
         goto err_destroy_mutex;
     }
 
-    SCIOpen(&self->vdev_ctl, 0, &sci_error);
+    SCIOpen(&self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_error("SCIOpen (vdev_ctl): %s", SCIGetErrorString(sci_error));
         goto err_free_vdev_ep;
@@ -462,7 +462,7 @@ static UCS_CLASS_INIT_FUNC(
     SCICreateDMAQueue(
         sci_md->sci_virtual_device,
         &self->dma_queue,
-        0,
+        UCT_PCIE_LOCAL_ADAPTER_NO,
         10,
         UCT_PCIE_NO_FLAGS,
         &sci_error);
@@ -475,7 +475,7 @@ static UCS_CLASS_INIT_FUNC(
     SCICreateDataInterrupt(
         sci_md->sci_virtual_device,
         &self->interrupt,
-        0,
+        UCT_PCIE_LOCAL_ADAPTER_NO,
         &self->interrupt_no,
         uct_pcie_conn_handler,
         self,
@@ -965,7 +965,7 @@ UCT_TL_DEFINE(
 UCS_STATIC_INIT
 {
     sci_error_t sci_error;
-    SCIInitialize(0,&sci_error);
+    SCIInitialize(UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_error("SCIInitialize error: %s", SCIGetErrorString(sci_error));
     }
