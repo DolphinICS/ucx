@@ -14,7 +14,14 @@
 #define UCT_PCIE_LOCAL_ADAPTER_NO 0
 #define UCT_PCIE_NO_FLAGS 0
 #define UCT_PCIE_NO_CALLBACK 0
-#define UCT_PCIE_MAX_EPS 28
+/* Compile-time array size for SISCI connection slots (sci_cds[] in
+ * uct_pcie_iface_t). Must match the PCIE_MAX_EPS and MAX_NUM_EPS config
+ * defaults in uct_pcie_iface_config_table — change all three together.
+ *
+ * MAX_NUM_EPS is advisory: UCX upper layers use it for planning but the UCT
+ * framework does not gate ep_create calls against it. The transport refuses
+ * new connections when it runs out of sci_cds[] slots. */
+#define UCT_PCIE_MAX_EPS 24
 
 /* Maximum bytes for put_short. This threshold is arbitrary for a PIO
  * transport: put_short and put_bcopy both do a memcpy into the MMIO window,

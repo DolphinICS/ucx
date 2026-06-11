@@ -14,7 +14,11 @@
 static uct_iface_ops_t uct_pcie_iface_ops;
 
 static ucs_config_field_t uct_pcie_iface_config_table[] = {
-    {"", "MAX_NUM_EPS=16", NULL,
+    /* MAX_NUM_EPS overrides the UCX base iface config. Reported via
+     * iface_attr.max_num_eps; advisory only — the UCT framework does not gate
+     * ep_create calls against it. Keep in sync with PCIE_MAX_EPS below and
+     * UCT_PCIE_MAX_EPS in pcie_iface.h. */
+    {"", "MAX_NUM_EPS=24", NULL,
      ucs_offsetof(uct_pcie_iface_config_t, super),
      UCS_CONFIG_TYPE_TABLE(uct_iface_config_table)},
 
@@ -24,7 +28,9 @@ static ucs_config_field_t uct_pcie_iface_config_table[] = {
         UCS_CONFIG_TYPE_MEMUNITS},
 
     {
-        "MAX_EPS", "24", "Max EPs for SCI tl",
+        /* Runtime SISCI slot count. Must not exceed UCT_PCIE_MAX_EPS (the
+         * compile-time array bound). Keep in sync with MAX_NUM_EPS above. */
+        "MAX_EPS", "24", "Maximum number of simultaneous endpoint connections",
         ucs_offsetof(uct_pcie_iface_config_t, max_eps),
         UCS_CONFIG_TYPE_UINT
     },
