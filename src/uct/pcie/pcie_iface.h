@@ -81,32 +81,25 @@ typedef enum {
 } conn_desc_status_t;
 
 /*
- * Connection Descriptor,
- *  
- * Each incoming connection gets assigned a different section of the segment.
- * We are using one large segment, with a single map for this segment. So
- * each cd is given an offset into the global offset.
+ * Connection Descriptor.
+ *
+ * Each incoming connection gets its own dedicated receive segment, created
+ * in the connection handler. The cd owns the full lifecycle of that segment.
  */
 typedef struct {
     conn_desc_status_t      cd_status;
     int                     remote_node;
     uint64_t                ep_conn_last_ack;
-    
-    /* Data transfer (used to send the actual data) */
 
-    /* endpoint's offset into iface's segment
-     * ep_conn_offset = (iface's sci_cd index) * (packet_queue size in bytes)
-     * 
-     * for context, packet queue size in bytes
-     * is (self->packet_size_bytes * self->packet_queue_len)
-     */
-    uint32_t                ep_conn_offset;
-    
-    /* Buffer with circular buffer made to hold a queue of packets
-     * packet_queue_buf = iface receive buffer + ep_conn_offset
-     */
+    /* Per-connection receive segment: created when the connection is accepted,
+     * torn down when the iface is destroyed. */
+    sci_local_segment_t     recv_segment;
+    sci_map_t               recv_segment_map;
+    unsigned int            recv_segment_id;
+
+    /* Mapped base of recv_segment — the ring buffer the remote EP writes into. */
     uint8_t*                packet_queue_buf;
-    
+
     /* Control segment (used by iface to send signals to endpoints).
      * Currently, the only signals are ack messages */
     uint32_t                ctl_segment_id;
@@ -124,7 +117,6 @@ typedef struct {
 
 typedef struct {
     unsigned int segment_id;
-    unsigned int ep_conn_offset;
 } uct_pcie_conn_ans_t;
 
 typedef struct {
@@ -163,15 +155,6 @@ typedef struct {
     uint32_t                    packet_queue_len;
     /* Maximum number of simultaneously connected endpoints. */
     unsigned int                max_eps;
-
-    /* Receive segment: the local SISCI segment that remote EPs write AM
-     * packets into. Divided into max_eps sub-regions, one per connection. */
-    uint8_t*                    recv_buffer;
-    sci_local_segment_t         local_segment;
-    sci_map_t                   local_map;
-    /* SISCI segment ID of the receive segment, published in iface_addr so
-     * remote EPs can connect to it during the handshake. */
-    unsigned int                segment_id;
 
     /* DMA engine — initialized at iface creation, reserved for future async
      * put_zcopy / get operations. The staging segment gives SISCI a pinned

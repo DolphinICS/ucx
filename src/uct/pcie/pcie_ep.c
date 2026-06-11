@@ -77,7 +77,7 @@ static ucs_status_t uct_pcie_ep_send_conn_request(
  * @param[in]  node_id              SISCI node ID of the target iface.
  * @param[in]  remote_interrupt_no  Connection interrupt number of the target iface.
  * @param[in]  sci_virtual_device   Local SISCI descriptor.
- * @param[out] answer               Filled with segment_id and ep_conn_offset on success.
+ * @param[out] answer               Filled with segment_id on success.
  * @return UCS_OK on success, UCS_ERR_NO_RESOURCE on any SISCI failure.
  */
 static ucs_status_t uct_pcie_ep_send_recv_conn_request(
@@ -214,9 +214,8 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     }
 
     /* uct_pcie_ep_t *self — store handshake results */
-    self->remote_seg_id    = answer.segment_id;
-    self->ep_conn_offset   = answer.ep_conn_offset;
-    self->ep_conn_index    = ep_conn_index;
+    self->remote_seg_id   = answer.segment_id;
+    self->ep_conn_index   = ep_conn_index;
     self->ep_conn_seq_num  = 1;
     ucs_arbiter_group_init(&self->pending_q);
 
@@ -244,7 +243,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     /* --- Connect to the assigned window in the remote receive segment (AM sends) --- */
     ret = uct_pcie_connect_segment(
         iface->vdev_ep,
-        self->ep_conn_offset,
+        0,
         iface->packet_size_bytes * iface->packet_queue_len,
         self->remote_node_id,
         self->remote_seg_id,

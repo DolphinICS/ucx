@@ -139,8 +139,7 @@ static int uct_pcie_send_answer_to_request(
             &sci_error);
     } while (sci_error != SCI_ERR_OK);
 
-    answer.segment_id = iface->segment_id;
-    answer.ep_conn_offset     = sci_cd->ep_conn_offset;
+    answer.segment_id = sci_cd->recv_segment_id;
     
     SCITriggerDataInterrupt(
         ans_interrupt,
@@ -194,7 +193,21 @@ static sci_callback_action_t uct_pcie_conn_handler(
         return SCI_CALLBACK_CONTINUE;
     }
     sci_cd = &(iface->sci_cds[sci_cd_index]);
-    
+
+    /* Create a dedicated receive segment for this connection */
+    ret = uct_pcie_helper_create_seg_set_avail(
+        md->sci_virtual_device,
+        &sci_cd->recv_segment,
+        &sci_cd->recv_segment_map,
+        iface->packet_size_bytes * iface->packet_queue_len,
+        &sci_cd->recv_segment_id,
+        (void **)&sci_cd->packet_queue_buf);
+    if (ret != 0) {
+        ucs_error("Failed to create per-connection receive segment");
+        uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
+        return SCI_CALLBACK_CONTINUE;
+    }
+
     ret = uct_pcie_send_answer_to_request(
         iface,
         request,
@@ -202,6 +215,8 @@ static sci_callback_action_t uct_pcie_conn_handler(
         sci_cd);
     if (ret != 0) {
         ucs_error("Failed to send answer to connection request");
+        uct_pcie_helper_remove_seg_set_unavail(sci_cd->recv_segment,
+                                               sci_cd->recv_segment_map);
         uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
         return SCI_CALLBACK_CONTINUE;
     }
@@ -219,10 +234,12 @@ static sci_callback_action_t uct_pcie_conn_handler(
         NULL, NULL);
     if (ret != 0) {
         ucs_error("Failed to connect to remote control buffer");
+        uct_pcie_helper_remove_seg_set_unavail(sci_cd->recv_segment,
+                                               sci_cd->recv_segment_map);
         uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
         return SCI_CALLBACK_CONTINUE;
     }
-            
+
     sci_cd->cd_status = UCT_PCIE_CD_READY;
     return SCI_CALLBACK_CONTINUE;
 }
@@ -338,8 +355,6 @@ static UCS_CLASS_INIT_FUNC(
     uct_pcie_iface_config_t* config = ucs_derived_of(tl_config, uct_pcie_iface_config_t);
     uct_pcie_md_t* sci_md = ucs_derived_of(md, uct_pcie_md_t);
 
-    size_t packet_queue_size_bytes;
-    size_t recv_segment_size;
     size_t control_segment_size;
 
     /* --- Validate open parameters --- */
@@ -402,22 +417,6 @@ static UCS_CLASS_INIT_FUNC(
         goto err_free_vdev_ep;
     }
 
-    packet_queue_size_bytes = self->packet_size_bytes * self->packet_queue_len;
-
-    /* --- Receive segment: remote EPs write AM packets into this --- */
-    recv_segment_size = self->max_eps * packet_queue_size_bytes;
-    ret = uct_pcie_helper_create_seg_set_avail(
-        sci_md->sci_virtual_device,
-        &self->local_segment,
-        &self->local_map,
-        recv_segment_size,
-        &self->segment_id,
-        (void **)&self->recv_buffer);
-    if (ret != 0) {
-        ucs_error("Failed to set up receive segment");
-        goto err_free_vdev_ctl;
-    }
-
     /* --- Control segment: remote ifaces write ack counters into this --- */
     control_segment_size = sizeof(uct_pcie_ctl_t) * self->max_eps;
     ret = uct_pcie_helper_create_seg_set_avail(
@@ -429,17 +428,15 @@ static UCS_CLASS_INIT_FUNC(
         (void **)&self->ctls);
     if (ret != 0) {
         ucs_error("Failed to set up control segment");
-        goto err_remove_recv_seg;
+        goto err_free_vdev_ctl;
     }
 
-    /* Pre-assign each connection descriptor its slice of the receive segment */
+    /* Initialize connection descriptors; receive segments are created per-connection
+     * in uct_pcie_conn_handler when each connection is accepted. */
     for (i = 0; i < self->max_eps; i++) {
-        self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
-        self->sci_cds[i].ep_conn_offset = i * packet_queue_size_bytes;
-        self->sci_cds[i].packet_queue_buf =
-            &self->recv_buffer[self->sci_cds[i].ep_conn_offset];
+        self->sci_cds[i].cd_status        = UCT_PCIE_CD_AVAILABLE;
         self->sci_cds[i].ep_conn_last_ack = 0;
-        self->ctls[i].ep_conn_ack = 0;
+        self->ctls[i].ep_conn_ack         = 0;
     }
 
     /* --- DMA engine (reserved for future async put_zcopy / get) ---
@@ -502,8 +499,6 @@ err_remove_dma_seg:
     uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
 err_remove_ctl_seg:
     uct_pcie_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
-err_remove_recv_seg:
-    uct_pcie_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
 err_free_vdev_ctl:
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
 err_free_vdev_ep:
@@ -531,14 +526,17 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
      * connections before we start tearing down segments. */
     SCIRemoveDataInterrupt(self->interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
 
-    /* Disconnect from every control segment that was connected during the
-     * handshake (one per active incoming connection). */
+    /* Tear down every active incoming connection: disconnect from its control
+     * segment and remove its per-connection receive segment. */
     for (ssize_t i = 0; i < self->connections; i++) {
         if (self->sci_cds[i].cd_status == UCT_PCIE_CD_READY) {
             self->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
             uct_pcie_disconnect_segment(
                 self->sci_cds[i].ctl_segment,
                 self->sci_cds[i].ctl_segment_map);
+            uct_pcie_helper_remove_seg_set_unavail(
+                self->sci_cds[i].recv_segment,
+                self->sci_cds[i].recv_segment_map);
             self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
         }
     }
@@ -550,8 +548,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
     }
     uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
 
-    /* Receive and control segments */
-    uct_pcie_helper_remove_seg_set_unavail(self->local_segment, self->local_map);
+    /* Control segment */
     uct_pcie_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
 
     /* Closing device descriptors used for connections */
