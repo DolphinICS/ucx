@@ -6,40 +6,20 @@
 #include "pcie_sisci_helper.h"
 #include "pcie_md.h"
 
-/* Discard callback for use when purging the pending queue on EP teardown.
- * UCX's contract requires the user to call ep_pending_purge before destroying
- * an EP, so this should never actually fire. It is here purely as a safety net. */
-static ucs_arbiter_cb_result_t
-uct_pcie_ep_pending_discard_cb(ucs_arbiter_t *arbiter, ucs_arbiter_group_t *group,
-                               ucs_arbiter_elem_t *elem, void *arg)
-{
-    ucs_warn("pcie EP destroyed with pending request still queued");
-    return UCS_ARBITER_CB_RESULT_REMOVE_ELEM;
-}
-
-static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
-{
-    uct_pcie_iface_t *iface = ucs_derived_of(self->super.super.iface, uct_pcie_iface_t);
-
-    /* UCX guarantees ep_pending_purge is called before ep_destroy, so the
-     * group should already be empty here. Drain defensively just in case. */
-    ucs_arbiter_group_purge(&iface->arbiter, &self->pending_q,
-                            uct_pcie_ep_pending_discard_cb, NULL);
-
-    self->remote_seg_buf = NULL;
-    uct_pcie_disconnect_segment(self->remote_segment, self->remote_seg_map);
-    ucs_debug("ep deleted segment_id %d node_id %d\n",
-        self->remote_seg_id,
-        self->remote_node_id);
-}
-
-
 /**
- * @brief 
- * @param[in] iface 
- * @param[in] node_id 
- * @param[in] remote_interrupt_no 
- * @return 
+ * @brief Fire a connection request data interrupt at a remote iface.
+ *
+ * Connects to the remote iface's data interrupt (identified by
+ * remote_interrupt_no on node_id), triggers it with the prepared request
+ * struct, then disconnects. The payload tells the remote iface which local
+ * node is connecting, which ctl segment to connect back to, and which reply
+ * interrupt to use for the answer.
+ *
+ * @param[in] request              Populated connection request to send.
+ * @param[in] node_id              SISCI node ID of the target iface.
+ * @param[in] remote_interrupt_no  Interrupt number exported by the target iface.
+ * @param[in] sci_virtual_device   Local SISCI descriptor to use for the trigger.
+ * @return UCS_OK on success, UCS_ERR_NO_RESOURCE if the trigger failed.
  */
 static ucs_status_t uct_pcie_ep_send_conn_request(
     uct_pcie_conn_req_t *request,
@@ -85,12 +65,20 @@ static ucs_status_t uct_pcie_ep_send_conn_request(
 }
 
 /**
- * @brief 
- * @param[in] request 
- * @param[in] node_id 
- * @param[in] remote_interrupt_no 
- * @param[in] sci_virtual_device 
- * @param[out] answer 
+ * @brief Perform the full connection request/response handshake.
+ *
+ * Creates a local reply interrupt so the remote iface knows where to send
+ * the answer, fires the connection request via uct_pcie_ep_send_conn_request,
+ * then blocks on the reply interrupt until the answer arrives. The answer
+ * carries the remote segment ID and the offset within it that this EP owns.
+ *
+ * @param[in]  request              Connection request (node_id, ctl_segment_id,
+ *                                  ep_conn_index, and reply interrupt filled in).
+ * @param[in]  node_id              SISCI node ID of the target iface.
+ * @param[in]  remote_interrupt_no  Connection interrupt number of the target iface.
+ * @param[in]  sci_virtual_device   Local SISCI descriptor.
+ * @param[out] answer               Filled with segment_id on success.
+ * @return UCS_OK on success, UCS_ERR_NO_RESOURCE on any SISCI failure.
  */
 static ucs_status_t uct_pcie_ep_send_recv_conn_request(
     uct_pcie_conn_req_t request,
@@ -154,84 +142,168 @@ static ucs_status_t uct_pcie_ep_send_recv_conn_request(
     return ucs_ret;
 }
 
+/* Fires from SISCI's interrupt thread when the remote segment changes state.
+ * We only care about disconnect: the remote side has gone away and the EP is
+ * no longer usable. All other reasons are ignored. */
+static sci_callback_action_t
+uct_pcie_ep_remote_segment_cb(void *arg,
+                               sci_remote_segment_t segment,
+                               sci_segment_cb_reason_t reason,
+                               sci_error_t status)
+{
+    uct_pcie_ep_t *ep = (uct_pcie_ep_t *)arg;
+    if (reason == SCI_CB_DISCONNECT) {
+        ep->is_connected = 0;
+    }
+    return SCI_CALLBACK_CONTINUE;
+}
+
+/**
+ * @brief Construct a PCIE endpoint and complete the connection handshake.
+ *
+ * Allocates a slot in the local control segment, performs the SISCI handshake
+ * with the remote iface to obtain a ring-buffer offset, then connects to both
+ * the remote iface's shared RMA segment (for put/get) and the remote iface's
+ * receive segment at the assigned offset (for AM sends).
+ *
+ * self is a uct_pcie_ep_t *   - injected by the UCS_CLASS_INIT_FUNC macro.
+ */
 static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
 {
-    ucs_status_t ucs_ret;
-    
-    uct_pcie_iface_addr_t* iface_addr =
-        (uct_pcie_iface_addr_t*) params->iface_addr;
+    uct_pcie_iface_addr_t *iface_addr = (uct_pcie_iface_addr_t *)params->iface_addr;
+    uct_pcie_device_addr_t *dev_addr  = (uct_pcie_device_addr_t *)params->dev_addr;
+    uct_pcie_iface_t *iface = ucs_derived_of(params->iface, uct_pcie_iface_t);
+    uct_pcie_md_t    *md    = ucs_derived_of(iface->super.md,  uct_pcie_md_t);
 
-    uct_pcie_device_addr_t* dev_addr =
-        (uct_pcie_device_addr_t*) params->dev_addr;
-    
     uct_pcie_conn_ans_t answer;
-    int ret;
-    unsigned int ep_conn_index;
     uct_pcie_conn_req_t request;
-
-    unsigned int remote_interrupt_no;
-    uct_pcie_iface_t* iface = ucs_derived_of(params->iface, uct_pcie_iface_t);
-    uct_pcie_md_t* md = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    ucs_status_t        ucs_ret;
+    unsigned int        ep_conn_index;
+    int                 ret;
 
     UCT_EP_PARAMS_CHECK_DEV_IFACE_ADDRS(params);
 
-    remote_interrupt_no = (unsigned int) iface_addr->interrupt_no;
-    self->remote_node_id = (unsigned int) dev_addr->node_id;
-
-    ucs_debug("EP created remote_interrupt_no %d node_id %d\n",
-        remote_interrupt_no,
-        self->remote_node_id);
-
+    /* --- Extract remote address info from params --- */
+    self->remote_node_id = (unsigned int)dev_addr->node_id;
     self->super.super.iface = params->iface;
-    
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super);
 
-    /* If multiple processes can run this function simultaneously,
-     * then this should be protected with a lock */
-    ep_conn_index = iface->eps_init_cnt;
-    iface->eps_init_cnt++;
+    ucs_debug("EP created remote_interrupt_no %d node_id %d\n",
+              iface_addr->interrupt_no, self->remote_node_id);
 
-    request.node_id = iface->device_addr; /* send local node ID */
-    request.ep_conn_index = ep_conn_index;
+    /* --- Assign a slot index for this EP --- */
+    /* ep_conn_index is used to index into the iface's control segment and to
+     * identify this EP to the remote iface during the handshake. No lock here:
+     * UCX guarantees EP creation is single-threaded per worker. */
+    ep_conn_index = iface->eps_init_cnt++;
+
+    /* --- Connection handshake --- */
+    request.node_id        = iface->device_addr;
+    request.ep_conn_index  = ep_conn_index;
     request.ctl_segment_id = iface->ctl_segment_id;
 
     ucs_ret = uct_pcie_ep_send_recv_conn_request(
         request,
         self->remote_node_id,
-        remote_interrupt_no,
+        (unsigned int)iface_addr->interrupt_no,
         md->sci_virtual_device,
         &answer);
     if (ucs_ret != UCS_OK) {
+        iface->eps_init_cnt--;
         return ucs_ret;
     }
-    
-    /* uct_pcie_ep_t *self */
-    self->remote_seg_id = answer.segment_id;
-    self->ep_conn_offset  = answer.ep_conn_offset;
-    self->ep_conn_index = ep_conn_index;
-    self->ep_conn_seq_num = 1;
+
+    /* uct_pcie_ep_t *self: store handshake results */
+    self->remote_seg_id   = answer.segment_id;
+    self->ep_conn_index   = ep_conn_index;
+    self->ep_conn_seq_num  = 1;
     ucs_arbiter_group_init(&self->pending_q);
 
+    /* --- Connect to the remote shared RMA segment (put/get target) ---
+     * Guaranteed available: md_open creates and publishes it before any EP
+     * can be created, and its ID arrives in iface_addr. */
+    ret = uct_pcie_connect_segment_full(
+        iface->vdev_rma,
+        self->remote_node_id,
+        iface_addr->rma_seg_id,
+        &self->rma_seg,
+        &self->rma_seg_map,
+        (volatile void **)&self->rma_buf_local);
+    if (ret != 0) {
+        ucs_error("EP: failed to connect to remote shared segment %u on node %u",
+                  iface_addr->rma_seg_id, self->remote_node_id);
+        iface->eps_init_cnt--;
+        return UCS_ERR_NO_RESOURCE;
+    }
+    self->rma_local_base = iface_addr->rma_local_base; /* [LIBPERF_RKEY_QUIRK] */
+
+    ucs_debug("EP shared: connected seg=%u node=%u rma_buf_local=%p",
+              iface_addr->rma_seg_id, self->remote_node_id, self->rma_buf_local);
+
+    /* --- Connect to the assigned window in the remote receive segment (AM sends) --- */
     ret = uct_pcie_connect_segment(
         iface->vdev_ep,
-        self->ep_conn_offset,
+        0,
         iface->packet_size_bytes * iface->packet_queue_len,
         self->remote_node_id,
         self->remote_seg_id,
         &self->remote_segment,
         &self->remote_seg_map,
-        (volatile void**)&self->remote_seg_buf);
-    if (ret != UCS_OK) {
-        ucs_error("Endpoint failed to connect and map to remote sisci segment");
+        (volatile void **)&self->remote_seg_buf,
+        uct_pcie_ep_remote_segment_cb,
+        self);
+    if (ret != 0) {
+        ucs_error("EP: failed to connect to remote receive segment %u on node %u",
+                  self->remote_seg_id, self->remote_node_id);
+        uct_pcie_disconnect_segment(self->rma_seg, self->rma_seg_map);
         iface->eps_init_cnt--;
         return UCS_ERR_NO_RESOURCE;
     }
+    self->is_connected = 1;
 
     ucs_debug("EP connected to segment %d at node %d\n",
-        self->remote_seg_id,
-        self->remote_node_id);
+              self->remote_seg_id, self->remote_node_id);
 
     return UCS_OK;
+}
+
+/* Discard callback for use when purging the pending queue on EP teardown.
+ * UCX's contract requires the user to call ep_pending_purge before destroying
+ * an EP, so this should never actually fire. It is here purely as a safety net. */
+static ucs_arbiter_cb_result_t
+uct_pcie_ep_pending_discard_cb(ucs_arbiter_t *arbiter, ucs_arbiter_group_t *group,
+                               ucs_arbiter_elem_t *elem, void *arg)
+{
+    ucs_warn("pcie EP destroyed with pending request still queued");
+    return UCS_ARBITER_CB_RESULT_REMOVE_ELEM;
+}
+
+
+/**
+ * @brief Destroy a PCIE endpoint and release its SISCI connections.
+ *
+ * self is a uct_pcie_ep_t *   - injected by the UCS_CLASS_CLEANUP_FUNC macro.
+ */
+static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
+{
+    uct_pcie_iface_t *iface = ucs_derived_of(self->super.super.iface, uct_pcie_iface_t);
+
+    /* UCX guarantees ep_pending_purge is called before ep_destroy, so the
+     * group should already be empty here. Drain defensively just in case. */
+    ucs_arbiter_group_purge(
+        &iface->arbiter,
+        &self->pending_q,
+        uct_pcie_ep_pending_discard_cb,
+        NULL);
+
+    /* Disconnect both SISCI segment connections established in init.
+     * Null the AM write pointer first so any stray access is caught cleanly. */
+    uct_pcie_disconnect_segment(self->rma_seg, self->rma_seg_map);
+    self->remote_seg_buf = NULL;
+    uct_pcie_disconnect_segment(self->remote_segment, self->remote_seg_map);
+
+    ucs_debug("EP destroyed: segment_id=%d node_id=%d\n",
+              self->remote_seg_id, self->remote_node_id);
 }
 
 
@@ -240,30 +312,222 @@ UCS_CLASS_DEFINE(uct_pcie_ep_t, uct_base_ep_t);
 UCS_CLASS_DEFINE_NEW_FUNC(uct_pcie_ep_t, uct_ep_t, const uct_ep_params_t *);
 UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
 
+/******************************************************************************/
+/*** Put / Get (one-sided) ****************************************************/
 
-/* //SECTION RDMA*/
+/*
+ * [UCT_REMOTE_ADDR] NOTE on the parameter named "remote_addr" in put/get functions below:
+ *
+ * Despite its name, remote_addr is NOT a SISCI remote address and does NOT
+ * point into any SISCI-remotely-mapped memory window.  In SISCI terms, a
+ * "remote address" would mean a pointer obtained via SCIMapRemoteSegment,
+ * i.e something you can dereference locally to access physical memory on
+ * another node. remote_addr is none of that.
+ *
+ * The name is the official UCT API parameter name, carried over from the
+ * InfiniBand transport model where the NIC uses a remote VA directly.  Here
+ * it is simply an opaque integer that encodes a segment offset.  It must be
+ * converted before use:
+ *
+ *   seg_offset = remote_addr - ep->rma_local_base  [LIBPERF_RKEY_QUIRK]
+ *   local_ptr  = ep->rma_buf_local + seg_offset
+ *
+ * ep->rma_buf_local is the actual local VA of the PCIe-mapped window into the
+ * remote node's segment.  That is the SISCI remote address.  See
+ * [LIBPERF_RKEY_QUIRK] in uct_pcie_iface_addr_t for why rma_local_base exists.
+ */
+
+/**
+ * @brief Write a small buffer directly into the remote SISCI segment (PIO).
+ *
+ * Copies up to UCT_PCIE_MAX_PUT_SHORT bytes into the PCIe MMIO window that
+ * maps the remote node's shared segment, then flushes the CPU write buffers.
+ * See [UCT_REMOTE_ADDR] for how remote_addr is decoded.
+ *
+ * @param[in] tl_ep       Endpoint handle.
+ * @param[in] buffer      Source buffer.
+ * @param[in] length      Number of bytes to write (≤ UCT_PCIE_MAX_PUT_SHORT).
+ * @param[in] remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in] rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ */
 ucs_status_t uct_pcie_ep_put_short(
     uct_ep_h tl_ep,
     const void *buffer,
     unsigned length,
-    uint64_t remote_addr,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
     uct_rkey_t rkey)
 {
-    //TODO
-    printf("uct_pcie_ep_put_short()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    size_t seg_offset;
+
+    UCT_CHECK_LENGTH(length, 0, UCT_PCIE_MAX_PUT_SHORT, "put_short");
+
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
+
+    memcpy((uint8_t *)ep->rma_buf_local + seg_offset, buffer, length);
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    return UCS_OK;
 }
 
+/**
+ * @brief Pack and write data into the remote SISCI segment via a callback (PIO).
+ *
+ * Invokes pack_cb to write the payload directly into the PCIe MMIO window at
+ * the computed segment offset, avoiding an intermediate staging buffer.
+ * Flushes CPU write buffers after the pack callback returns.
+ *
+ * @param[in] tl_ep       Endpoint handle.
+ * @param[in] pack_cb     Callback that writes the payload into the destination.
+ * @param[in] arg         Opaque argument forwarded to pack_cb.
+ * @param[in] remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in] rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ * @return Bytes written (≥ 0) on success, negative error code on failure.
+ */
 ssize_t uct_pcie_ep_put_bcopy(
     uct_ep_h tl_ep,
     uct_pack_callback_t pack_cb,
     void *arg,
-    uint64_t remote_addr,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
     uct_rkey_t rkey)
 {
-    //TODO
-    printf("uct_pcie_ep_put_bcopy()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    size_t seg_offset;
+    ssize_t length;
+
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+
+    length = pack_cb((uint8_t *)ep->rma_buf_local + seg_offset, arg);
+    ucs_assert(seg_offset + (size_t)length <= UCT_PCIE_RMA_SEG_SIZE);
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    return length;
+}
+
+
+/**
+ * @brief Read a small region from the remote SISCI segment into a local buffer.
+ *
+ * Copies up to UCT_PCIE_MAX_PUT_SHORT bytes from the PCIe MMIO window (which
+ * maps the remote node's shared segment) into the caller's buffer. The read
+ * is a synchronous CPU load through the PCIe fabric.
+ *
+ * @param[in]  tl_ep       Endpoint handle.
+ * @param[out] buffer      Destination buffer.
+ * @param[in]  length      Number of bytes to read (≤ UCT_PCIE_MAX_PUT_SHORT).
+ * @param[in]  remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in]  rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ */
+ucs_status_t uct_pcie_ep_get_short(
+    uct_ep_h tl_ep,
+    void *buffer,
+    unsigned length,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
+    uct_rkey_t rkey)
+{
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    size_t seg_offset;
+
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
+
+    memcpy(buffer, (const uint8_t *)ep->rma_buf_local + seg_offset, length);
+    return UCS_OK;
+}
+
+/**
+ * @brief Gather-write an iov array into the remote SISCI segment (PIO).
+ *
+ * Copies each iov buffer in order into the PCIe MMIO window at the computed
+ * segment offset using uct_iov_to_buffer, then flushes CPU write buffers.
+ * Completes synchronously and returns UCS_OK; comp is not invoked (see
+ * put_zcopy comment about UCX zcopy completion semantics).
+ *
+ * When a DMA path is added, this function will post a DMA transfer and return
+ * UCS_INPROGRESS, at which point comp will be invoked from iface_progress.
+ *
+ * @param[in] tl_ep       Endpoint handle.
+ * @param[in] iov         Scatter-gather source buffers.
+ * @param[in] iovcnt      Number of iov entries.
+ * @param[in] remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in] rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ * @param[in] comp        Completion handle (not invoked for synchronous UCS_OK).
+ */
+ucs_status_t uct_pcie_ep_put_zcopy(
+    uct_ep_h tl_ep,
+    const uct_iov_t *iov,
+    size_t iovcnt,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
+    uct_rkey_t rkey,
+    uct_completion_t *comp)
+{
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    ucs_iov_iter_t iov_iter;
+    size_t seg_offset;
+    size_t total_len;
+
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+
+    total_len = uct_iov_total_length(iov, iovcnt);
+    ucs_assert(seg_offset + total_len <= UCT_PCIE_RMA_SEG_SIZE);
+    ucs_iov_iter_init(&iov_iter);
+    uct_iov_to_buffer(iov, iovcnt, &iov_iter,
+                      (uint8_t *)ep->rma_buf_local + seg_offset, total_len);
+
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    /* Do not invoke comp here. UCX zcopy contract: comp is only invoked when
+     * returning UCS_INPROGRESS (async DMA path). UCS_OK means synchronous
+     * completion; the caller uses the return value, not the callback. */
+    return UCS_OK;
+}
+
+/**
+ * @brief Read from the remote SISCI segment and scatter into an iov array.
+ *
+ * Copies length bytes from the PCIe MMIO window into each iov buffer in order.
+ * Completes synchronously; comp is not invoked (see put_zcopy for the UCX
+ * zcopy completion convention). When a DMA path is added this function will
+ * return UCS_INPROGRESS and invoke comp from iface_progress.
+ *
+ * @param[in]  tl_ep       Endpoint handle.
+ * @param[out] iov         Scatter-gather destination buffers.
+ * @param[in]  iovcnt      Number of iov entries.
+ * @param[in]  remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in]  rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ * @param[in]  comp        Completion handle (not invoked for synchronous UCS_OK).
+ */
+ucs_status_t uct_pcie_ep_get_zcopy(
+    uct_ep_h tl_ep,
+    const uct_iov_t *iov,
+    size_t iovcnt,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
+    uct_rkey_t rkey,
+    uct_completion_t *comp)
+{
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    size_t seg_offset;
+    size_t total_len;
+    size_t i, src_offset;
+
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+
+    total_len = uct_iov_total_length(iov, iovcnt);
+    ucs_assert(seg_offset + total_len <= UCT_PCIE_RMA_SEG_SIZE);
+
+    src_offset = 0;
+    for (i = 0; i < iovcnt; i++) {
+        memcpy(iov[i].buffer,
+               (const uint8_t *)ep->rma_buf_local + seg_offset + src_offset,
+               iov[i].length);
+        src_offset += iov[i].length;
+    }
+
+    /* Do not invoke comp here. Same reasoning as put_zcopy above. */
+    return UCS_OK;
 }
 
 ucs_status_t uct_pcie_ep_get_bcopy(
@@ -271,19 +535,39 @@ ucs_status_t uct_pcie_ep_get_bcopy(
     uct_unpack_callback_t unpack_cb,
     void *arg,
     size_t length,
-    uint64_t remote_addr,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
     uct_rkey_t rkey,
     uct_completion_t *comp)
 {
-    //TODO
-    printf("uct_pcie_ep_get_bcopy()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    size_t seg_offset;
+
+    ucs_assert(remote_addr >= ep->rma_local_base);
+    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
+    unpack_cb(arg, (const uint8_t *)ep->rma_buf_local + seg_offset, length);
+    return UCS_OK;
 }
 
 
-/*//!SECTION*/
 
-/* //SECTION ATOMICS*/
+/*
+ * [NO_ATOMICS] Atomic operations are not implemented in this transport and
+ * will not be implemented in the foreseeable future.
+ *
+ * SISCI is a pure shared-memory-over-PCIe API: it provides segment creation,
+ * remote mapping, and DMA transfer primitives. It exposes no facility for
+ * atomic read-modify-write operations across the PCIe fabric.
+ *
+ * This transport therefore does not advertise any UCT_IFACE_FLAG_ATOMIC_*
+ * capabilities. UCX's upper layers (UCP) detect the absence of those flags and
+ * fall back to their own software emulation: atomic operations are carried out
+ * via active messages routed through whichever transport supports AM, with the
+ * target side performing the operation locally using CPU atomics and returning
+ * the result. That path is correct, well-tested, and not meaningfully slower
+ * than anything we could build here. The stubs below exist only to satisfy the
+ * iface_ops vtable; they are never called in practice.
+ */
 
 ucs_status_t uct_pcie_ep_atomic32_post(
     uct_ep_h ep,
@@ -292,9 +576,7 @@ ucs_status_t uct_pcie_ep_atomic32_post(
     uint64_t remote_addr,
     uct_rkey_t rkey)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic32_post()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 ucs_status_t uct_pcie_ep_atomic64_post(
@@ -304,9 +586,7 @@ ucs_status_t uct_pcie_ep_atomic64_post(
     uint64_t remote_addr,
     uct_rkey_t rkey)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic64_post()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 ucs_status_t uct_pcie_ep_atomic64_fetch(
@@ -318,9 +598,7 @@ ucs_status_t uct_pcie_ep_atomic64_fetch(
     uct_rkey_t rkey,
     uct_completion_t *comp)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic64_fetch()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 ucs_status_t uct_pcie_ep_atomic32_fetch(
@@ -332,9 +610,7 @@ ucs_status_t uct_pcie_ep_atomic32_fetch(
     uct_rkey_t rkey,
     uct_completion_t *comp)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic32_fetch()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 ucs_status_t uct_pcie_ep_atomic_cswap64(
@@ -346,9 +622,7 @@ ucs_status_t uct_pcie_ep_atomic_cswap64(
     uint64_t *result,
     uct_completion_t *comp)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic_cswap64()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
 ucs_status_t uct_pcie_ep_atomic_cswap32(
@@ -360,14 +634,11 @@ ucs_status_t uct_pcie_ep_atomic_cswap32(
     uint32_t *result,
     uct_completion_t *comp)
 {
-    //TODO
-    printf("uct_pcie_ep_atomic_cswap32()\n");
-    return UCS_ERR_NOT_IMPLEMENTED;
+    return UCS_ERR_NOT_IMPLEMENTED; /* see [NO_ATOMICS] */
 }
 
-/* //!SECTION */
-
-/*  // SECTION Active messages */
+/******************************************************************************/
+/*** Active messages **********************************************************/
 
 /**
  * @brief Send a short active message.
@@ -405,6 +676,8 @@ ucs_status_t uct_pcie_ep_am_short(
         return UCS_ERR_NO_RESOURCE;
     }
 
+
+
     UCT_CHECK_LENGTH(sizeof(uct_pcie_am_hdr_t) + sizeof(uint64_t) + length,
                  0, iface->packet_size_bytes, "am_short");
     UCT_CHECK_AM_ID(id);
@@ -432,10 +705,6 @@ ucs_status_t uct_pcie_ep_am_short(
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     ep->ep_conn_seq_num++;
-
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u ep_conn_seq_num:%lu\n",
-              ep->remote_seg_id, ep->remote_node_id, id,
-              am_hdr->am_length, ep->ep_conn_seq_num);
 
     return UCS_OK;
 }
@@ -507,10 +776,6 @@ ucs_status_t uct_pcie_ep_am_short_iov(
 
     ep->ep_conn_seq_num++;
 
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u ep_conn_seq_num:%lu\n",
-              ep->remote_seg_id, ep->remote_node_id, id,
-              am_hdr->am_length, ep->ep_conn_seq_num);
-
     return UCS_OK;
 }
 
@@ -573,9 +838,6 @@ ssize_t uct_pcie_ep_am_bcopy(
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     ep->ep_conn_seq_num++;
-
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u",
-              ep->remote_seg_id, ep->remote_node_id, id, am_hdr->am_length);
 
     return length;
 }
@@ -659,15 +921,11 @@ ucs_status_t uct_pcie_ep_am_zcopy(
     /* Advance the sequence number */
     ep->ep_conn_seq_num++;
 
-    ucs_debug("EP_SEG %d EP_NOD %d AM_ID %d size %u",
-              ep->remote_seg_id, ep->remote_node_id, id, am_hdr->am_length);
-
     return UCS_OK;
 }
 
-/* //!SECTION*/
-
-/* // SECTION Pending queue */
+/******************************************************************************/
+/*** Pending queue ************************************************************/
 
 /*
  * The UCT pending API lets upper layers queue send requests when a transport
@@ -677,7 +935,7 @@ ucs_status_t uct_pcie_ep_am_zcopy(
  *   - One ucs_arbiter_t lives on the iface (shared across all EPs).
  *   - One ucs_arbiter_group_t lives on each EP (its private queue).
  *   - The ucs_arbiter_elem_t is stored in-place inside req->priv, which UCT
- *     reserves for transport use — no extra allocation needed.
+ *     reserves for transport use. No extra allocation needed.
  *
  * iface_progress drains the arbiter after processing incoming packets, so
  * pending sends are retried as soon as ack slots free up.
@@ -777,5 +1035,4 @@ void uct_pcie_ep_pending_purge(
                             &args);
 }
 
-/* //!SECTION */
 

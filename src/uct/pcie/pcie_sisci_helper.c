@@ -3,6 +3,9 @@
 /* To get ucs print outs */
 #include <ucs/type/status.h>
 
+/******************************************************************************/
+/*** Local segment operations *************************************************/
+
 /**
  * @brief Creates, prepares and maps a local sisci segment. Gets sisci to
  *        automatically assign a segment ID that is unique to this node.
@@ -85,7 +88,7 @@ void uct_pcie_helper_remove_segment(
 {
     sci_error_t sci_error;
 
-    SCIUnmapSegment(segment_map, 0, &sci_error);
+    SCIUnmapSegment(segment_map, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_warn("SCIUnmapSegment failed: %s\n", SCIGetErrorString(sci_error));
     }
@@ -127,7 +130,7 @@ int uct_pcie_helper_create_seg_set_avail(
         segment_id,
         buf);
     if (ret == 0) {
-        SCISetSegmentAvailable(*segment, 0, 0, &sci_error);
+        SCISetSegmentAvailable(*segment, UCT_PCIE_LOCAL_ADAPTER_NO, UCT_PCIE_NO_FLAGS, &sci_error);
         if (sci_error != SCI_ERR_OK) { 
             ucs_error("SCISetSegmentAvailable failed: %s",
                 SCIGetErrorString(sci_error));
@@ -156,13 +159,16 @@ void uct_pcie_helper_remove_seg_set_unavail(
     sci_map_t segment_map)
 {
     sci_error_t sci_error;
-    SCISetSegmentUnavailable(segment, 0, UCT_PCIE_NO_FLAGS, &sci_error);
+    SCISetSegmentUnavailable(segment, UCT_PCIE_LOCAL_ADAPTER_NO, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_warn("SCISetSegmentUnavailable failed: %s",
             SCIGetErrorString(sci_error));
     }
     uct_pcie_helper_remove_segment(segment, segment_map);
 }
+
+/******************************************************************************/
+/*** Remote segment operations ************************************************/
 
 int uct_pcie_connect_segment(
     sci_desc_t sd,
@@ -172,19 +178,23 @@ int uct_pcie_connect_segment(
     unsigned int segment_id,
     sci_remote_segment_t *segment,
     sci_map_t *segment_map,
-    volatile void **buf)
+    volatile void **buf,
+    sci_cb_remote_segment_t callback,
+    void *callback_arg)
 {
-    sci_error_t sci_error;
+    sci_error_t  sci_error;
+    unsigned int flags = (callback != NULL) ? SCI_FLAG_USE_CALLBACK
+                                            : UCT_PCIE_NO_FLAGS;
     do {
         SCIConnectSegment(sd,
             segment,
             node_id,
             segment_id,
             UCT_PCIE_LOCAL_ADAPTER_NO,
-            UCT_PCIE_NO_CALLBACK,
-            NULL,
+            callback,
+            callback_arg,
             0,
-            UCT_PCIE_NO_FLAGS,
+            flags,
             &sci_error);
     } while (sci_error != SCI_ERR_OK);
 
@@ -195,12 +205,43 @@ int uct_pcie_connect_segment(
         offset,
         segment_size,
         NULL,
-        0,
+        UCT_PCIE_NO_FLAGS,
         &sci_error);
     if (sci_error != SCI_ERR_OK) { 
-        SCIDisconnectSegment(*segment, 0, &sci_error);
+        SCIDisconnectSegment(*segment, UCT_PCIE_NO_FLAGS, &sci_error);
         ucs_warn("SCIMapRemoteSegment failed: %s",
             SCIGetErrorString(sci_error));
+        return -1;
+    }
+
+    return 0;
+}
+
+int uct_pcie_connect_segment_full(
+    sci_desc_t sd,
+    unsigned int node_id,
+    unsigned int segment_id,
+    sci_remote_segment_t *segment,
+    sci_map_t *segment_map,
+    volatile void **buf)
+{
+    sci_error_t sci_error;
+    size_t seg_size;
+
+    do {
+        SCIConnectSegment(sd, segment, node_id, segment_id,
+                          UCT_PCIE_LOCAL_ADAPTER_NO,
+                          UCT_PCIE_NO_CALLBACK, NULL, 0,
+                          UCT_PCIE_NO_FLAGS, &sci_error);
+    } while (sci_error != SCI_ERR_OK);
+
+    seg_size = SCIGetRemoteSegmentSize(*segment);
+
+    *buf = SCIMapRemoteSegment(*segment, segment_map, 0, seg_size,
+                               NULL, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIMapRemoteSegment: %s", SCIGetErrorString(sci_error));
+        SCIDisconnectSegment(*segment, UCT_PCIE_NO_FLAGS, &sci_error);
         return -1;
     }
 
@@ -212,12 +253,12 @@ void uct_pcie_disconnect_segment(
     sci_map_t segment_map)
 {
     sci_error_t sci_error;
-    SCIUnmapSegment(segment_map, 0, &sci_error);
-    if (sci_error != SCI_ERR_OK) { 
+    SCIUnmapSegment(segment_map, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
         ucs_warn("SCIUnmapSegment failed: %s", SCIGetErrorString(sci_error));
     }
-    
-    SCIDisconnectSegment(segment, 0, &sci_error);
+
+    SCIDisconnectSegment(segment, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) { 
         ucs_warn("SCIDisconnectSegment failed: %s",
             SCIGetErrorString(sci_error));

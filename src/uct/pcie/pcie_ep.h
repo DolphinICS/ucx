@@ -13,14 +13,13 @@ typedef struct {
     uct_pcie_iface_addr_t iface_addr;
 }  UCS_S_PACKED uct_pcie_ep_addr_t;
 
+
 typedef struct {
     uct_base_ep_t           super;
     unsigned int            remote_seg_id;
     sci_remote_segment_t    remote_segment;
     sci_map_t               remote_seg_map;
     volatile uint8_t*       remote_seg_buf;
-    /* ep_conn_offset should be ep_conn_index * (iface->packet_size_bytes * iface->packet_queue_len) */
-    unsigned int            ep_conn_offset;
     unsigned int            ep_conn_index;
     unsigned int            remote_node_id;
     uint64_t                ep_conn_seq_num;
@@ -28,6 +27,20 @@ typedef struct {
     /* Queue of pending send requests for this endpoint. Requests are added here
      * when the flow-control window is full and drained by iface progress. */
     ucs_arbiter_group_t     pending_q;
+
+    /* Set to 1 after EP creation completes, cleared to 0 by the SISCI
+     * disconnect callback on remote_segment. Read by ep_is_connected.
+     * volatile because the callback fires from SISCI's interrupt thread. */
+    volatile int            is_connected;
+
+    /* RMA segment: connection to the remote iface's shared segment, established
+     * at EP creation time using rma_seg_id and rma_base_va from iface_addr.
+     * put_short / put_bcopy write into it; get_bcopy reads from it. */
+    sci_remote_segment_t    rma_seg;
+    sci_map_t               rma_seg_map;
+    void                   *rma_buf_local;  /* local VA of the remote segment window (this process) */
+    /* [LIBPERF_RKEY_QUIRK] see rma_local_base in uct_pcie_iface_addr_t */
+    uint64_t                rma_local_base;
 } uct_pcie_ep_t;
 
 
@@ -85,6 +98,29 @@ ssize_t uct_pcie_ep_put_bcopy(
     uct_ep_h ep,
     uct_pack_callback_t pack_cb,
     void *arg,
+    uint64_t remote_addr,
+    uct_rkey_t rkey);
+
+ucs_status_t uct_pcie_ep_put_zcopy(
+    uct_ep_h tl_ep,
+    const uct_iov_t *iov,
+    size_t iovcnt,
+    uint64_t remote_addr,
+    uct_rkey_t rkey,
+    uct_completion_t *comp);
+
+ucs_status_t uct_pcie_ep_get_zcopy(
+    uct_ep_h tl_ep,
+    const uct_iov_t *iov,
+    size_t iovcnt,
+    uint64_t remote_addr,
+    uct_rkey_t rkey,
+    uct_completion_t *comp);
+
+ucs_status_t uct_pcie_ep_get_short(
+    uct_ep_h tl_ep,
+    void *buffer,
+    unsigned length,
     uint64_t remote_addr,
     uct_rkey_t rkey);
 
