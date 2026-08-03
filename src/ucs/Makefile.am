@@ -6,6 +6,9 @@
 # See file LICENSE for terms.
 #
 
+DIS_HOME = /opt/DIS
+INCLUDE  = -I$(DIS_HOME)/include -I$(DIS_HOME)/include/dis -I $(DIS_HOME)/src/include
+
 SUBDIRS = vfs/sock . vfs/fuse signal
 
 AUTOMAKE_OPTIONS    = nostdinc # avoid collision with built-in debug.h
@@ -14,11 +17,13 @@ bin_PROGRAMS        =
 
 libucs_la_CPPFLAGS = $(BASE_CPPFLAGS) $(BFD_CPPFLAGS) \
                      -DUCX_MODULE_DIR=\"$(moduledir)\" \
-                     -DUCX_CONFIG_DIR=\"$(ucx_config_dir)\"
-libucs_la_CFLAGS   = $(BASE_CFLAGS) $(LT_CFLAGS)
+                     -DUCX_CONFIG_DIR=\"$(ucx_config_dir)\" \
+                     $(INCLUDE)
+libucs_la_CFLAGS   = $(BASE_CFLAGS) $(LT_CFLAGS) $(INCLUDE) -D_REENTRANT
 libucs_la_LDFLAGS  = -ldl $(BFD_LDFLAGS) -version-info $(SOVERSION) $(UCX_LT_RELEASE)
 libucs_ladir       = $(includedir)/ucs
-libucs_la_LIBADD   = $(LIBM) $(top_builddir)/src/ucm/libucm.la $(BFD_LIBS)
+libucs_la_LIBADD   = $(LIBM) $(top_builddir)/src/ucm/libucm.la $(BFD_LIBS) \
+	-L/opt/DIS/lib64 -lsisci
 
 nobase_dist_libucs_la_HEADERS = \
 	arch/aarch64/bitops.h \

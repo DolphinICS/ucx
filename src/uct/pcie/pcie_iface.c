@@ -1,0 +1,982 @@
+
+#include <ucs/type/class.h>
+#include <ucs/type/status.h>
+#include <ucs/sys/string.h>
+
+#include "stdio.h"
+
+#include "pcie_md.h"
+#include "pcie_iface.h"
+#include "pcie_ep.h"
+#include "pcie_sisci_helper.h"
+
+/* Forward declarations */
+static uct_iface_ops_t uct_pcie_iface_ops;
+
+static ucs_config_field_t uct_pcie_iface_config_table[] = {
+    /* MAX_NUM_EPS overrides the UCX base iface config. Reported via
+     * iface_attr.max_num_eps; advisory only; the UCT framework does not gate
+     * ep_create calls against it. Keep in sync with PCIE_MAX_EPS below and
+     * UCT_PCIE_MAX_EPS in pcie_iface.h. */
+    {"", "MAX_NUM_EPS=32", NULL,
+     ucs_offsetof(uct_pcie_iface_config_t, super),
+     UCS_CONFIG_TYPE_TABLE(uct_iface_config_table)},
+
+    {"SEND_SIZE", "512k",
+     "Size of copy-out buffer",
+     ucs_offsetof(uct_pcie_iface_config_t, packet_size_bytes),
+        UCS_CONFIG_TYPE_MEMUNITS},
+
+    {
+        /* Runtime SISCI slot count. Must not exceed UCT_PCIE_MAX_EPS (the
+         * compile-time array bound). Keep in sync with MAX_NUM_EPS above. */
+        "MAX_EPS", "32", "Maximum number of simultaneous endpoint connections",
+        ucs_offsetof(uct_pcie_iface_config_t, max_eps),
+        UCS_CONFIG_TYPE_UINT
+    },
+
+    {
+        "PACKET_QUEUE_LEN", "5", "Message Queue size for each connection",
+        ucs_offsetof(uct_pcie_iface_config_t, packet_queue_len),
+        UCS_CONFIG_TYPE_UINT
+    },
+
+    {NULL}
+};
+
+/******************************************************************************/
+/*** Connection handling ******************************************************/
+
+/**
+ * @brief Reserve a uct_pcie control descriptor from the uct_pcie_iface's list
+ *        of control descriptor.
+ * 
+ * @param[in] iface 
+ * @param[out] cd_index 
+ * 
+ * @return 
+ */
+static int uct_pcie_reserve_control_descriptor(
+    uct_pcie_iface_t* iface,
+    unsigned int *cd_index)
+{
+    unsigned int i;
+    int rc = 0;
+
+    pthread_mutex_lock(&iface->lock);
+
+    /* Find free sci_cd in iface sci_cd list */
+    for (i = 0; i < iface->max_eps; i++)
+    {
+        if(iface->sci_cds[i].cd_status == UCT_PCIE_CD_AVAILABLE) {
+            break;
+        }
+    }
+    
+    if (i < iface->max_eps) {
+        /* Success: reserve sci_cd */
+        *cd_index = i;
+        iface->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
+        iface->connections++;
+    } else {
+        rc = -1;
+    }
+
+    pthread_mutex_unlock(&iface->lock);
+
+    return rc;
+}
+
+/**
+ * @brief Unreserve a uct_pcie control descriptor from the uct_pcie_iface's list
+ *        of control descriptor.
+ * 
+ * @details helper function to uct_pcie_conn_handler.
+ * 
+ * @param[inout] iface 
+ * @param[in] cd_index 
+ */
+static void uct_pcie_ureserve_control_descriptor(
+    uct_pcie_iface_t* iface,
+    unsigned int cd_index)
+{
+    pthread_mutex_lock(&iface->lock);
+
+    iface->sci_cds[cd_index].cd_status = UCT_PCIE_CD_AVAILABLE;
+    iface->connections--;
+
+    pthread_mutex_unlock(&iface->lock);
+}
+
+/**
+ * @brief Send answer to incoming request.
+ * 
+ * @details helper function to uct_pcie_conn_handler.
+ * 
+ * @param[in] iface
+ * @param[in] request 
+ * @return 
+ */
+static int uct_pcie_send_answer_to_request(
+    uct_pcie_iface_t* iface,
+    uct_pcie_conn_req_t* request,
+    sci_desc_t sci_virtual_device,
+    uct_pcie_conn_desc_t *sci_cd)
+{
+    uct_pcie_conn_ans_t   answer;
+    sci_remote_data_interrupt_t ans_interrupt;
+    sci_error_t sci_error;
+
+    do {
+        SCIConnectDataInterrupt(
+            sci_virtual_device,
+            &ans_interrupt,
+            request->node_id,
+            UCT_PCIE_LOCAL_ADAPTER_NO,
+            request->interrupt,
+            1000,
+            UCT_PCIE_NO_FLAGS,
+            &sci_error);
+    } while (sci_error != SCI_ERR_OK);
+
+    answer.segment_id = sci_cd->recv_segment_id;
+    
+    SCITriggerDataInterrupt(
+        ans_interrupt,
+        (void *) &answer,
+        sizeof(answer),
+        UCT_PCIE_NO_FLAGS,
+        &sci_error);
+    if(sci_error != SCI_ERR_OK) {
+        ucs_warn("SCI Trigger Interrupt: %s", SCIGetErrorString(sci_error));
+    }
+
+    SCIDisconnectDataInterrupt(ans_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
+
+    /* todo, do error checking */
+    return 0;
+}
+
+/**
+ * @brief SISCI data interrupt callback fired when a remote endpoint connects.
+ *
+ * Reserves a connection slot (sci_cd), creates a dedicated receive segment for
+ * this connection, sends the segment ID back to the connecting endpoint, then
+ * connects to the remote control segment so the iface can write acknowledgement
+ * counters into it during progress.
+ */
+static sci_callback_action_t uct_pcie_conn_handler(
+    void* arg,
+    sci_local_data_interrupt_t interrupt,
+    void* data,
+    unsigned int length,
+    sci_error_t sci_error)
+{
+    uct_pcie_conn_req_t* request = (uct_pcie_conn_req_t*) data;
+    uct_pcie_iface_t* iface = (uct_pcie_iface_t*) arg;
+    uct_pcie_md_t* md = ucs_derived_of(iface->super.md, uct_pcie_md_t); 
+    unsigned int sci_cd_index;
+    uct_pcie_conn_desc_t *sci_cd;
+
+    int ret;
+
+    ret = uct_pcie_reserve_control_descriptor(iface, &sci_cd_index);
+    if (ret != 0) {
+        ucs_error("Number of endpoints exceeds limit %u", iface->max_eps);
+        return SCI_CALLBACK_CONTINUE;
+    }
+    sci_cd = &(iface->sci_cds[sci_cd_index]);
+
+    /* Create a dedicated receive segment for this connection */
+    ret = uct_pcie_helper_create_seg_set_avail(
+        iface->vdev_recv,
+        &sci_cd->recv_segment,
+        &sci_cd->recv_segment_map,
+        iface->packet_size_bytes * iface->packet_queue_len,
+        &sci_cd->recv_segment_id,
+        (void **)&sci_cd->packet_queue_buf);
+    if (ret != 0) {
+        ucs_error("Failed to create per-connection receive segment");
+        uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
+        return SCI_CALLBACK_CONTINUE;
+    }
+
+    ret = uct_pcie_send_answer_to_request(
+        iface,
+        request,
+        md->sci_virtual_device,
+        sci_cd);
+    if (ret != 0) {
+        ucs_error("Failed to send answer to connection request");
+        uct_pcie_helper_remove_seg_set_unavail(sci_cd->recv_segment,
+                                               sci_cd->recv_segment_map);
+        uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
+        return SCI_CALLBACK_CONTINUE;
+    }
+
+    /* Connect to remote endpoint's control buffer */
+    ret = uct_pcie_connect_segment(
+        iface->vdev_ctl,
+        request->ep_conn_index * sizeof(uct_pcie_ctl_t),
+        sizeof(uct_pcie_ctl_t),
+        request->node_id,
+        request->ctl_segment_id,
+        &sci_cd->ctl_segment,
+        &sci_cd->ctl_segment_map,
+        (volatile void **)&sci_cd->ctl_buf,
+        NULL, NULL);
+    if (ret != 0) {
+        ucs_error("Failed to connect to remote control buffer");
+        uct_pcie_helper_remove_seg_set_unavail(sci_cd->recv_segment,
+                                               sci_cd->recv_segment_map);
+        uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
+        return SCI_CALLBACK_CONTINUE;
+    }
+
+    sci_cd->cd_status = UCT_PCIE_CD_READY;
+    return SCI_CALLBACK_CONTINUE;
+}
+
+/******************************************************************************/
+/*** Reachability and connectivity ********************************************/
+
+/**
+ * @brief Probe whether a remote SISCI node is reachable.
+ *
+ * Called by UCX before creating an EP to decide whether a connection attempt
+ * is worth making. When a device address is supplied, calls SCIProbeNode to
+ * check whether the node is visible. Without an address there is nothing to
+ * probe, so the function returns 1 and lets the connection attempt determine
+ * reachability on its own.
+ *
+ * Returning 1 is not a promise. It is permission to try. If the attempt
+ * fails, EP creation returns an error in the normal way.
+ *
+ * @param[in] tl_iface  Local interface handle.
+ * @param[in] params    Query parameters; may carry a device address and an
+ *                      info_string buffer for a human-readable failure reason.
+ * @return 1 if the remote node is (likely) reachable, 0 otherwise.
+ */
+static int
+uct_pcie_iface_is_reachable_v2(
+    const uct_iface_h tl_iface,
+    const uct_iface_is_reachable_params_t *params)
+{
+    uct_pcie_iface_t             *iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
+    uct_pcie_md_t                *md    = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    const uct_pcie_device_addr_t *dev_addr;
+    sci_error_t                   sci_error;
+    int                           reachable;
+
+    if (!(params->field_mask & UCT_IFACE_IS_REACHABLE_FIELD_DEVICE_ADDR)) {
+        return 1; /* no address to probe; assume reachable */
+    }
+
+    dev_addr  = (const uct_pcie_device_addr_t *)params->device_addr;
+    reachable = SCIProbeNode(md->sci_virtual_device,
+                             UCT_PCIE_LOCAL_ADAPTER_NO,
+                             dev_addr->node_id,
+                             UCT_PCIE_NO_FLAGS,
+                             &sci_error);
+
+    if (!reachable &&
+        (params->field_mask & UCT_IFACE_IS_REACHABLE_FIELD_INFO_STRING) &&
+        (params->field_mask & UCT_IFACE_IS_REACHABLE_FIELD_INFO_STRING_LENGTH)) {
+        ucs_snprintf_zero(params->info_string, params->info_string_length,
+                          "SISCI node %u is not reachable via PCIe adapter %u",
+                          dev_addr->node_id, UCT_PCIE_LOCAL_ADAPTER_NO);
+    }
+
+    return reachable;
+}
+
+/**
+ * @brief Report whether the endpoint's remote peer is still connected.
+ *
+ * Reads the volatile is_connected flag, which is set to 1 after EP creation
+ * and cleared to 0 by uct_pcie_ep_remote_segment_cb when the remote segment
+ * disappears. Returning 0 means that callback has fired.
+ *
+ * @param[in] tl_ep  Endpoint handle.
+ * @param[in] params Query parameters (field_mask is not used here).
+ * @return 1 if still connected, 0 if the remote peer has disconnected.
+ */
+int uct_pcie_ep_is_connected(
+    const uct_ep_h tl_ep,
+    const uct_ep_is_connected_params_t *params)
+{
+    const uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    return ep->is_connected;
+}
+
+/******************************************************************************/
+/*** Iface lifecycle **********************************************************/
+
+static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
+    .iface_estimate_perf   = uct_base_iface_estimate_perf,
+    .iface_vfs_refresh     = (uct_iface_vfs_refresh_func_t)ucs_empty_function,
+    .ep_query              = (uct_ep_query_func_t)ucs_empty_function_return_unsupported,
+    .ep_invalidate         = (uct_ep_invalidate_func_t)ucs_empty_function_return_unsupported,
+    .ep_connect_to_ep_v2   = ucs_empty_function_return_unsupported,
+    .iface_is_reachable_v2 = uct_pcie_iface_is_reachable_v2,
+    .ep_is_connected       = uct_pcie_ep_is_connected
+};
+
+/**
+ * @brief Construct interface and set up internal resources pertaining to it.
+ *
+ * Creates the receive and control segments, initializes the connection
+ * descriptor table, sets up the DMA engine (reserved for future use), and
+ * installs the connection interrupt that accepts incoming EP connections.
+ *
+ * self is a uct_pcie_iface_t *   - injected by the UCS_CLASS_INIT_FUNC macro.
+ */
+static UCS_CLASS_INIT_FUNC(
+    uct_pcie_iface_t,
+    uct_md_h md,
+    uct_worker_h worker,
+    const uct_iface_params_t *params,
+    const uct_iface_config_t *tl_config)
+{
+    unsigned int nodeID;
+    unsigned int adapterID = 0;
+    unsigned int flags = 0;
+    int ret;
+    ssize_t i = 0;
+    sci_error_t sci_error;
+    unsigned dma_seg_id;
+    uct_pcie_iface_config_t* config = ucs_derived_of(tl_config, uct_pcie_iface_config_t);
+    uct_pcie_md_t* sci_md = ucs_derived_of(md, uct_pcie_md_t);
+
+    size_t control_segment_size;
+
+    /* --- Validate open parameters --- */
+    UCT_CHECK_PARAM(params->field_mask & UCT_IFACE_PARAM_FIELD_OPEN_MODE,
+                    "UCT_IFACE_PARAM_FIELD_OPEN_MODE is not defined");
+
+    if (!(params->open_mode & UCT_IFACE_OPEN_MODE_DEVICE)) {
+        ucs_error("only UCT_IFACE_OPEN_MODE_DEVICE is supported");
+        return UCS_ERR_UNSUPPORTED;
+    }
+
+    if (ucs_derived_of(worker, uct_priv_worker_t)->thread_mode == UCS_THREAD_MODE_MULTI) {
+        ucs_error("SCI transport does not support multi-threaded worker");
+        return UCS_ERR_INVALID_PARAM;
+    }
+
+    /* --- Initialize synchronization primitives --- */
+    if (pthread_mutex_init(&self->lock, NULL) != 0) {
+        ucs_error("pthread_mutex_init failed");
+        goto err;
+    }
+
+    /* Arbiter must be ready before any EP is created, since EPs schedule
+     * their pending groups here. */
+    ucs_arbiter_init(&self->arbiter);
+
+    UCS_CLASS_CALL_SUPER_INIT(
+            uct_base_iface_t, &uct_pcie_iface_ops, &uct_base_iface_internal_ops,
+            md, worker, params,
+            tl_config UCS_STATS_ARG(
+                    (params->field_mask & UCT_IFACE_PARAM_FIELD_STATS_ROOT) ?
+                            params->stats_root :
+                            NULL) UCS_STATS_ARG(UCT_PCIE_NAME));
+
+    /* --- Query local SISCI node ID --- */
+    SCIGetLocalNodeId(adapterID, &nodeID, flags, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIGetLocalNodeId: %s", SCIGetErrorString(sci_error));
+        goto err_destroy_mutex;
+    }
+
+    /* uct_pcie_iface_t *self: store configuration */
+    self->device_addr = nodeID;
+    self->packet_size_bytes = config->packet_size_bytes;
+    self->packet_queue_len = config->packet_queue_len;
+    self->max_eps = MIN(UCT_PCIE_MAX_EPS, config->max_eps);
+    self->eps_init_cnt = 0;
+    self->connections = 0;
+
+    /* --- Open SISCI virtual devices --- */
+    SCIOpen(&self->vdev_recv, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIOpen (vdev_recv): %s", SCIGetErrorString(sci_error));
+        goto err_destroy_mutex;
+    }
+
+    SCIOpen(&self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIOpen (vdev_ep): %s", SCIGetErrorString(sci_error));
+        goto err_free_vdev_recv;
+    }
+
+    SCIOpen(&self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIOpen (vdev_rma): %s", SCIGetErrorString(sci_error));
+        goto err_free_vdev_ep;
+    }
+
+    SCIOpen(&self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIOpen (vdev_ctl): %s", SCIGetErrorString(sci_error));
+        goto err_free_vdev_rma;
+    }
+
+    /* --- Control segment: remote ifaces write ack counters into this --- */
+    control_segment_size = sizeof(uct_pcie_ctl_t) * self->max_eps;
+    ret = uct_pcie_helper_create_seg_set_avail(
+        sci_md->sci_virtual_device,
+        &self->ctl_segment,
+        &self->ctl_segment_map,
+        control_segment_size,
+        &self->ctl_segment_id,
+        (void **)&self->ctls);
+    if (ret != 0) {
+        ucs_error("Failed to set up control segment");
+        goto err_free_vdev_ctl;
+    }
+
+    /* Initialize connection descriptors; receive segments are created per-connection
+     * in uct_pcie_conn_handler when each connection is accepted. */
+    for (i = 0; i < self->max_eps; i++) {
+        self->sci_cds[i].cd_status        = UCT_PCIE_CD_AVAILABLE;
+        self->sci_cds[i].ep_conn_last_ack = 0;
+        self->ctls[i].ep_conn_ack         = 0;
+    }
+
+    /* --- DMA engine (reserved for future async put_zcopy / get) ---
+     * The staging segment provides SISCI with a pinned local buffer to use as
+     * the DMA source or destination. The DMA queue serializes transfer requests
+     * per iface. Both are created now and torn down in the iface destructor,
+     * but remain idle until a DMA code path is wired in. */
+    ret = uct_pcie_helper_create_segment(
+        sci_md->sci_virtual_device,
+        &self->dma_segment,
+        &self->dma_map,
+        self->packet_size_bytes,
+        &dma_seg_id,
+        &self->dma_buffer);
+    if (ret != 0) {
+        ucs_error("Failed to set up DMA staging segment");
+        goto err_remove_ctl_seg;
+    }
+
+    SCICreateDMAQueue(
+        sci_md->sci_virtual_device,
+        &self->dma_queue,
+        UCT_PCIE_LOCAL_ADAPTER_NO,
+        10,
+        UCT_PCIE_NO_FLAGS,
+        &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCICreateDMAQueue: %s", SCIGetErrorString(sci_error));
+        goto err_remove_dma_seg;
+    }
+
+    /* --- Connection interrupt: entry point for incoming EP connections --- */
+    SCICreateDataInterrupt(
+        sci_md->sci_virtual_device,
+        &self->interrupt,
+        UCT_PCIE_LOCAL_ADAPTER_NO,
+        &self->interrupt_no,
+        uct_pcie_conn_handler,
+        self,
+        SCI_FLAG_USE_CALLBACK,
+        &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCICreateDataInterrupt: %s", SCIGetErrorString(sci_error));
+        goto err_remove_dma_queue;
+    }
+
+    ucs_debug("iface_addr: %d dev_addr: %d segment_size %zd\n",
+        self->interrupt_no,
+        self->device_addr,
+        self->packet_size_bytes);
+
+    return UCS_OK;
+
+err_remove_dma_queue:
+    SCIRemoveDMAQueue(self->dma_queue, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIRemoveDMAQueue: %s", SCIGetErrorString(sci_error));
+    }
+err_remove_dma_seg:
+    uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
+err_remove_ctl_seg:
+    uct_pcie_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
+err_free_vdev_ctl:
+    SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
+err_free_vdev_rma:
+    SCIClose(self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
+err_free_vdev_ep:
+    SCIClose(self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
+err_free_vdev_recv:
+    SCIClose(self->vdev_recv, UCT_PCIE_NO_FLAGS, &sci_error);
+err_destroy_mutex:
+    pthread_mutex_destroy(&self->lock);
+err:
+    return UCS_ERR_NO_RESOURCE;
+}
+
+
+/**
+ * @brief Tear down the interface and free everything allocated during init.
+ *
+ * self is a uct_pcie_iface_t *   - injected by the UCS_CLASS_CLEANUP_FUNC macro.
+ */
+static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
+{
+    sci_error_t sci_error;
+
+    uct_base_iface_progress_disable(&self->super.super,
+                                    UCT_PROGRESS_SEND | UCT_PROGRESS_RECV);
+
+    /* Remove the connection interrupt first: this stops any new incoming
+     * connections before we start tearing down segments. */
+    SCIRemoveDataInterrupt(self->interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
+
+    /* Tear down every active incoming connection: disconnect from its control
+     * segment and remove its per-connection receive segment. */
+    for (ssize_t i = 0; i < self->connections; i++) {
+        if (self->sci_cds[i].cd_status == UCT_PCIE_CD_READY) {
+            self->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
+            uct_pcie_disconnect_segment(
+                self->sci_cds[i].ctl_segment,
+                self->sci_cds[i].ctl_segment_map);
+            uct_pcie_helper_remove_seg_set_unavail(
+                self->sci_cds[i].recv_segment,
+                self->sci_cds[i].recv_segment_map);
+            self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
+        }
+    }
+
+    /* DMA engine */
+    SCIRemoveDMAQueue(self->dma_queue, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIRemoveDMAQueue: %s", SCIGetErrorString(sci_error));
+    }
+    uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
+
+    /* Control segment */
+    uct_pcie_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
+
+    /* Closing device descriptors */
+    SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
+    SCIClose(self->vdev_recv, UCT_PCIE_NO_FLAGS, &sci_error);
+
+    /* All EPs must have been destroyed (and their pending queues purged) before
+     * the iface is cleaned up, so the arbiter should be empty here. */
+    ucs_arbiter_cleanup(&self->arbiter);
+
+    pthread_mutex_destroy(&self->lock);
+}
+
+
+/* block of macros defining the interface class */ 
+UCS_CLASS_DEFINE(uct_pcie_iface_t, uct_base_iface_t);
+
+static UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_iface_t, uct_iface_t);
+
+static UCS_CLASS_DEFINE_NEW_FUNC(
+    uct_pcie_iface_t,
+    uct_iface_t,
+    uct_md_h,
+    uct_worker_h,
+    const uct_iface_params_t*,
+    const uct_iface_config_t*);
+
+
+/******************************************************************************/
+/*** Iface operations *********************************************************/
+
+/**
+ * @brief Enumerate transport devices visible to this MD.
+ *
+ * Reports a single device entry named "pcie". Node addressing is handled at
+ * the EP level via SISCI node IDs, so one device entry covers all remote nodes.
+ *
+ * @param[in]  md            Memory domain handle.
+ * @param[out] devices_p     Allocated array of device descriptors (caller frees).
+ * @param[out] num_devices_p Number of entries written.
+ */
+static ucs_status_t uct_pcie_query_devices(
+    uct_md_h md,
+    uct_tl_device_resource_t **devices_p,
+    unsigned *num_devices_p)
+{
+    ucs_status_t status = -1;
+       
+    status = uct_single_device_resource(
+        md,
+        UCT_PCIE_NAME,
+        UCT_DEVICE_TYPE_NET,
+        UCS_SYS_DEVICE_ID_UNKNOWN,
+        devices_p,
+        num_devices_p);
+    
+    return status; 
+}
+
+/**
+ * @brief UCT v1 reachability bridge.
+ *
+ * The v1 signature (dev_addr, iface_addr) is required by the iface_ops vtable.
+ * uct_base_iface_is_reachable packs those arguments into a params struct and
+ * forwards to uct_pcie_iface_is_reachable_v2. All reachability logic lives
+ * there; nothing needs to be maintained here.
+ *
+ * @param[in] tl_iface   Local interface handle.
+ * @param[in] dev_addr   Remote device address (forwarded to v2).
+ * @param[in] iface_addr Remote interface address (forwarded to v2; unused).
+ * @return 1 if reachable, 0 otherwise.
+ */
+static int uct_pcie_iface_is_reachable(
+    const uct_iface_h tl_iface,
+    const uct_device_addr_t *dev_addr,
+    const uct_iface_addr_t *iface_addr)
+{
+    return uct_base_iface_is_reachable(tl_iface, dev_addr, iface_addr);
+}
+
+/**
+ * @brief Write the local SISCI node ID into a device address buffer.
+ *
+ * The device address is the node ID by which this machine is reachable via
+ * SISCI. It is obtained from SCIGetLocalNodeId during iface init.
+ *
+ * @param[in]  iface  Interface handle.
+ * @param[out] addr   Device address buffer (sizeof(uct_pcie_device_addr_t)).
+ */
+ucs_status_t uct_pcie_get_device_address(
+    uct_iface_h iface,
+    uct_device_addr_t *addr)
+{
+    uct_pcie_iface_t* sci_iface = ucs_derived_of(iface, uct_pcie_iface_t);
+    uct_pcie_device_addr_t* sci_addr = (uct_pcie_device_addr_t *) addr;
+    
+    sci_addr->node_id = sci_iface->device_addr;
+    
+    return UCS_OK;
+}
+
+
+/**
+ * @brief Fill in the interface address exported to connecting endpoints.
+ *
+ * The interface address carries three fields that a remote EP needs at
+ * creation time:
+ *   - interrupt_no:   data interrupt number to send connection requests to.
+ *   - rma_seg_id:     SISCI segment ID of this node's shared RMA segment
+ *                     [LIBPERF_RKEY_QUIRK 1].
+ *   - rma_local_base: local VA of the RMA segment on this node, used by the
+ *                     remote side to recover a plain segment offset from the
+ *                     remote_addr value [LIBPERF_RKEY_QUIRK 2].
+ *
+ * See [LIBPERF_RKEY_QUIRK] in pcie_iface.h for the full explanation.
+ *
+ * @param[in]  tl_iface  Interface handle.
+ * @param[out] addr       Interface address buffer (sizeof(uct_pcie_iface_addr_t)).
+ */
+ucs_status_t uct_pcie_iface_get_address(
+    uct_iface_h tl_iface,
+    uct_iface_addr_t *addr)
+{
+    uct_pcie_iface_t *iface    = ucs_derived_of(tl_iface, uct_pcie_iface_t);
+    uct_pcie_md_t    *md       = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    uct_pcie_iface_addr_t *iface_addr = (uct_pcie_iface_addr_t *)addr;
+
+    iface_addr->interrupt_no    = iface->interrupt_no;
+    iface_addr->rma_seg_id = md->rma_seg_id;
+    iface_addr->rma_local_base    = (uint64_t)(uintptr_t)md->rma_buf_local;
+
+    return UCS_OK;
+}
+
+
+/**
+ * @brief Enable progress callbacks for this interface.
+ *
+ * Forwards to uct_base_iface_progress_enable, which registers
+ * uct_pcie_iface_progress with the worker's progress engine so that
+ * incoming AM packets are processed and the pending send arbiter is dispatched.
+ *
+ * @param[in] iface  Interface handle.
+ * @param[in] flags  UCT_PROGRESS_SEND | UCT_PROGRESS_RECV or a subset.
+ */
+void uct_pcie_iface_progress_enable(uct_iface_h iface, unsigned flags) {
+    uct_base_iface_progress_enable(iface, flags);
+}
+
+/**
+ * @brief Arbiter callback: retry a previously blocked AM send.
+ *
+ * Called during iface_progress for each pending request.
+ */
+static ucs_arbiter_cb_result_t
+uct_pcie_ep_dispatch_pending(
+    ucs_arbiter_t       *arbiter,
+    ucs_arbiter_group_t *group,
+    ucs_arbiter_elem_t  *elem,
+    void                *arg)
+{
+    uct_pending_req_t *req = ucs_container_of(elem, uct_pending_req_t, priv);
+    /* req->func is the AM send function (am_short, am_bcopy, am_zcopy, etc.)
+     * that originally returned UCS_ERR_NO_RESOURCE. */
+    ucs_status_t status = req->func(req);
+
+    /* Report the retry result to the arbiter using its expected return codes. */
+    if (status == UCS_OK) {
+        return UCS_ARBITER_CB_RESULT_REMOVE_ELEM;
+    } else if (status == UCS_INPROGRESS) {
+        return UCS_ARBITER_CB_RESULT_NEXT_GROUP;
+    } else {
+        return UCS_ARBITER_CB_RESULT_RESCHED_GROUP;
+    }
+}
+
+/**
+ * @brief Process all pending incoming packets across all connections.
+ *
+ * For each ready connection, drains all consecutively posted packets
+ * from the ring buffer slot by slot. For each packet, the AM handler
+ * is invoked and the ack counter is advanced so the remote sender
+ * can reuse the slot.
+ *
+ * Note: Only processes packets in order. Stops at the first unposted
+ * slot, since the sender guarantees sequential posting.
+ *
+ * @return Number of packets processed
+ */
+unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
+    uct_pcie_iface_t     *iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
+    uct_pcie_conn_desc_t *cd;
+    uct_pcie_am_hdr_t    *packet;
+    void                 *packet_payload_ptr;
+    ucs_status_t          ucs_ret;
+    uint32_t              packet_queue_index;
+    uint32_t              packet_offset;
+    unsigned              count = 0;
+
+    for (size_t i = 0; i < iface->connections; i++) {
+        cd = &iface->sci_cds[i];
+
+        if (cd->cd_status != UCT_PCIE_CD_READY) {
+            continue;
+        }
+
+        /* Drain all consecutively posted packets for this connection */
+        while (1) {
+            packet_queue_index = (cd->ep_conn_last_ack + 1) % iface->packet_queue_len;
+            packet_offset      = iface->packet_size_bytes * packet_queue_index;
+            packet             = (uct_pcie_am_hdr_t *) &cd->packet_queue_buf[packet_offset];
+
+            /* Stop if the next slot has not been posted by the sender yet */
+            if (packet->am_message_posted != 1) {
+                break;
+            }
+
+            packet_payload_ptr = (void *)
+                &cd->packet_queue_buf[packet_offset + sizeof(uct_pcie_am_hdr_t)];
+
+            ucs_ret = uct_iface_invoke_am(
+                &iface->super,
+                packet->am_id,
+                packet_payload_ptr,
+                packet->am_length,
+                0);
+
+            if (ucs_ret == UCS_INPROGRESS) {
+                /* AM handler is not done with the buffer yet, retry next progress call */
+                ucs_debug("uct_pcie_iface_progress in progress");
+                break;
+            }
+
+            if (ucs_ret != UCS_OK) {
+                ucs_error("uct_pcie_iface_progress returned error %d", ucs_ret);
+                break;
+            }
+
+            /* Mark the slot as free and notify the sender by advancing the ack counter */
+            packet->am_message_posted = 0;
+            cd->ep_conn_last_ack++;
+            cd->ctl_buf->ep_conn_ack = cd->ep_conn_last_ack;
+            SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+
+            count++;
+        }
+    }
+
+    /* Retry blocked sends. ack counters advanced above, which may have opened
+     * flow-control slots. Call chain: ucs_arbiter_dispatch ->
+     * uct_pcie_ep_dispatch_pending -> req->func (am_short / am_bcopy / am_zcopy).
+     * The send function itself checks whether there is now room in the ring
+     * buffer. Quota=1 means at most one element per EP group per tick,
+     * preventing any single EP from starving others. */
+    ucs_arbiter_dispatch(&iface->arbiter, 1, uct_pcie_ep_dispatch_pending, NULL);
+
+    return count;
+}
+
+/**
+ * @brief Report interface capabilities and performance parameters.
+ *
+ * Advertises AM and put operations in short, bcopy, and zcopy variants, plus
+ * get in all three variants via CPU reads through the PCIe MMIO window.
+ * Atomics are not advertised (see [NO_ATOMICS] in pcie_ep.c). Latency and
+ * bandwidth figures are conservative estimates for a PCIe 4.0 x16 link.
+ *
+ * @param[in]  tl_iface  Interface handle.
+ * @param[out] attr       Attribute structure to populate.
+ */
+static ucs_status_t uct_pcie_iface_query(
+    uct_iface_h tl_iface,
+    uct_iface_attr_t *attr)
+{
+    size_t am_max;
+    uct_pcie_iface_t *iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
+
+    uct_base_iface_query(ucs_derived_of(tl_iface, uct_base_iface_t), attr);
+
+    attr->cap.flags = UCT_IFACE_FLAG_CONNECT_TO_IFACE |
+                      UCT_IFACE_FLAG_INTER_NODE       |
+                      UCT_IFACE_FLAG_CB_SYNC          |
+                      UCT_IFACE_FLAG_AM_SHORT         |
+                      UCT_IFACE_FLAG_AM_BCOPY         |
+                      UCT_IFACE_FLAG_AM_ZCOPY         |
+                      UCT_IFACE_FLAG_PUT_SHORT        |
+                      UCT_IFACE_FLAG_PUT_BCOPY        |
+                      UCT_IFACE_FLAG_PUT_ZCOPY        |
+                      UCT_IFACE_FLAG_GET_SHORT        |
+                      UCT_IFACE_FLAG_GET_BCOPY        |
+                      UCT_IFACE_FLAG_GET_ZCOPY;
+    attr->cap.event_flags = 0;
+
+    attr->device_addr_len = sizeof(uct_pcie_device_addr_t);
+    attr->iface_addr_len  = sizeof(uct_pcie_iface_addr_t);
+    attr->ep_addr_len     = 0;
+
+    /* AM limits: each slot holds one uct_pcie_am_hdr_t followed by user data.
+     * All variants share the same slot-remainder bound. */
+    am_max = iface->packet_size_bytes - sizeof(uct_pcie_am_hdr_t);
+    attr->cap.am.max_short = am_max;
+    attr->cap.am.max_bcopy = am_max;
+    attr->cap.am.min_zcopy = 0;
+    attr->cap.am.max_zcopy = am_max;
+    attr->cap.am.max_iov   = 10;
+    attr->cap.am.max_hdr   = am_max;
+
+    /* Put limits: writes go directly into the remote SISCI segment through the
+     * PCIe MMIO window.  put_bcopy has no transport-level size limit (bounded
+     * only by the remote segment size).  put_short is limited to keep it a
+     * fast inline path. */
+    attr->cap.put.max_short        = UCT_PCIE_MAX_PUT_SHORT;
+    attr->cap.put.max_bcopy        = UCT_PCIE_RMA_SEG_SIZE;
+    attr->cap.put.min_zcopy        = 0;
+    attr->cap.put.max_zcopy        = UCT_PCIE_RMA_SEG_SIZE;
+    attr->cap.put.opt_zcopy_align  = 1;
+    attr->cap.put.align_mtu        = 1;
+    attr->cap.put.max_iov          = 1;
+
+    /* Get limits: reads go directly from the remote SISCI segment window.
+     * Synchronous PIO; zcopy scatters into caller-supplied iov buffers. */
+    attr->cap.get.max_short        = UCT_PCIE_MAX_PUT_SHORT;
+    attr->cap.get.max_bcopy        = UCT_PCIE_RMA_SEG_SIZE;
+    attr->cap.get.min_zcopy        = 0;
+    attr->cap.get.max_zcopy        = UCT_PCIE_RMA_SEG_SIZE;
+    attr->cap.get.opt_zcopy_align  = 1;
+    attr->cap.get.align_mtu        = 1;
+    attr->cap.get.max_iov          = 1;
+
+    /* Conservative PCIe performance estimates.
+     * Latency: ~1 microsecond for a PCIe round trip.
+     * Bandwidth: ~20 GB/s (conservative for PCIe 4.0 x16, actual numbers depends on slot width and gen).
+     */
+    attr->latency             = ucs_linear_func_make(1e-6, 0);
+    attr->bandwidth.dedicated = 20 * UCS_GBYTE;
+    attr->bandwidth.shared    = 0;
+    attr->overhead            = 1e-6;
+    attr->priority            = 0;
+
+    return UCS_OK;
+}
+
+static uct_iface_ops_t uct_pcie_iface_ops = {
+    .ep_put_short             = uct_pcie_ep_put_short,
+    .ep_put_bcopy             = uct_pcie_ep_put_bcopy,
+    .ep_put_zcopy             = uct_pcie_ep_put_zcopy,
+    .ep_get_short             = uct_pcie_ep_get_short,
+    .ep_get_bcopy             = uct_pcie_ep_get_bcopy,
+    .ep_get_zcopy             = uct_pcie_ep_get_zcopy,
+    
+    .ep_am_short              = uct_pcie_ep_am_short,
+    .ep_am_short_iov          = uct_pcie_ep_am_short_iov,
+    .ep_am_bcopy              = uct_pcie_ep_am_bcopy,
+    .ep_am_zcopy              = uct_pcie_ep_am_zcopy,
+    
+    /* [NO_ATOMICS] Transport will not implement atomics. */
+    .ep_atomic_cswap64        = uct_pcie_ep_atomic_cswap64,
+    .ep_atomic64_post         = uct_pcie_ep_atomic64_post,
+    .ep_atomic64_fetch        = uct_pcie_ep_atomic64_fetch,
+    .ep_atomic_cswap32        = uct_pcie_ep_atomic_cswap32,
+    .ep_atomic32_post         = uct_pcie_ep_atomic32_post,
+    .ep_atomic32_fetch        = uct_pcie_ep_atomic32_fetch,
+
+    .ep_flush                 = uct_base_ep_flush,
+    .ep_fence                 = uct_base_ep_fence,
+    .ep_check                 = ucs_empty_function_return_success,
+    .ep_pending_add           = uct_pcie_ep_pending_add,
+    .ep_pending_purge         = uct_pcie_ep_pending_purge,
+    .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_pcie_ep_t),
+    .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_pcie_ep_t),
+    .iface_flush              = uct_base_iface_flush,
+    .iface_fence              = uct_base_iface_fence,
+    .iface_progress_enable    = uct_pcie_iface_progress_enable,
+    .iface_progress_disable   = uct_base_iface_progress_disable,
+    .iface_progress           = uct_pcie_iface_progress,
+    .iface_event_arm          = ucs_empty_function_return_success,
+    .iface_close              = UCS_CLASS_DELETE_FUNC_NAME(uct_pcie_iface_t),
+    .iface_query              = uct_pcie_iface_query,
+    .iface_get_device_address = uct_pcie_get_device_address,
+    .iface_get_address        = uct_pcie_iface_get_address,
+    .iface_is_reachable       = uct_pcie_iface_is_reachable
+};
+
+extern uct_component_t uct_pcie_component;
+
+#define UCT_PCIE_CONFIG_PREFIX "PCIE_"
+
+/**
+ * @brief Construct a new uct tl define object
+ *  component:
+ *  transport name
+ *  device_query()
+ *  iface type
+ *  config prefix
+ *  config table
+ *  type of config table
+ */
+UCT_TL_DEFINE(
+    &uct_pcie_component,
+    pcie,
+    uct_pcie_query_devices,
+    uct_pcie_iface_t,
+    UCT_PCIE_CONFIG_PREFIX,
+    uct_pcie_iface_config_table,
+    uct_pcie_iface_config_t);
+
+
+UCS_STATIC_INIT
+{
+    sci_error_t sci_error;
+    SCIInitialize(UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIInitialize error: %s", SCIGetErrorString(sci_error));
+    }
+}
+
+UCS_STATIC_CLEANUP
+{
+    SCITerminate();
+}
