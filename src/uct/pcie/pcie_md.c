@@ -93,6 +93,7 @@ static ucs_status_t uct_pcie_mem_alloc(
     size_t *length_p,
     void **address_p,
     ucs_memory_type_t mem_type,
+    ucs_sys_device_t sys_dev,
     unsigned flags,
     const char *alloc_name,
     uct_mem_h *memh_p)
@@ -164,7 +165,8 @@ static ucs_status_t uct_pcie_mkey_pack(uct_md_h uct_md, uct_mem_h memh,
 }
 
 static ucs_status_t uct_pcie_md_rkey_unpack(uct_component_t *component,
-    const void *rkey_buffer, uct_rkey_t *rkey_p, void **handle_p)
+    const void *rkey_buffer, const uct_rkey_unpack_params_t *params,
+    uct_rkey_t *rkey_p, void **handle_p)
 {
     *rkey_p   = 0;
     *handle_p = NULL;
@@ -218,9 +220,9 @@ static ucs_status_t uct_pcie_md_open(
          * Registration would only be feasible for memory whose IO address is
          * already known (e.g. device-mapped buffers, CUDA memory via the SISCI
          * CUDA flag). */
-        .mem_reg            = ucs_empty_function_return_unsupported,
-        .mem_dereg          = ucs_empty_function_return_unsupported,
-        .detect_memory_type = ucs_empty_function_return_unsupported
+        .mem_reg            = (uct_md_mem_reg_func_t)ucs_empty_function_return_unsupported,
+        .mem_dereg          = (uct_md_mem_dereg_func_t)ucs_empty_function_return_unsupported,
+        .detect_memory_type = (uct_md_detect_memory_type_func_t)ucs_empty_function_return_unsupported
     };
 
     static uct_pcie_md_t md;
@@ -265,9 +267,9 @@ static ucs_status_t uct_pcie_md_open(
 uct_component_t uct_pcie_component = {
     .query_md_resources = uct_md_query_single_md_resource,
     .md_open            = uct_pcie_md_open,
-    .cm_open            = ucs_empty_function_return_unsupported,
+    .cm_open            = (uct_component_cm_open_func_t)ucs_empty_function_return_unsupported,
     .rkey_unpack        = uct_pcie_md_rkey_unpack,
-    .rkey_ptr           = ucs_empty_function_return_unsupported,
+    .rkey_ptr           = (uct_component_rkey_ptr_func_t)ucs_empty_function_return_unsupported,
     .rkey_release       = uct_pcie_rkey_release,
     .rkey_compare       = uct_base_rkey_compare,
     .name               = UCT_PCIE_NAME,
