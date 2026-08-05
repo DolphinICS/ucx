@@ -85,11 +85,7 @@ libuct_la_SOURCES = \
 	tcp/tcp_base.c \
 	tcp/tcp_sockcm.c \
 	tcp/tcp_listener.c \
-	tcp/tcp_sockcm_ep.c \
-	pcie/pcie_iface.c \
-	pcie/pcie_ep.c \
-	pcie/pcie_md.c \
-	pcie/pcie_sisci_helper.c
+	tcp/tcp_sockcm_ep.c
 
 PKG_CONFIG_NAME=uct
 
