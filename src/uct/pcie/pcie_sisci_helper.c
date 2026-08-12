@@ -26,12 +26,14 @@ int uct_pcie_helper_create_segment(
     void **buf)
 {
     sci_error_t sci_error;
+    /* segment id, but by specifying SCI_FLAG_AUTO_ID
+     * we are asking sisci to give us an available one from [1024,1152] */
+    unsigned int auto_segid_start = 1024;
 
     SCICreateSegment(
         sd,
         segment,
-        0,  /* segment_id, but by specifying SCI_FLAG_AUTO_ID
-             * we are asking sisci to give us an available one from [0,128] */
+        auto_segid_start,
         segment_size,
         UCT_PCIE_NO_CALLBACK,
         NULL, /* callbackArg == NULL */
