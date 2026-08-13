@@ -41,6 +41,8 @@ static void uct_pcie_md_close(uct_md_h md) {
         ucs_error("Error closing Virtual_Device error: %s",
             SCIGetErrorString(sci_error));
     }
+
+    ucs_free(sci_md);
 }
 
 /**
@@ -190,7 +192,8 @@ static ucs_status_t uct_pcie_rkey_release(uct_component_t *component,
  * immediately so that remote EPs can connect to it during the handshake
  * without any additional setup step.
  *
- * The MD is a static singleton. There is at most one PCIE MD per process.
+ * Each call returns an independent MD instance: multiple ucp_contexts (and
+ * therefore multiple open pcie MDs) can coexist in the same process.
  *
  * @param[in]  component  UCX component handle.
  * @param[in]  md_name    Device name (ignored; always "pcie").
@@ -225,41 +228,53 @@ static ucs_status_t uct_pcie_md_open(
         .detect_memory_type = (uct_md_detect_memory_type_func_t)ucs_empty_function_return_unsupported
     };
 
-    static uct_pcie_md_t md;
+    uct_pcie_md_t *md;
     sci_error_t errors;
     int ret;
 
-    SCIOpen(&md.sci_virtual_device, UCT_PCIE_NO_FLAGS, &errors);
+    /* One md_open call per ucp_context/process is not a safe assumption:
+     * multiple independent contexts (e.g. an MPI library's own UCX context
+     * alongside a separate UCC context) can coexist in the same process, so
+     * the MD must be a distinct heap instance per open, not a shared static. */
+    md = ucs_malloc(sizeof(*md), "uct_pcie_md_t");
+    if (md == NULL) {
+        ucs_error("failed to allocate uct_pcie_md_t");
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    SCIOpen(&md->sci_virtual_device, UCT_PCIE_NO_FLAGS, &errors);
     if (errors != SCI_ERR_OK) {
         ucs_error("SCIOpen: %s", SCIGetErrorString(errors));
+        ucs_free(md);
         return UCS_ERR_NO_RESOURCE;
     }
 
     /* Pre-allocate the shared segment that all mem_alloc calls draw from.
      * Set it available immediately so remote EPs can connect during handshake. */
     ret = uct_pcie_helper_create_seg_set_avail(
-        md.sci_virtual_device,
-        &md.rma_seg,
-        &md.rma_seg_map,
+        md->sci_virtual_device,
+        &md->rma_seg,
+        &md->rma_seg_map,
         UCT_PCIE_RMA_SEG_SIZE,
-        &md.rma_seg_id,
-        &md.rma_buf_local);
+        &md->rma_seg_id,
+        &md->rma_buf_local);
     if (ret != 0) {
         ucs_error("pcie MD: failed to create shared segment");
-        SCIClose(md.sci_virtual_device, 0, &errors);
+        SCIClose(md->sci_virtual_device, 0, &errors);
+        ucs_free(md);
         return UCS_ERR_NO_RESOURCE;
     }
 
-    md.rma_allocated  = 0;
-    md.super.ops       = &md_ops;
-    md.super.component = &uct_pcie_component;
-    md.num_devices     = md_config->num_devices;
+    md->rma_allocated  = 0;
+    md->super.ops       = &md_ops;
+    md->super.component = &uct_pcie_component;
+    md->num_devices     = md_config->num_devices;
 
-    *md_p   = &md.super;
+    *md_p   = &md->super;
     md_name = "pcie";
 
     ucs_debug("MD open: rma_seg_id=%u rma_buf_local=%p",
-              md.rma_seg_id, md.rma_buf_local);
+              md->rma_seg_id, md->rma_buf_local);
 
     return UCS_OK;
 }
