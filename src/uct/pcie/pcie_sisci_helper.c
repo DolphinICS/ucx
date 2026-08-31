@@ -66,7 +66,7 @@ int uct_pcie_helper_create_segment(
     if (sci_error != SCI_ERR_OK) { 
         ucs_error("SCIMapLocalSegment failed: %s",
             SCIGetErrorString(sci_error));
-        SCIRemoveSegment(*segment, UCT_PCIE_NO_FLAGS , &sci_error);
+        SCIRemoveSegment(*segment, UCT_PCIE_NO_FLAGS, &sci_error);
         return -1;
     }
 
@@ -95,7 +95,7 @@ void uct_pcie_helper_remove_segment(
         ucs_warn("SCIUnmapSegment failed: %s\n", SCIGetErrorString(sci_error));
     }
 
-    SCIRemoveSegment(segment, SCI_FLAG_FORCE_REMOVE , &sci_error);
+    SCIRemoveSegment(segment, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_warn("SCIRemoveSegment failed: %s\n", SCIGetErrorString(sci_error));
     }
