@@ -444,16 +444,16 @@ static UCS_CLASS_INIT_FUNC(
         self->ctls[i].ep_conn_ack         = 0;
     }
 
-    /* --- DMA engine (reserved for future async put_zcopy / get) ---
-     * The staging segment provides SISCI with a pinned local buffer to use as
-     * the DMA source or destination. The DMA queue serializes transfer requests
-     * per iface. Both are created now and torn down in the iface destructor,
-     * but remain idle until a DMA code path is wired in. */
+    /* --- DMA engine: staging buffer for get_zcopy's DMA path ---
+     * Sized to UCT_PCIE_RMA_SEG_SIZE so it can hold a full get_zcopy transfer
+     * (the largest span a remote_addr offset can cover). The DMA queue
+     * serializes transfer requests per iface; both are created now and torn
+     * down in the iface destructor. */
     ret = uct_pcie_helper_create_segment(
         sci_md->sci_virtual_device,
         &self->dma_segment,
         &self->dma_map,
-        self->packet_size_bytes,
+        UCT_PCIE_RMA_SEG_SIZE,
         &dma_seg_id,
         &self->dma_buffer);
     if (ret != 0) {
@@ -670,7 +670,7 @@ ucs_status_t uct_pcie_get_device_address(
  *   - interrupt_no:   data interrupt number to send connection requests to.
  *   - rma_seg_id:     SISCI segment ID of this node's shared RMA segment
  *                     [LIBPERF_RKEY_QUIRK 1].
- *   - rma_local_base: local VA of the RMA segment on this node, used by the
+ *   - rma_base:       local VA of the RMA segment on this node, used by the
  *                     remote side to recover a plain segment offset from the
  *                     remote_addr value [LIBPERF_RKEY_QUIRK 2].
  *
@@ -689,7 +689,7 @@ ucs_status_t uct_pcie_iface_get_address(
 
     iface_addr->interrupt_no    = iface->interrupt_no;
     iface_addr->rma_seg_id = md->rma_seg_id;
-    iface_addr->rma_local_base    = (uint64_t)(uintptr_t)md->rma_buf_local;
+    iface_addr->rma_base          = (uint64_t)(uintptr_t)md->rma_buf;
 
     return UCS_OK;
 }

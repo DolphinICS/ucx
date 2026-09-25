@@ -34,13 +34,18 @@ typedef struct {
     volatile int            is_connected;
 
     /* RMA segment: connection to the remote iface's shared segment, established
-     * at EP creation time using rma_seg_id and rma_base_va from iface_addr.
+     * at EP creation time using rma_seg_id and rma_base from iface_addr.
      * put_short / put_bcopy write into it; get_bcopy reads from it. */
     sci_remote_segment_t    rma_seg;
     sci_map_t               rma_seg_map;
-    void                   *rma_buf_local;  /* local VA of the remote segment window (this process) */
-    /* [LIBPERF_RKEY_QUIRK] see rma_local_base in uct_pcie_iface_addr_t */
-    uint64_t                rma_local_base;
+    /* PIO-mapped window onto the REMOTE node's rma_seg. It's a plain,
+     * locally-valid pointer - dereferencing it looks no different from
+     * touching local memory - but every access actually crosses PCIe. */
+    void                   *remote_rma_va;
+    /* [LIBPERF_RKEY_QUIRK] the remote peer's own rma_base (see
+     * uct_pcie_iface_addr_t), copied off the wire at connect time. Used only
+     * to decode remote_addr into a plain offset; not a local value. */
+    uint64_t                remote_rma_base;
 } uct_pcie_ep_t;
 
 

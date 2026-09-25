@@ -231,17 +231,17 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
         iface_addr->rma_seg_id,
         &self->rma_seg,
         &self->rma_seg_map,
-        (volatile void **)&self->rma_buf_local);
+        (volatile void **)&self->remote_rma_va);
     if (ret != 0) {
         ucs_error("EP: failed to connect to remote shared segment %u on node %u",
                   iface_addr->rma_seg_id, self->remote_node_id);
         iface->eps_init_cnt--;
         return UCS_ERR_NO_RESOURCE;
     }
-    self->rma_local_base = iface_addr->rma_local_base; /* [LIBPERF_RKEY_QUIRK] */
+    self->remote_rma_base = iface_addr->rma_base; /* [LIBPERF_RKEY_QUIRK] */
 
-    ucs_debug("EP shared: connected seg=%u node=%u rma_buf_local=%p",
-              iface_addr->rma_seg_id, self->remote_node_id, self->rma_buf_local);
+    ucs_debug("EP shared: connected seg=%u node=%u remote_rma_va=%p",
+              iface_addr->rma_seg_id, self->remote_node_id, self->remote_rma_va);
 
     /* --- Connect to the assigned window in the remote receive segment (AM sends) --- */
     ret = uct_pcie_connect_segment(
@@ -332,12 +332,14 @@ UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
  * it is simply an opaque integer that encodes a segment offset.  It must be
  * converted before use:
  *
- *   seg_offset = remote_addr - ep->rma_local_base  [LIBPERF_RKEY_QUIRK]
- *   local_ptr  = ep->rma_buf_local + seg_offset
+ *   seg_offset = remote_addr - ep->remote_rma_base  [LIBPERF_RKEY_QUIRK]
+ *   local_ptr  = ep->remote_rma_va + seg_offset
  *
- * ep->rma_buf_local is the actual local VA of the PCIe-mapped window into the
- * remote node's segment.  That is the SISCI remote address.  See
- * [LIBPERF_RKEY_QUIRK] in uct_pcie_iface_addr_t for why rma_local_base exists.
+ * ep->remote_rma_va is the actual local VA of the PCIe-mapped window into the
+ * remote node's segment - "remote_" because that's what it points at, despite
+ * being a pointer valid in this process. That is the SISCI remote address.
+ * See [LIBPERF_RKEY_QUIRK] in uct_pcie_iface_addr_t for why remote_rma_base
+ * (this EP's copy of the remote peer's own rma_base) exists.
  */
 
 /**
@@ -365,11 +367,11 @@ ucs_status_t uct_pcie_ep_put_short(
 
     UCT_CHECK_LENGTH(length, 0, UCT_PCIE_MAX_PUT_SHORT, "put_short");
 
-    ucs_assert(remote_addr >= ep->rma_local_base);
-    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(remote_addr >= ep->remote_rma_base);
+    seg_offset = (size_t)(remote_addr - ep->remote_rma_base); /* [LIBPERF_RKEY_QUIRK] */
     ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
 
-    memcpy((uint8_t *)ep->rma_buf_local + seg_offset, buffer, length);
+    memcpy((uint8_t *)ep->remote_rma_va + seg_offset, buffer, length);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return UCS_OK;
 }
@@ -399,44 +401,13 @@ ssize_t uct_pcie_ep_put_bcopy(
     size_t seg_offset;
     ssize_t length;
 
-    ucs_assert(remote_addr >= ep->rma_local_base);
-    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(remote_addr >= ep->remote_rma_base);
+    seg_offset = (size_t)(remote_addr - ep->remote_rma_base); /* [LIBPERF_RKEY_QUIRK] */
 
-    length = pack_cb((uint8_t *)ep->rma_buf_local + seg_offset, arg);
+    length = pack_cb((uint8_t *)ep->remote_rma_va + seg_offset, arg);
     ucs_assert(seg_offset + (size_t)length <= UCT_PCIE_RMA_SEG_SIZE);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return length;
-}
-
-
-/**
- * @brief Read a small region from the remote SISCI segment into a local buffer.
- *
- * Copies up to UCT_PCIE_MAX_PUT_SHORT bytes from the remote segment into the
- * caller's buffer.
- *
- * @param[in]  tl_ep       Endpoint handle.
- * @param[out] buffer      Destination buffer.
- * @param[in]  length      Number of bytes to read (≤ UCT_PCIE_MAX_PUT_SHORT).
- * @param[in]  remote_addr (see [UCT_REMOTE_ADDR]).
- * @param[in]  rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
- */
-ucs_status_t uct_pcie_ep_get_short(
-    uct_ep_h tl_ep,
-    void *buffer,
-    unsigned length,
-    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
-    uct_rkey_t rkey)
-{
-    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
-    size_t seg_offset;
-
-    ucs_assert(remote_addr >= ep->rma_local_base);
-    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
-    ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
-
-    memcpy(buffer, (const uint8_t *)ep->rma_buf_local + seg_offset, length);
-    return UCS_OK;
 }
 
 /**
@@ -470,14 +441,14 @@ ucs_status_t uct_pcie_ep_put_zcopy(
     size_t seg_offset;
     size_t total_len;
 
-    ucs_assert(remote_addr >= ep->rma_local_base);
-    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(remote_addr >= ep->remote_rma_base);
+    seg_offset = (size_t)(remote_addr - ep->remote_rma_base); /* [LIBPERF_RKEY_QUIRK] */
 
     total_len = uct_iov_total_length(iov, iovcnt);
     ucs_assert(seg_offset + total_len <= UCT_PCIE_RMA_SEG_SIZE);
     ucs_iov_iter_init(&iov_iter);
     uct_iov_to_buffer(iov, iovcnt, &iov_iter,
-                      (uint8_t *)ep->rma_buf_local + seg_offset, total_len);
+                      (uint8_t *)ep->remote_rma_va + seg_offset, total_len);
 
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     /* Do not invoke comp here. UCX zcopy contract: comp is only invoked when
@@ -487,12 +458,201 @@ ucs_status_t uct_pcie_ep_put_zcopy(
 }
 
 /**
- * @brief Read from the remote SISCI segment and scatter into an iov array.
+ * @brief Blocking DMA read: [remote_offset, remote_offset+length) into
+ * local_seg at local_offset.
  *
- * Copies length bytes from the remote segment into each iov buffer in order.
- * Completes synchronously; comp is not invoked (see put_zcopy for the UCX
- * zcopy completion convention). When a DMA path is added this function will
- * return UCS_INPROGRESS and invoke comp from iface_progress.
+ * @return 0 on success, -1 on any SISCI failure (logged here).
+ */
+static int uct_pcie_dma_get(
+    uct_pcie_iface_t *iface,
+    sci_local_segment_t local_seg,
+    size_t local_offset,
+    sci_remote_segment_t remote_seg,
+    size_t remote_offset,
+    size_t length)
+{
+    sci_error_t sci_error;
+    sci_dma_queue_state_t dma_state;
+
+    SCIStartDmaTransfer(
+        iface->dma_queue,
+        local_seg,
+        remote_seg,
+        local_offset,
+        length,
+        remote_offset, /* same offset the PIO path decodes */
+        UCT_PCIE_NO_CALLBACK,
+        NULL,
+        SCI_FLAG_DMA_READ,
+        &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_warn("SCIStartDmaTransfer (get): %s, falling back to PIO",
+                 SCIGetErrorString(sci_error));
+        return -1;
+    }
+
+    /* sci_error here only covers the wait call itself; the transfer's
+     * outcome is dma_state, which can be ERROR/ABORTED even if sci_error
+     * is OK. Both must be checked. */
+    dma_state = SCIWaitForDMAQueue(iface->dma_queue, SCI_INFINITE_TIMEOUT,
+                                   UCT_PCIE_NO_FLAGS, &sci_error);
+    if ((sci_error != SCI_ERR_OK) || (dma_state != SCI_DMAQUEUE_DONE)) {
+        ucs_warn("SCIWaitForDMAQueue (get): %s (state=%d), falling back to PIO",
+                 SCIGetErrorString(sci_error), dma_state);
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Resolve where to read length bytes of remote_addr from: the DMA
+ * staging buffer above the threshold, remote_rma_va (PIO) otherwise or on
+ * failure. See pcie_dma_strategy/README.md for the design rationale.
+ *
+ * @return Pointer to length valid bytes.
+ */
+static const void *uct_pcie_get_src(
+    uct_pcie_ep_t *ep,
+    uct_pcie_iface_t *iface,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
+    size_t length)
+{
+    size_t seg_offset;
+    /* sentinel must differ from uct_pcie_dma_get's 0 == success, because of length check */
+    int dma_ret = -1;
+
+    ucs_assert(remote_addr >= ep->remote_rma_base);
+    seg_offset = (size_t)(remote_addr - ep->remote_rma_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
+
+    if (length > UCT_PCIE_GET_DMA_THRESHOLD) {
+        dma_ret = uct_pcie_dma_get(iface, iface->dma_segment, 0,
+                                   ep->rma_seg, seg_offset, length);
+    }
+
+    return (dma_ret == 0) ? iface->dma_buffer
+                          : (const uint8_t *)ep->remote_rma_va + seg_offset;
+}
+
+/**
+ * @brief Get length bytes of remote_addr into dest, choosing among four
+ * mutually exclusive cases in order: PIO for short reads, direct DMA into
+ * dest when it's our own mem_alloc pool memory, staged DMA through
+ * iface->dma_segment otherwise, PIO as the final fallback if DMA is
+ * unavailable or every attempt above failed. See pcie_dma_strategy/README.md
+ * for the design rationale.
+ */
+static void uct_pcie_get_into(
+    uct_pcie_ep_t *ep,
+    uct_pcie_iface_t *iface,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
+    size_t length,
+    void *dest)
+{
+    uct_pcie_md_t *md = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    ptrdiff_t dest_offset = UCS_PTR_BYTE_DIFF(md->rma_buf, dest);
+    int dest_in_pool = (dest_offset >= 0) &&
+                       ((size_t)dest_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
+    size_t seg_offset;
+    int dma_ret;
+
+    ucs_assert(remote_addr >= ep->remote_rma_base);
+    seg_offset = (size_t)(remote_addr - ep->remote_rma_base); /* [LIBPERF_RKEY_QUIRK] */
+    ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
+
+    /* Case 1: too small to be worth a DMA setup cost - PIO, unconditionally. */
+    if (length <= UCT_PCIE_GET_DMA_THRESHOLD) {
+        memcpy(dest, (const uint8_t *)ep->remote_rma_va + seg_offset, length);
+        return;
+    }
+
+    /* Case 2: dest is our own mem_alloc pool - DMA lands directly in it,
+     * no local copy needed at all. */
+    dma_ret = -1;
+    if (dest_in_pool) {
+        dma_ret = uct_pcie_dma_get(iface, md->rma_seg, (size_t)dest_offset,
+                                   ep->rma_seg, seg_offset, length);
+    }
+    if (dma_ret == 0) {
+        return;
+    }
+
+    /* Case 3: dest is arbitrary memory (or case 2's DMA failed) - stage
+     * into iface->dma_segment, then copy out. Not a retry of case 2's DMA:
+     * this targets a different local segment, so it can still succeed. */
+    dma_ret = uct_pcie_dma_get(iface, iface->dma_segment, 0,
+                               ep->rma_seg, seg_offset, length);
+    if (dma_ret == 0) {
+        memcpy(dest, iface->dma_buffer, length);
+        return;
+    }
+
+    /* Case 4: DMA unavailable or every attempt above failed - PIO. */
+    memcpy(dest, (const uint8_t *)ep->remote_rma_va + seg_offset, length);
+}
+
+/**
+ * @brief Read a small region from the remote SISCI segment into a local buffer.
+ *
+ * @param[in]  tl_ep       Endpoint handle.
+ * @param[out] buffer      Destination buffer.
+ * @param[in]  length      Number of bytes to read (≤ UCT_PCIE_MAX_PUT_SHORT).
+ * @param[in]  remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in]  rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ */
+ucs_status_t uct_pcie_ep_get_short(
+    uct_ep_h tl_ep,
+    void *buffer,
+    unsigned length,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
+    uct_rkey_t rkey)
+{
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+
+    uct_pcie_get_into(ep, iface, remote_addr, length, buffer);
+    return UCS_OK;
+}
+
+/**
+ * @brief Read from the remote SISCI segment via a caller-provided unpack callback.
+ *
+ * comp is not invoked (see put_zcopy for the UCX zcopy completion
+ * convention).
+ *
+ * @param[in]  tl_ep       Endpoint handle.
+ * @param[in]  unpack_cb   Callback that consumes the read result.
+ * @param[in]  arg         Opaque argument forwarded to unpack_cb.
+ * @param[in]  length      Number of bytes to read.
+ * @param[in]  remote_addr (see [UCT_REMOTE_ADDR]).
+ * @param[in]  rkey        Remote key (unused; see [LIBPERF_RKEY_QUIRK]).
+ * @param[in]  comp        Completion handle (not invoked for synchronous UCS_OK).
+ */
+ucs_status_t uct_pcie_ep_get_bcopy(
+    uct_ep_h tl_ep,
+    uct_unpack_callback_t unpack_cb,
+    void *arg,
+    size_t length,
+    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
+    uct_rkey_t rkey,
+    uct_completion_t *comp)
+{
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+
+    unpack_cb(arg, uct_pcie_get_src(ep, iface, remote_addr, length), length);
+    return UCS_OK;
+}
+
+/**
+ * @brief Read from the remote SISCI segment into an iov array.
+ *
+ * Reads each entry independently via uct_pcie_get_into, since the remote
+ * side is one contiguous range but the destination may not be. See
+ * pcie_dma_strategy/README.md for the per-entry-vs-whole-transfer
+ * threshold rationale. comp is not invoked (see put_zcopy for the UCX
+ * zcopy completion convention).
  *
  * @param[in]  tl_ep       Endpoint handle.
  * @param[out] iov         Scatter-gather destination buffers.
@@ -510,44 +670,16 @@ ucs_status_t uct_pcie_ep_get_zcopy(
     uct_completion_t *comp)
 {
     uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
-    size_t seg_offset;
-    size_t total_len;
-    size_t i, src_offset;
+    uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uint64_t addr = remote_addr;
+    size_t i;
 
-    ucs_assert(remote_addr >= ep->rma_local_base);
-    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
-
-    total_len = uct_iov_total_length(iov, iovcnt);
-    ucs_assert(seg_offset + total_len <= UCT_PCIE_RMA_SEG_SIZE);
-
-    src_offset = 0;
     for (i = 0; i < iovcnt; i++) {
-        memcpy(iov[i].buffer,
-               (const uint8_t *)ep->rma_buf_local + seg_offset + src_offset,
-               iov[i].length);
-        src_offset += iov[i].length;
+        uct_pcie_get_into(ep, iface, addr, iov[i].length, iov[i].buffer);
+        addr += iov[i].length;
     }
 
     /* Do not invoke comp here. Same reasoning as put_zcopy above. */
-    return UCS_OK;
-}
-
-ucs_status_t uct_pcie_ep_get_bcopy(
-    uct_ep_h tl_ep,
-    uct_unpack_callback_t unpack_cb,
-    void *arg,
-    size_t length,
-    uint64_t remote_addr,  /* not a SISCI remote address, see [UCT_REMOTE_ADDR] */
-    uct_rkey_t rkey,
-    uct_completion_t *comp)
-{
-    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
-    size_t seg_offset;
-
-    ucs_assert(remote_addr >= ep->rma_local_base);
-    seg_offset = (size_t)(remote_addr - ep->rma_local_base); /* [LIBPERF_RKEY_QUIRK] */
-    ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
-    unpack_cb(arg, (const uint8_t *)ep->rma_buf_local + seg_offset, length);
     return UCS_OK;
 }
 
