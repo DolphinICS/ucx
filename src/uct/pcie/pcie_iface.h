@@ -36,6 +36,13 @@
  * calls draw from this pool.  1 MB is generous for typical put workloads. */
 #define UCT_PCIE_RMA_SEG_SIZE (1024 * 1024)
 
+/* Transfer-size threshold above which get_short/get_zcopy/get_bcopy use a
+ * DMA transfer into the iface's staging buffer instead of their PIO read
+ * loop. DMA has a fixed per-call cost (SCIStartDmaTransfer plus a blocking
+ * SCIWaitForDMAQueue) that PIO doesn't, so it only pays off once the
+ * transfer is big enough to amortize that cost. */
+#define UCT_PCIE_GET_DMA_THRESHOLD 255
+
 /* Iface address exchanged OOB before EP creation.
  * Were ucx_perftest to follow the UCT rkey contract, this struct would only
  * carry interrupt_no. The two extra fields are workarounds for libperf bugs. */
@@ -51,13 +58,13 @@ typedef struct {
     /* [LIBPERF_RKEY_QUIRK] quirk 2: this field exists only to cancel noise
      * introduced by a second libperf quirk. libperf dereferences *address_p
      * locally (memset, verify), so mem_alloc must return a real local VA
-     * (rma_buf_local + offset) rather than a plain segment offset. That bakes
-     * rma_buf_local into the value the initiator receives as remote_addr.
-     * rma_local_base = rma_buf_local on the target, sent here so the initiator
-     * can recover the plain offset:  seg_offset = remote_addr - rma_local_base
+     * (rma_buf + offset) rather than a plain segment offset. That bakes
+     * rma_buf into the value the initiator receives as remote_addr.
+     * rma_base = rma_buf on the target, sent here so the initiator can
+     * recover the plain offset:  seg_offset = remote_addr - rma_base
      * Were libperf not to dereference *address_p, remote_addr could be a plain
      * offset from zero and this field would not exist. */
-    uint64_t     rma_local_base;
+    uint64_t     rma_base;
 } UCS_S_PACKED uct_pcie_iface_addr_t;
 
 typedef struct {
@@ -156,9 +163,13 @@ typedef struct {
     /* Maximum number of simultaneously connected endpoints. */
     unsigned int                max_eps;
 
-    /* DMA engine, initialized at iface creation; reserved for future async
-     * put_zcopy / get operations. The staging segment gives SISCI a pinned
-     * local buffer; the queue serializes per-iface DMA requests. */
+    /* DMA engine, initialized at iface creation. Used by get_short/
+     * get_zcopy/get_bcopy for transfers above UCT_PCIE_GET_DMA_THRESHOLD:
+     * the staging segment is a pinned local buffer DMA reads land in before
+     * being copied out to the caller's destination, and the queue
+     * serializes per-iface DMA requests. Completion is synchronous (these
+     * functions block on SCIWaitForDMAQueue before returning), so only one
+     * transfer is ever posted to the queue at a time. */
     sci_dma_queue_t             dma_queue;
     sci_local_segment_t         dma_segment;
     sci_map_t                   dma_map;
