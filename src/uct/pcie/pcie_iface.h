@@ -33,8 +33,11 @@
 #define UCT_PCIE_MAX_PUT_SHORT 4096
 
 /* Size of the shared segment pre-allocated in the MD.  All mem_alloc
- * calls draw from this pool.  1 MB is generous for typical put workloads. */
-#define UCT_PCIE_RMA_SEG_SIZE (1024 * 1024)
+ * calls draw from this pool, and the iface's DMA staging segment uses the
+ * same size, so each process allocates two of these. Sizes this large need
+ * the SISCI driver's ntb_memory_preallocation_size_mb (dis_mx.conf) raised
+ * above its 10 MB default. */
+#define UCT_PCIE_RMA_SEG_SIZE (16 * 1024 * 1024)
 
 /* Transfer-size threshold above which get_short/get_zcopy/get_bcopy use a
  * DMA transfer into the iface's staging buffer instead of their PIO read
@@ -42,6 +45,13 @@
  * SCIWaitForDMAQueue) that PIO doesn't, so it only pays off once the
  * transfer is big enough to amortize that cost. */
 #define UCT_PCIE_GET_DMA_THRESHOLD 255
+
+/* Transfer-size threshold above which put_zcopy uses a DMA transfer, when
+ * its source is in the MD's mem_alloc pool. PIO writes are posted and
+ * pipeline, so they plateau close to link bandwidth; DMA only overtakes them
+ * for large transfers. Set from one sweep on a direct-attached Gen5 pair,
+ * where the crossover was between 512 KiB and 1 MiB. */
+#define UCT_PCIE_PUT_DMA_THRESHOLD (512 * 1024)
 
 /* Iface address exchanged OOB before EP creation.
  * Were ucx_perftest to follow the UCT rkey contract, this struct would only
