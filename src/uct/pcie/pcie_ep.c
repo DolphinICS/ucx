@@ -411,15 +411,65 @@ ssize_t uct_pcie_ep_put_bcopy(
 }
 
 /**
- * @brief Gather-write an iov array into the remote SISCI segment (PIO).
+ * @brief Blocking DMA between local_seg at local_offset and
+ * [remote_offset, remote_offset+length) of remote_seg. flags selects the
+ * direction: SCI_FLAG_DMA_READ for get, UCT_PCIE_NO_FLAGS (write) for put.
  *
- * Copies each iov buffer in order into the remote segment at the computed
- * offset using uct_iov_to_buffer, then flushes CPU write buffers.
+ * @return 0 on success, -1 on any SISCI failure (logged here).
+ */
+static int uct_pcie_dma_transfer(
+    uct_pcie_iface_t *iface,
+    sci_local_segment_t local_seg,
+    size_t local_offset,
+    sci_remote_segment_t remote_seg,
+    size_t remote_offset,
+    size_t length,
+    unsigned flags)
+{
+    const char *op = (flags & SCI_FLAG_DMA_READ) ? "get" : "put";
+    sci_error_t sci_error;
+    sci_dma_queue_state_t dma_state;
+
+    SCIStartDmaTransfer(
+        iface->dma_queue,
+        local_seg,
+        remote_seg,
+        local_offset,
+        length,
+        remote_offset, /* same offset the PIO path decodes */
+        UCT_PCIE_NO_CALLBACK,
+        NULL,
+        flags,
+        &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_warn("SCIStartDmaTransfer (%s): %s, falling back to PIO",
+                 op, SCIGetErrorString(sci_error));
+        return -1;
+    }
+
+    /* sci_error here only covers the wait call itself; the transfer's
+     * outcome is dma_state, which can be ERROR/ABORTED even if sci_error
+     * is OK. Both must be checked. */
+    dma_state = SCIWaitForDMAQueue(iface->dma_queue, SCI_INFINITE_TIMEOUT,
+                                   UCT_PCIE_NO_FLAGS, &sci_error);
+    if ((sci_error != SCI_ERR_OK) || (dma_state != SCI_DMAQUEUE_DONE)) {
+        ucs_warn("SCIWaitForDMAQueue (%s): %s (state=%d), falling back to PIO",
+                 op, SCIGetErrorString(sci_error), dma_state);
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Write an iov array into the remote SISCI segment.
+ *
+ * Above UCT_PCIE_PUT_DMA_THRESHOLD, a single contiguous iov that lies in our
+ * own mem_alloc pool is DMA'd straight from the pool segment. Everything
+ * else, and a failed DMA, is copied into the remote segment with
+ * uct_iov_to_buffer (PIO) followed by a CPU write-buffer flush.
  * Completes synchronously and returns UCS_OK; comp is not invoked (see
- * put_zcopy comment about UCX zcopy completion semantics).
- *
- * When a DMA path is added, this function will post a DMA transfer and return
- * UCS_INPROGRESS, at which point comp will be invoked from iface_progress.
+ * the comment at the end of the function about UCX zcopy completion semantics).
  *
  * @param[in] tl_ep       Endpoint handle.
  * @param[in] iov         Scatter-gather source buffers.
@@ -437,15 +487,40 @@ ucs_status_t uct_pcie_ep_put_zcopy(
     uct_completion_t *comp)
 {
     uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uct_pcie_md_t *md = ucs_derived_of(iface->super.md, uct_pcie_md_t);
     ucs_iov_iter_t iov_iter;
     size_t seg_offset;
     size_t total_len;
+    ptrdiff_t src_offset;
+    int src_in_pool;
+    int dma_ret;
 
     ucs_assert(remote_addr >= ep->remote_rma_base);
     seg_offset = (size_t)(remote_addr - ep->remote_rma_base); /* [LIBPERF_RKEY_QUIRK] */
 
     total_len = uct_iov_total_length(iov, iovcnt);
     ucs_assert(seg_offset + total_len <= UCT_PCIE_RMA_SEG_SIZE);
+
+    /* Pool-backed source: DMA segment to segment, no local copy. The
+     * range check stays behind the threshold so small puts don't pay it. */
+    if ((total_len > UCT_PCIE_PUT_DMA_THRESHOLD) && (iovcnt == 1) &&
+        (iov[0].count == 1)) {
+        src_offset  = UCS_PTR_BYTE_DIFF(md->rma_buf, iov[0].buffer);
+        src_in_pool = (src_offset >= 0) &&
+                      ((size_t)src_offset + total_len <= UCT_PCIE_RMA_SEG_SIZE);
+        dma_ret     = -1;
+        if (src_in_pool) {
+            dma_ret = uct_pcie_dma_transfer(iface, md->rma_seg,
+                                            (size_t)src_offset, ep->rma_seg,
+                                            seg_offset, total_len,
+                                            UCT_PCIE_NO_FLAGS);
+        }
+        if (dma_ret == 0) {
+            return UCS_OK;
+        }
+    }
+
     ucs_iov_iter_init(&iov_iter);
     uct_iov_to_buffer(iov, iovcnt, &iov_iter,
                       (uint8_t *)ep->remote_rma_va + seg_offset, total_len);
@@ -455,54 +530,6 @@ ucs_status_t uct_pcie_ep_put_zcopy(
      * returning UCS_INPROGRESS (async DMA path). UCS_OK means synchronous
      * completion; the caller uses the return value, not the callback. */
     return UCS_OK;
-}
-
-/**
- * @brief Blocking DMA read: [remote_offset, remote_offset+length) into
- * local_seg at local_offset.
- *
- * @return 0 on success, -1 on any SISCI failure (logged here).
- */
-static int uct_pcie_dma_get(
-    uct_pcie_iface_t *iface,
-    sci_local_segment_t local_seg,
-    size_t local_offset,
-    sci_remote_segment_t remote_seg,
-    size_t remote_offset,
-    size_t length)
-{
-    sci_error_t sci_error;
-    sci_dma_queue_state_t dma_state;
-
-    SCIStartDmaTransfer(
-        iface->dma_queue,
-        local_seg,
-        remote_seg,
-        local_offset,
-        length,
-        remote_offset, /* same offset the PIO path decodes */
-        UCT_PCIE_NO_CALLBACK,
-        NULL,
-        SCI_FLAG_DMA_READ,
-        &sci_error);
-    if (sci_error != SCI_ERR_OK) {
-        ucs_warn("SCIStartDmaTransfer (get): %s, falling back to PIO",
-                 SCIGetErrorString(sci_error));
-        return -1;
-    }
-
-    /* sci_error here only covers the wait call itself; the transfer's
-     * outcome is dma_state, which can be ERROR/ABORTED even if sci_error
-     * is OK. Both must be checked. */
-    dma_state = SCIWaitForDMAQueue(iface->dma_queue, SCI_INFINITE_TIMEOUT,
-                                   UCT_PCIE_NO_FLAGS, &sci_error);
-    if ((sci_error != SCI_ERR_OK) || (dma_state != SCI_DMAQUEUE_DONE)) {
-        ucs_warn("SCIWaitForDMAQueue (get): %s (state=%d), falling back to PIO",
-                 SCIGetErrorString(sci_error), dma_state);
-        return -1;
-    }
-
-    return 0;
 }
 
 /**
@@ -519,7 +546,7 @@ static const void *uct_pcie_get_src(
     size_t length)
 {
     size_t seg_offset;
-    /* sentinel must differ from uct_pcie_dma_get's 0 == success, because of length check */
+    /* sentinel must differ from uct_pcie_dma_transfer's 0 == success, because of length check */
     int dma_ret = -1;
 
     ucs_assert(remote_addr >= ep->remote_rma_base);
@@ -527,8 +554,9 @@ static const void *uct_pcie_get_src(
     ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
 
     if (length > UCT_PCIE_GET_DMA_THRESHOLD) {
-        dma_ret = uct_pcie_dma_get(iface, iface->dma_segment, 0,
-                                   ep->rma_seg, seg_offset, length);
+        dma_ret = uct_pcie_dma_transfer(iface, iface->dma_segment, 0,
+                                        ep->rma_seg, seg_offset, length,
+                                        SCI_FLAG_DMA_READ);
     }
 
     return (dma_ret == 0) ? iface->dma_buffer
@@ -571,8 +599,9 @@ static void uct_pcie_get_into(
      * no local copy needed at all. */
     dma_ret = -1;
     if (dest_in_pool) {
-        dma_ret = uct_pcie_dma_get(iface, md->rma_seg, (size_t)dest_offset,
-                                   ep->rma_seg, seg_offset, length);
+        dma_ret = uct_pcie_dma_transfer(iface, md->rma_seg, (size_t)dest_offset,
+                                        ep->rma_seg, seg_offset, length,
+                                        SCI_FLAG_DMA_READ);
     }
     if (dma_ret == 0) {
         return;
@@ -581,8 +610,9 @@ static void uct_pcie_get_into(
     /* Case 3: dest is arbitrary memory (or case 2's DMA failed) - stage
      * into iface->dma_segment, then copy out. Not a retry of case 2's DMA:
      * this targets a different local segment, so it can still succeed. */
-    dma_ret = uct_pcie_dma_get(iface, iface->dma_segment, 0,
-                               ep->rma_seg, seg_offset, length);
+    dma_ret = uct_pcie_dma_transfer(iface, iface->dma_segment, 0,
+                                    ep->rma_seg, seg_offset, length,
+                                    SCI_FLAG_DMA_READ);
     if (dma_ret == 0) {
         memcpy(dest, iface->dma_buffer, length);
         return;
