@@ -14,7 +14,7 @@ typedef struct {
 }  UCS_S_PACKED uct_pcie_ep_addr_t;
 
 
-typedef struct {
+typedef struct uct_pcie_ep {
     uct_base_ep_t           super;
     unsigned int            remote_seg_id;
     sci_remote_segment_t    remote_segment;
@@ -33,19 +33,12 @@ typedef struct {
      * volatile because the callback fires from SISCI's interrupt thread. */
     volatile int            is_connected;
 
-    /* RMA segment: connection to the remote iface's shared segment, established
-     * at EP creation time using rma_seg_id and rma_base from iface_addr.
-     * put_short / put_bcopy write into it; get_bcopy reads from it. */
-    sci_remote_segment_t    rma_seg;
-    sci_map_t               rma_seg_map;
-    /* PIO-mapped window onto the REMOTE node's rma_seg. It's a plain,
-     * locally-valid pointer - dereferencing it looks no different from
-     * touching local memory - but every access actually crosses PCIe. */
-    void                   *remote_rma_va;
-    /* [LIBPERF_RKEY_QUIRK] the remote peer's own rma_base (see
-     * uct_pcie_iface_addr_t), copied off the wire at connect time. Used only
-     * to decode remote_addr into a plain offset; not a local value. */
-    uint64_t                remote_rma_base;
+    /* put/get zero-copy DMA transfers started on this endpoint and not yet
+     * completed by iface progress; ep flush waits for it to reach 0. */
+    unsigned int            dma_outstanding;
+    /* get_bcopy operations queued on the iface (uct_pcie_iface_progress_gets)
+     * and not yet completed; ep flush completes them */
+    unsigned int            gets_outstanding;
 } uct_pcie_ep_t;
 
 
@@ -114,6 +107,15 @@ ucs_status_t uct_pcie_ep_put_zcopy(
     uct_rkey_t rkey,
     uct_completion_t *comp);
 
+ucs_status_t uct_pcie_ep_get_bcopy(
+    uct_ep_h tl_ep,
+    uct_unpack_callback_t unpack_cb,
+    void *arg,
+    size_t length,
+    uint64_t remote_addr,
+    uct_rkey_t rkey,
+    uct_completion_t *comp);
+
 ucs_status_t uct_pcie_ep_get_zcopy(
     uct_ep_h tl_ep,
     const uct_iov_t *iov,
@@ -122,20 +124,15 @@ ucs_status_t uct_pcie_ep_get_zcopy(
     uct_rkey_t rkey,
     uct_completion_t *comp);
 
-ucs_status_t uct_pcie_ep_get_short(
-    uct_ep_h tl_ep,
-    void *buffer,
-    unsigned length,
-    uint64_t remote_addr,
-    uct_rkey_t rkey);
+unsigned uct_pcie_iface_progress_gets(uct_pcie_iface_t *iface);
 
-ucs_status_t uct_pcie_ep_get_bcopy(
-    uct_ep_h ep,
-    uct_unpack_callback_t unpack_cb,
-    void *arg,
-    size_t length,
-    uint64_t remote_addr,
-    uct_rkey_t rkey,
+void uct_pcie_ep_cancel_dma(
+    uct_pcie_iface_t *iface,
+    uct_pcie_ep_t *ep);
+
+ucs_status_t uct_pcie_ep_flush(
+    uct_ep_h tl_ep,
+    unsigned flags,
     uct_completion_t *comp);
 
 ucs_status_t uct_pcie_ep_atomic_cswap64(

@@ -2,6 +2,7 @@
 #define UCT_PCIE_SISCI_HELPER_H
 
 #include "pcie_iface.h"
+#include "pcie_md.h"
 
 /**
  * @brief Creates, prepares and maps a local sisci segment. Gets sisci to
@@ -70,6 +71,19 @@ void uct_pcie_helper_remove_seg_set_unavail(
     sci_local_segment_t segment,
     sci_map_t segment_map);
 
+/* Segment on registered process memory; see pcie_sisci_helper.c */
+int uct_pcie_helper_create_user_segment(
+    sci_desc_t sd,
+    sci_local_segment_t *segment,
+    size_t segment_size,
+    unsigned int *segment_id,
+    void **buf);
+
+void uct_pcie_helper_remove_user_segment(
+    sci_local_segment_t segment,
+    void *buf,
+    size_t segment_size);
+
 /**
  * @brief Connects to and maps remote sisci segment at a given offset and size.
  *
@@ -93,29 +107,6 @@ int uct_pcie_connect_segment(
     void *callback_arg);
 
 /**
- * @brief Connects to a remote SISCI segment, queries its full size via
- *        SCIGetRemoteSegmentSize, and maps the entire segment from offset 0.
- *
- * Avoids the caller needing to know the segment size in advance; useful for
- * put/get where size is not carried in the 8-byte wire rkey.
- *
- * @param[in]  sd           Open SISCI virtual device descriptor
- * @param[in]  node_id      Remote SISCI node ID
- * @param[in]  segment_id   Remote SISCI segment ID
- * @param[out] segment      Connected remote segment handle
- * @param[out] segment_map  Map handle for the connected segment
- * @param[out] buf          Local VA of the mapped remote segment window
- * @return 0 on success, -1 on failure
- */
-int uct_pcie_connect_segment_full(
-    sci_desc_t sd,
-    unsigned int node_id,
-    unsigned int segment_id,
-    sci_remote_segment_t *segment,
-    sci_map_t *segment_map,
-    volatile void **buf);
-
-/**
  * @brief Unmaps and disconnects from remote segment segment.
  *        (Reverses what is done in uct_pcie_connect_segment)
  * @param[in] segment 
@@ -124,5 +115,24 @@ int uct_pcie_connect_segment_full(
 void uct_pcie_disconnect_segment(
     sci_remote_segment_t segment,
     sci_map_t segment_map);
+
+/**
+ * @brief Get a descriptor with room for one more resource from the pool.
+ *
+ * @param[in]  pool     Descriptor pool.
+ * @param[out] sd_p     Descriptor to create the resource on.
+ * @param[out] index_p  Index to pass to uct_pcie_desc_pool_put on release.
+ */
+ucs_status_t uct_pcie_desc_pool_get(
+    uct_pcie_desc_pool_t *pool,
+    sci_desc_t *sd_p,
+    unsigned *index_p);
+
+void uct_pcie_desc_pool_put(
+    uct_pcie_desc_pool_t *pool,
+    unsigned index);
+
+void uct_pcie_desc_pool_cleanup(
+    uct_pcie_desc_pool_t *pool);
 
 #endif
