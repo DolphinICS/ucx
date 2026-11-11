@@ -2,6 +2,9 @@
 #include <ucs/type/class.h>
 #include <ucs/type/status.h>
 #include <ucs/sys/string.h>
+#include <ucs/sys/sys.h>
+
+#include <sys/mman.h>
 
 #include "stdio.h"
 
@@ -13,6 +16,63 @@
 /* Forward declarations */
 static uct_iface_ops_t uct_pcie_iface_ops;
 
+#if defined(__x86_64__)
+#include <immintrin.h>
+
+/* One 64-byte non-temporal store fills a whole write-combining buffer, which
+ * goes out as one PCIe write: the line arrives in one piece, no fence needed. */
+__attribute__((target("avx512f"))) static void
+uct_pcie_store_line_avx512(volatile void *dst, const void *src)
+{
+    _mm512_stream_si512((__m512i*)dst, _mm512_load_si512(src));
+}
+
+/* Streaming loads (vmovntdqa) from the write-combining mapping of remote
+ * memory overlap: one read of up to 1 KiB took 1.3-1.4 us, 4 KiB 3.9 us
+ * (tools/sisci_load_cost.c), against ~4.7 us for the smallest DMA get */
+__attribute__((target("avx512f"))) static void
+uct_pcie_load_lines_avx512(void *dst, const volatile void *src, size_t lines)
+{
+    __m512i *d = dst;
+    size_t   i;
+
+    for (i = 0; i < lines; i++) {
+        _mm512_store_si512(d + i,
+                           _mm512_stream_load_si512((__m512i*)src + i));
+    }
+}
+
+__attribute__((target("avx512f"))) static void
+uct_pcie_store_lines_avx512(volatile void *dst, const void *src, size_t lines)
+{
+    __m512i       *d = (__m512i*)dst;
+    const uint8_t *s = src;
+    size_t         i;
+
+    for (i = 0; i < lines; i++) {
+        _mm512_stream_si512(d + i, _mm512_loadu_si512(s + i * UCT_PCIE_LINE_SIZE));
+    }
+}
+#endif
+
+static void
+uct_pcie_store_lines_memcpy(volatile void *dst, const void *src, size_t lines)
+{
+    memcpy((void*)dst, src, lines * UCT_PCIE_LINE_SIZE);
+}
+
+/* Without a single 64-byte store: the first 56 bytes, fence, the last 8 */
+static void uct_pcie_store_line_fenced(volatile void *dst, const void *src)
+{
+    memcpy((void*)dst, src, UCT_PCIE_LINE_SIZE - sizeof(uint64_t));
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    *(volatile uint64_t*)UCS_PTR_BYTE_OFFSET(dst, UCT_PCIE_LINE_SIZE -
+                                             sizeof(uint64_t)) =
+        *(const uint64_t*)UCS_PTR_BYTE_OFFSET(src, UCT_PCIE_LINE_SIZE -
+                                              sizeof(uint64_t));
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+}
+
 static ucs_config_field_t uct_pcie_iface_config_table[] = {
     /* MAX_NUM_EPS overrides the UCX base iface config. Reported via
      * iface_attr.max_num_eps; advisory only; the UCT framework does not gate
@@ -22,8 +82,9 @@ static ucs_config_field_t uct_pcie_iface_config_table[] = {
      ucs_offsetof(uct_pcie_iface_config_t, super),
      UCS_CONFIG_TYPE_TABLE(uct_iface_config_table)},
 
-    {"SEND_SIZE", "512k",
-     "Size of copy-out buffer",
+    {"SEND_SIZE", "64k",
+     "Size of one AM ring slot (header line + payload). Larger messages go "
+     "through rendezvous, i.e. DMA",
      ucs_offsetof(uct_pcie_iface_config_t, packet_size_bytes),
         UCS_CONFIG_TYPE_MEMUNITS},
 
@@ -36,16 +97,73 @@ static ucs_config_field_t uct_pcie_iface_config_table[] = {
     },
 
     {
-        "PACKET_QUEUE_LEN", "5", "Message Queue size for each connection",
+        "PACKET_QUEUE_LEN", "64", "AM ring slots per connection. With 5 slots "
+        "a stream of 8-byte messages cost 0.38 us each (waiting for acks), "
+        "with 64 slots 0.05 us",
         ucs_offsetof(uct_pcie_iface_config_t, packet_queue_len),
         UCS_CONFIG_TYPE_UINT
     },
+
+    {"DMA_QUEUES", "8",
+     "Number of DMA queues, i.e. put/get zero-copy transfers in flight per "
+     "interface (at most " UCS_PP_MAKE_STRING(UCT_PCIE_MAX_DMA_QUEUES) ")",
+     ucs_offsetof(uct_pcie_iface_config_t, dma_queues),
+     UCS_CONFIG_TYPE_UINT},
+
+    {"PUT_PIO_MAX", "32k",
+     "put_zcopy up to this size is written with CPU stores through the PCIe "
+     "mapping instead of DMA",
+     ucs_offsetof(uct_pcie_iface_config_t, put_pio_max),
+     UCS_CONFIG_TYPE_MEMUNITS},
+
+    {"GET_PIO_MAX", "2k",
+     "Gets up to this size are read with CPU loads through the PCIe mapping\n"
+     "(get_bcopy) instead of DMA: 64-byte streaming loads read up to 1 KiB in\n"
+     "1.3-1.4 us, 4 KiB in 3.9 us; the smallest DMA get takes ~4.7 us. Many\n"
+     "gets in flight overlap their loads, but from 256 B on DMA streams them\n"
+     "faster (MPI_Get of 1 KiB, 64 in flight: 0.69 vs 0.21 us each). Needs\n"
+     "AVX-512, otherwise off.",
+     ucs_offsetof(uct_pcie_iface_config_t, get_pio_max),
+     UCS_CONFIG_TYPE_MEMUNITS},
+
+    {"AM_LINES", "16",
+     "Most 64-byte lines of an active message sent without a fence, every "
+     "line carrying a sequence number (at most "
+     UCS_PP_MAKE_STRING(UCT_PCIE_AM_LINES_MAX) ", 1 = header line only). "
+     "MPI message streams, us each, 4 vs. 16 lines: 256 B 0.257 vs 0.169, "
+     "512 B 0.270 vs 0.194, 1 KiB and more unchanged (gathering the lines "
+     "costs as much as the fence); 32 lines made 1 KiB both ways slower.",
+     ucs_offsetof(uct_pcie_iface_config_t, am_lines),
+     UCS_CONFIG_TYPE_UINT},
+
+    {"DMA_OVERHEAD", "3us",
+     "DMA engine time per put/get zero-copy transfer beyond the data time, "
+     "as reported to UCP for choosing between CPU-store eager sends and "
+     "DMA rendezvous. 3 us puts the switch for message streams at ~25 KiB: "
+     "16 KiB eager 0.86 us per message (rendezvous 1.86), 32 KiB both ways "
+     "rendezvous 2.16 us (eager 2.99)",
+     ucs_offsetof(uct_pcie_iface_config_t, dma_overhead),
+     UCS_CONFIG_TYPE_TIME},
+
+    {"ZCOPY_MAX", "1m",
+     "Largest single put/get zero-copy transfer; larger messages are split "
+     "by UCP and their pieces run on several DMA queues at once",
+     ucs_offsetof(uct_pcie_iface_config_t, zcopy_max),
+     UCS_CONFIG_TYPE_MEMUNITS},
 
     {NULL}
 };
 
 /******************************************************************************/
 /*** Connection handling ******************************************************/
+
+/* Bytes of one connection's AM receive segment: the ring, in whole pages
+ * (registered memory) */
+static size_t uct_pcie_iface_ring_size(const uct_pcie_iface_t *iface)
+{
+    return ucs_align_up_pow2(iface->packet_size_bytes * iface->packet_queue_len,
+                             ucs_get_page_size());
+}
 
 /**
  * @brief Reserve a uct_pcie control descriptor from the uct_pcie_iface's list
@@ -58,12 +176,26 @@ static ucs_config_field_t uct_pcie_iface_config_table[] = {
  */
 static int uct_pcie_reserve_control_descriptor(
     uct_pcie_iface_t* iface,
+    const uct_pcie_conn_req_t *request,
     unsigned int *cd_index)
 {
     unsigned int i;
     int rc = 0;
 
     pthread_mutex_lock(&iface->lock);
+
+    /* A repeated request (the answer was late or lost, see
+     * uct_pcie_ep_send_recv_conn_request) */
+    for (i = 0; i < iface->max_eps; i++) {
+        if ((iface->sci_cds[i].cd_status != UCT_PCIE_CD_AVAILABLE) &&
+            (iface->sci_cds[i].remote_node == request->node_id) &&
+            (iface->sci_cds[i].remote_ctl_segment_id == request->ctl_segment_id) &&
+            (iface->sci_cds[i].remote_ep_conn_index == request->ep_conn_index)) {
+            *cd_index = i;
+            pthread_mutex_unlock(&iface->lock);
+            return 1;
+        }
+    }
 
     /* Find free sci_cd in iface sci_cd list */
     for (i = 0; i < iface->max_eps; i++)
@@ -76,7 +208,10 @@ static int uct_pcie_reserve_control_descriptor(
     if (i < iface->max_eps) {
         /* Success: reserve sci_cd */
         *cd_index = i;
-        iface->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
+        iface->sci_cds[i].cd_status             = UCT_PCIE_CD_RESERVED;
+        iface->sci_cds[i].remote_node           = request->node_id;
+        iface->sci_cds[i].remote_ctl_segment_id = request->ctl_segment_id;
+        iface->sci_cds[i].remote_ep_conn_index  = request->ep_conn_index;
         iface->connections++;
     } else {
         rc = -1;
@@ -126,8 +261,10 @@ static int uct_pcie_send_answer_to_request(
     uct_pcie_conn_ans_t   answer;
     sci_remote_data_interrupt_t ans_interrupt;
     sci_error_t sci_error;
+    unsigned int attempt;
 
-    do {
+    /* The requester retries if no answer comes (it may have given up) */
+    for (attempt = 0; attempt < UCT_PCIE_CONN_ATTEMPTS; attempt++) {
         SCIConnectDataInterrupt(
             sci_virtual_device,
             &ans_interrupt,
@@ -137,9 +274,18 @@ static int uct_pcie_send_answer_to_request(
             1000,
             UCT_PCIE_NO_FLAGS,
             &sci_error);
-    } while (sci_error != SCI_ERR_OK);
+        if (sci_error == SCI_ERR_OK) {
+            break;
+        }
+    }
+    if (sci_error != SCI_ERR_OK) {
+        ucs_warn("pcie: cannot answer connection request from node %d: %s",
+                 request->node_id, SCIGetErrorString(sci_error));
+        return -1;
+    }
 
-    answer.segment_id = sci_cd->recv_segment_id;
+    answer.segment_id = iface->recv_segment_id;
+    answer.offset     = (uint64_t)(sci_cd->packet_queue_buf - iface->recv_buf);
     
     SCITriggerDataInterrupt(
         ans_interrupt,
@@ -160,8 +306,8 @@ static int uct_pcie_send_answer_to_request(
 /**
  * @brief SISCI data interrupt callback fired when a remote endpoint connects.
  *
- * Reserves a connection slot (sci_cd), creates a dedicated receive segment for
- * this connection, sends the segment ID back to the connecting endpoint, then
+ * Reserves a connection slot (sci_cd), clears the slot's window of the receive
+ * segment, sends segment ID and window offset to the connecting endpoint, then
  * connects to the remote control segment so the iface can write acknowledgement
  * counters into it during progress.
  */
@@ -180,26 +326,28 @@ static sci_callback_action_t uct_pcie_conn_handler(
 
     int ret;
 
-    ret = uct_pcie_reserve_control_descriptor(iface, &sci_cd_index);
-    if (ret != 0) {
+    ret = uct_pcie_reserve_control_descriptor(iface, request, &sci_cd_index);
+    if (ret < 0) {
         ucs_error("Number of endpoints exceeds limit %u", iface->max_eps);
         return SCI_CALLBACK_CONTINUE;
     }
     sci_cd = &(iface->sci_cds[sci_cd_index]);
-
-    /* Create a dedicated receive segment for this connection */
-    ret = uct_pcie_helper_create_seg_set_avail(
-        iface->vdev_recv,
-        &sci_cd->recv_segment,
-        &sci_cd->recv_segment_map,
-        iface->packet_size_bytes * iface->packet_queue_len,
-        &sci_cd->recv_segment_id,
-        (void **)&sci_cd->packet_queue_buf);
-    if (ret != 0) {
-        ucs_error("Failed to create per-connection receive segment");
-        uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
+    if (ret > 0) {
+        /* Already set up (or being set up): answer again with the same slot */
+        if (sci_cd->cd_status == UCT_PCIE_CD_READY) {
+            uct_pcie_send_answer_to_request(iface, request,
+                                            md->sci_virtual_device, sci_cd);
+        }
         return SCI_CALLBACK_CONTINUE;
     }
+
+    /* The slot's window of the receive segment; a slot is not reused, but
+     * clear it in case an earlier connection attempt failed after writing */
+    sci_cd->packet_queue_buf = iface->recv_buf +
+                               (size_t)sci_cd_index * uct_pcie_iface_ring_size(iface);
+    memset(sci_cd->packet_queue_buf, 0, uct_pcie_iface_ring_size(iface));
+    sci_cd->ep_conn_last_ack = 0;
+    sci_cd->ep_conn_sent_ack = 0;
 
     ret = uct_pcie_send_answer_to_request(
         iface,
@@ -208,8 +356,6 @@ static sci_callback_action_t uct_pcie_conn_handler(
         sci_cd);
     if (ret != 0) {
         ucs_error("Failed to send answer to connection request");
-        uct_pcie_helper_remove_seg_set_unavail(sci_cd->recv_segment,
-                                               sci_cd->recv_segment_map);
         uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
         return SCI_CALLBACK_CONTINUE;
     }
@@ -227,8 +373,6 @@ static sci_callback_action_t uct_pcie_conn_handler(
         NULL, NULL);
     if (ret != 0) {
         ucs_error("Failed to connect to remote control buffer");
-        uct_pcie_helper_remove_seg_set_unavail(sci_cd->recv_segment,
-                                               sci_cd->recv_segment_map);
         uct_pcie_ureserve_control_descriptor(iface, sci_cd_index);
         return SCI_CALLBACK_CONTINUE;
     }
@@ -272,7 +416,20 @@ uct_pcie_iface_is_reachable_v2(
         return 1; /* no address to probe; assume reachable */
     }
 
-    dev_addr  = (const uct_pcie_device_addr_t *)params->device_addr;
+    dev_addr = (const uct_pcie_device_addr_t *)params->device_addr;
+
+    /* Peers on the own node go through self/sm. Over the adapter in loopback,
+     * registered segments cannot be mapped and AM traffic between two
+     * processes of one node stalls, so UCP must not pick pcie for them. */
+    if (dev_addr->node_id == md->node_id) {
+        if ((params->field_mask & UCT_IFACE_IS_REACHABLE_FIELD_INFO_STRING) &&
+            (params->field_mask & UCT_IFACE_IS_REACHABLE_FIELD_INFO_STRING_LENGTH)) {
+            ucs_snprintf_zero(params->info_string, params->info_string_length,
+                              "SISCI node %u is the local node", dev_addr->node_id);
+        }
+        return 0;
+    }
+
     reachable = SCIProbeNode(md->sci_virtual_device,
                              UCT_PCIE_LOCAL_ADAPTER_NO,
                              dev_addr->node_id,
@@ -312,8 +469,96 @@ int uct_pcie_ep_is_connected(
 /******************************************************************************/
 /*** Iface lifecycle **********************************************************/
 
+static void uct_pcie_iface_remove_dma_queues(uct_pcie_iface_t *iface)
+{
+    sci_error_t sci_error;
+    unsigned int i;
+
+    ucs_assertv(iface->num_free_dmas == iface->num_dmas,
+                "%u DMA transfers still in flight",
+                iface->num_dmas - iface->num_free_dmas);
+    for (i = 0; i < iface->num_dmas; i++) {
+        SCIRemoveDMAQueue(iface->dmas[i].queue, UCT_PCIE_NO_FLAGS, &sci_error);
+        if (sci_error != SCI_ERR_OK) {
+            ucs_error("SCIRemoveDMAQueue: %s", SCIGetErrorString(sci_error));
+        }
+    }
+    iface->num_dmas      = 0;
+    iface->num_free_dmas = 0;
+}
+
+/**
+ * @brief Per-operation performance, measured fpga1614 <-> fpga1610 (MXH930).
+ *
+ * CPU stores (short/bcopy/AM) reach 20.4 GB/s from one core; DMA (put/get
+ * zcopy) reaches 27 GB/s but costs ~7 us to start. Without this split UCP
+ * would assume the same bandwidth for both and never prefer DMA.
+ */
+static ucs_status_t
+uct_pcie_iface_estimate_perf(uct_iface_h tl_iface, uct_perf_attr_t *perf_attr)
+{
+    uct_pcie_iface_t  *iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
+    uct_ep_operation_t op    = UCT_ATTR_VALUE(PERF, perf_attr, operation,
+                                              OPERATION, UCT_EP_OP_LAST);
+    int                dma   = (op == UCT_EP_OP_GET_ZCOPY) ||
+                               (op == UCT_EP_OP_PUT_ZCOPY);
+    ucs_status_t       status;
+
+    status = uct_base_iface_estimate_perf(tl_iface, perf_attr);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    if (op == UCT_EP_OP_GET_BCOPY) {
+        /* Streaming CPU loads (see GET_PIO_MAX), one round trip each. The
+         * bandwidth puts the crossing with the DMA estimate (which UCP adds
+         * the registration cost to) at ~3 KiB, so that UCP does not split
+         * larger gets into get_pio_max pieces:
+         * with 64 gets in flight, loads took 2.7 us per 4 KiB get and DMA
+         * 1.5 us (a single 4 KiB get: 3.0 and 5.7 us) */
+        if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_BANDWIDTH) {
+            perf_attr->bandwidth.dedicated = 0.25 * UCS_GBYTE;
+            perf_attr->bandwidth.shared    = 0;
+        }
+        if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_LATENCY) {
+            perf_attr->latency = ucs_linear_func_make(1.3e-6, 0);
+        }
+        return UCS_OK;
+    }
+
+    if (!dma) {
+        return UCS_OK;
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_BANDWIDTH) {
+        perf_attr->bandwidth.dedicated = 27.0 * UCS_GBYTE;
+        perf_attr->bandwidth.shared    = 0;
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_PATH_BANDWIDTH) {
+        perf_attr->path_bandwidth.dedicated = 27.0 * UCS_GBYTE;
+        perf_attr->path_bandwidth.shared    = 0;
+    }
+
+    /* Per-transfer DMA engine time (config DMA_OVERHEAD); UCP weighs it
+     * against CPU-store eager sends, see the config help */
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_SEND_PRE_OVERHEAD) {
+        perf_attr->send_pre_overhead = iface->dma_overhead;
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_LATENCY) {
+        perf_attr->latency = ucs_linear_func_make(7e-6, 0);
+    }
+
+    if (perf_attr->field_mask & UCT_PERF_ATTR_FIELD_MAX_INFLIGHT_EPS) {
+        perf_attr->max_inflight_eps = iface->num_dmas;
+    }
+
+    return UCS_OK;
+}
+
 static uct_iface_internal_ops_t uct_base_iface_internal_ops = {
-    .iface_estimate_perf   = uct_base_iface_estimate_perf,
+    .iface_estimate_perf   = uct_pcie_iface_estimate_perf,
     .iface_vfs_refresh     = (uct_iface_vfs_refresh_func_t)ucs_empty_function,
     .ep_query              = (uct_ep_query_func_t)ucs_empty_function_return_unsupported,
     .ep_invalidate         = (uct_ep_invalidate_func_t)ucs_empty_function_return_unsupported,
@@ -344,7 +589,6 @@ static UCS_CLASS_INIT_FUNC(
     int ret;
     ssize_t i = 0;
     sci_error_t sci_error;
-    unsigned dma_seg_id;
     uct_pcie_iface_config_t* config = ucs_derived_of(tl_config, uct_pcie_iface_config_t);
     uct_pcie_md_t* sci_md = ucs_derived_of(md, uct_pcie_md_t);
 
@@ -373,6 +617,11 @@ static UCS_CLASS_INIT_FUNC(
     /* Arbiter must be ready before any EP is created, since EPs schedule
      * their pending groups here. */
     ucs_arbiter_init(&self->arbiter);
+    self->wc_dirty     = 0;
+    self->bcopy_buf    = NULL;
+    self->lines_tx_buf = NULL;
+    self->lines_rx_buf = NULL;
+    self->lines_tx     = NULL;
 
     UCS_CLASS_CALL_SUPER_INIT(
             uct_base_iface_t, &uct_pcie_iface_ops, &uct_base_iface_internal_ops,
@@ -391,8 +640,48 @@ static UCS_CLASS_INIT_FUNC(
 
     /* uct_pcie_iface_t *self: store configuration */
     self->device_addr = nodeID;
-    self->packet_size_bytes = config->packet_size_bytes;
+    self->packet_size_bytes = ucs_align_up_pow2(config->packet_size_bytes,
+                                                UCT_PCIE_LINE_SIZE);
     self->packet_queue_len = config->packet_queue_len;
+    self->ack_batch        = ucs_max(1, config->packet_queue_len / 2);
+    self->store_line       = uct_pcie_store_line_fenced;
+    self->store_lines      = uct_pcie_store_lines_memcpy;
+#if defined(__x86_64__)
+    self->load_lines  = NULL;
+    self->get_pio_max = 0;
+    if (__builtin_cpu_supports("avx512f")) {
+        self->store_line  = uct_pcie_store_line_avx512;
+        self->store_lines = uct_pcie_store_lines_avx512;
+        self->load_lines  = uct_pcie_load_lines_avx512;
+        self->get_pio_max = config->get_pio_max;
+    }
+#endif
+    self->bcopy_buf    = ucs_malloc(self->packet_size_bytes, "pcie bcopy");
+    self->lines_tx_buf = ucs_malloc(UCT_PCIE_AM_LINES_PAYLOAD_MAX, "pcie lines tx");
+    self->lines_rx_buf = ucs_malloc(UCT_PCIE_AM_LINES_PAYLOAD_MAX, "pcie lines rx");
+    if (ucs_posix_memalign((void**)&self->lines_tx, UCT_PCIE_LINE_SIZE,
+                           UCT_PCIE_AM_LINES_MAX * UCT_PCIE_LINE_SIZE,
+                           "pcie lines") != 0) {
+        self->lines_tx = NULL;
+    }
+    self->get_slot  = ucs_align_up_pow2(self->get_pio_max +
+                                        2 * UCT_PCIE_LINE_SIZE,
+                                        UCT_PCIE_LINE_SIZE);
+    self->num_gets  = 0;
+    self->gets_busy = 0;
+    if (ucs_posix_memalign((void**)&self->get_buf, UCT_PCIE_LINE_SIZE,
+                           (UCT_PCIE_GET_QUEUE + 1) * self->get_slot,
+                           "pcie get") != 0) {
+        self->get_buf = NULL;
+    }
+    if ((self->bcopy_buf == NULL) || (self->lines_tx_buf == NULL) ||
+        (self->lines_rx_buf == NULL) || (self->lines_tx == NULL) ||
+        (self->get_buf == NULL) ||
+        (self->packet_size_bytes < UCT_PCIE_AM_LINES_MAX * UCT_PCIE_LINE_SIZE)) {
+        ucs_error("pcie: SEND_SIZE must be at least %d bytes",
+                  UCT_PCIE_AM_LINES_MAX * UCT_PCIE_LINE_SIZE);
+        goto err_destroy_mutex;
+    }
     self->max_eps = MIN(UCT_PCIE_MAX_EPS, config->max_eps);
     self->eps_init_cnt = 0;
     self->connections = 0;
@@ -410,16 +699,10 @@ static UCS_CLASS_INIT_FUNC(
         goto err_free_vdev_recv;
     }
 
-    SCIOpen(&self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
-    if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCIOpen (vdev_rma): %s", SCIGetErrorString(sci_error));
-        goto err_free_vdev_ep;
-    }
-
     SCIOpen(&self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_error("SCIOpen (vdev_ctl): %s", SCIGetErrorString(sci_error));
-        goto err_free_vdev_rma;
+        goto err_free_vdev_ep;
     }
 
     /* --- Control segment: remote ifaces write ack counters into this --- */
@@ -436,41 +719,61 @@ static UCS_CLASS_INIT_FUNC(
         goto err_free_vdev_ctl;
     }
 
-    /* Initialize connection descriptors; receive segments are created per-connection
-     * in uct_pcie_conn_handler when each connection is accepted. */
-    for (i = 0; i < self->max_eps; i++) {
-        self->sci_cds[i].cd_status        = UCT_PCIE_CD_AVAILABLE;
-        self->sci_cds[i].ep_conn_last_ack = 0;
-        self->ctls[i].ep_conn_ack         = 0;
-    }
-
-    /* --- DMA engine: staging buffer for get_zcopy's DMA path ---
-     * Sized to UCT_PCIE_RMA_SEG_SIZE so it can hold a full get_zcopy transfer
-     * (the largest span a remote_addr offset can cover). The DMA queue
-     * serializes transfer requests per iface; both are created now and torn
-     * down in the iface destructor. */
-    ret = uct_pcie_helper_create_segment(
-        sci_md->sci_virtual_device,
-        &self->dma_segment,
-        &self->dma_map,
-        UCT_PCIE_RMA_SEG_SIZE,
-        &dma_seg_id,
-        &self->dma_buffer);
+    /* --- Receive segment: one AM ring per connection slot (zero-filled) --- */
+    ret = uct_pcie_helper_create_user_segment(
+        self->vdev_recv,
+        &self->recv_segment,
+        self->max_eps * uct_pcie_iface_ring_size(self),
+        &self->recv_segment_id,
+        (void **)&self->recv_buf);
     if (ret != 0) {
-        ucs_error("Failed to set up DMA staging segment");
+        ucs_error("Failed to set up receive segment");
         goto err_remove_ctl_seg;
     }
 
-    SCICreateDMAQueue(
-        sci_md->sci_virtual_device,
-        &self->dma_queue,
-        UCT_PCIE_LOCAL_ADAPTER_NO,
-        10,
-        UCT_PCIE_NO_FLAGS,
-        &sci_error);
+    /* Initialize connection descriptors; uct_pcie_conn_handler assigns each
+     * accepted connection its window of the receive segment. */
+    for (i = 0; i < self->max_eps; i++) {
+        self->sci_cds[i].cd_status        = UCT_PCIE_CD_AVAILABLE;
+        self->sci_cds[i].ep_conn_last_ack = 0;
+        self->sci_cds[i].ep_conn_sent_ack = 0;
+        self->ctls[i].ep_conn_ack         = 0;
+    }
+
+    /* --- DMA engine: a pool of queues, one zero-copy transfer each --- */
+    SCIOpen(&self->vdev_dma, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCICreateDMAQueue: %s", SCIGetErrorString(sci_error));
-        goto err_remove_dma_seg;
+        ucs_error("SCIOpen (vdev_dma): %s", SCIGetErrorString(sci_error));
+        goto err_remove_recv_seg;
+    }
+
+    self->num_dmas      = 0;
+    self->num_free_dmas = 0;
+    self->bounce_buf    = NULL;
+    self->bounce_memh   = UCT_MEM_HANDLE_NULL;
+    self->bounce_slot   = ucs_align_up_pow2(config->zcopy_max + UCT_PCIE_DMA_ALIGN,
+                                            UCT_PCIE_DMA_ALIGN);
+    self->put_pio_max   = config->put_pio_max;
+    self->zcopy_max     = config->zcopy_max;
+    self->dma_overhead  = config->dma_overhead;
+    self->am_lines_payload_max =
+        UCT_PCIE_AM_INLINE_MAX +
+        (ucs_max(1, ucs_min(config->am_lines, UCT_PCIE_AM_LINES_MAX)) - 1) *
+        UCT_PCIE_AM_LINE_DATA;
+    ucs_queue_head_init(&self->flush_reqs);
+    for (i = 0; i < ucs_min(config->dma_queues, UCT_PCIE_MAX_DMA_QUEUES); i++) {
+        SCICreateDMAQueue(self->vdev_dma, &self->dmas[i].queue,
+                          UCT_PCIE_LOCAL_ADAPTER_NO, 1, UCT_PCIE_NO_FLAGS,
+                          &sci_error);
+        if (sci_error != SCI_ERR_OK) {
+            ucs_error("SCICreateDMAQueue: %s", SCIGetErrorString(sci_error));
+            goto err_remove_dma_queues;
+        }
+        self->dmas[i].comp                     = NULL;
+        self->dmas[i].ep                       = NULL;
+        self->dmas[i].copy_len                 = 0;
+        self->free_dmas[self->num_free_dmas++] = i;
+        self->num_dmas++;
     }
 
     /* --- Connection interrupt: entry point for incoming EP connections --- */
@@ -485,7 +788,7 @@ static UCS_CLASS_INIT_FUNC(
         &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_error("SCICreateDataInterrupt: %s", SCIGetErrorString(sci_error));
-        goto err_remove_dma_queue;
+        goto err_remove_dma_queues;
     }
 
     ucs_debug("iface_addr: %d dev_addr: %d segment_size %zd\n",
@@ -495,24 +798,27 @@ static UCS_CLASS_INIT_FUNC(
 
     return UCS_OK;
 
-err_remove_dma_queue:
-    SCIRemoveDMAQueue(self->dma_queue, UCT_PCIE_NO_FLAGS, &sci_error);
-    if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCIRemoveDMAQueue: %s", SCIGetErrorString(sci_error));
-    }
-err_remove_dma_seg:
-    uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
+err_remove_dma_queues:
+    uct_pcie_iface_remove_dma_queues(self);
+    SCIClose(self->vdev_dma, UCT_PCIE_NO_FLAGS, &sci_error);
+err_remove_recv_seg:
+    uct_pcie_helper_remove_user_segment(
+        self->recv_segment, self->recv_buf,
+        self->max_eps * uct_pcie_iface_ring_size(self));
 err_remove_ctl_seg:
     uct_pcie_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
 err_free_vdev_ctl:
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
-err_free_vdev_rma:
-    SCIClose(self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
 err_free_vdev_ep:
     SCIClose(self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
 err_free_vdev_recv:
     SCIClose(self->vdev_recv, UCT_PCIE_NO_FLAGS, &sci_error);
 err_destroy_mutex:
+    ucs_free(self->bcopy_buf);
+    ucs_free(self->lines_tx_buf);
+    ucs_free(self->lines_rx_buf);
+    ucs_free(self->lines_tx);
+    ucs_free(self->get_buf);
     pthread_mutex_destroy(&self->lock);
 err:
     return UCS_ERR_NO_RESOURCE;
@@ -536,33 +842,35 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
     SCIRemoveDataInterrupt(self->interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
 
     /* Tear down every active incoming connection: disconnect from its control
-     * segment and remove its per-connection receive segment. */
+     * segment. */
     for (ssize_t i = 0; i < self->connections; i++) {
         if (self->sci_cds[i].cd_status == UCT_PCIE_CD_READY) {
             self->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
             uct_pcie_disconnect_segment(
                 self->sci_cds[i].ctl_segment,
                 self->sci_cds[i].ctl_segment_map);
-            uct_pcie_helper_remove_seg_set_unavail(
-                self->sci_cds[i].recv_segment,
-                self->sci_cds[i].recv_segment_map);
             self->sci_cds[i].cd_status = UCT_PCIE_CD_AVAILABLE;
         }
     }
 
     /* DMA engine */
-    SCIRemoveDMAQueue(self->dma_queue, UCT_PCIE_NO_FLAGS, &sci_error);
-    if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCIRemoveDMAQueue: %s", SCIGetErrorString(sci_error));
+    uct_pcie_iface_remove_dma_queues(self);
+    SCIClose(self->vdev_dma, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (self->bounce_memh != UCT_MEM_HANDLE_NULL) {
+        uct_md_mem_dereg(self->super.md, self->bounce_memh);
+        munmap(self->bounce_buf, self->num_dmas * self->bounce_slot);
     }
-    uct_pcie_helper_remove_segment(self->dma_segment, self->dma_map);
+
+    /* Receive segment (left to the driver while peers are still connected) */
+    uct_pcie_helper_remove_user_segment(
+        self->recv_segment, self->recv_buf,
+        self->max_eps * uct_pcie_iface_ring_size(self));
 
     /* Control segment */
     uct_pcie_helper_remove_seg_set_unavail(self->ctl_segment, self->ctl_segment_map);
 
     /* Closing device descriptors */
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
-    SCIClose(self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_recv, UCT_PCIE_NO_FLAGS, &sci_error);
 
@@ -570,6 +878,11 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
      * the iface is cleaned up, so the arbiter should be empty here. */
     ucs_arbiter_cleanup(&self->arbiter);
 
+    ucs_free(self->bcopy_buf);
+    ucs_free(self->lines_tx_buf);
+    ucs_free(self->lines_rx_buf);
+    ucs_free(self->lines_tx);
+    ucs_free(self->get_buf);
     pthread_mutex_destroy(&self->lock);
 }
 
@@ -590,6 +903,27 @@ static UCS_CLASS_DEFINE_NEW_FUNC(
 
 /******************************************************************************/
 /*** Iface operations *********************************************************/
+
+static ucs_status_t uct_pcie_iface_flush(uct_iface_h tl_iface, unsigned flags,
+                                         uct_completion_t *comp)
+{
+    uct_pcie_iface_t *iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
+
+    if (comp != NULL) {
+        return UCS_ERR_UNSUPPORTED;
+    }
+
+    uct_pcie_iface_wc_flush(iface);
+    uct_pcie_iface_progress_gets(iface);
+
+    if (iface->num_free_dmas != iface->num_dmas) {
+        UCT_TL_IFACE_STAT_FLUSH_WAIT(&iface->super);
+        return UCS_INPROGRESS;
+    }
+
+    UCT_TL_IFACE_STAT_FLUSH(&iface->super);
+    return UCS_OK;
+}
 
 /**
  * @brief Enumerate transport devices visible to this MD.
@@ -665,16 +999,8 @@ ucs_status_t uct_pcie_get_device_address(
 /**
  * @brief Fill in the interface address exported to connecting endpoints.
  *
- * The interface address carries three fields that a remote EP needs at
- * creation time:
- *   - interrupt_no:   data interrupt number to send connection requests to.
- *   - rma_seg_id:     SISCI segment ID of this node's shared RMA segment
- *                     [LIBPERF_RKEY_QUIRK 1].
- *   - rma_base:       local VA of the RMA segment on this node, used by the
- *                     remote side to recover a plain segment offset from the
- *                     remote_addr value [LIBPERF_RKEY_QUIRK 2].
- *
- * See [LIBPERF_RKEY_QUIRK] in pcie_iface.h for the full explanation.
+ * The interface address carries the data interrupt number that a remote EP
+ * sends its connection request to. Remote memory is addressed through rkeys.
  *
  * @param[in]  tl_iface  Interface handle.
  * @param[out] addr       Interface address buffer (sizeof(uct_pcie_iface_addr_t)).
@@ -684,12 +1010,9 @@ ucs_status_t uct_pcie_iface_get_address(
     uct_iface_addr_t *addr)
 {
     uct_pcie_iface_t *iface    = ucs_derived_of(tl_iface, uct_pcie_iface_t);
-    uct_pcie_md_t    *md       = ucs_derived_of(iface->super.md, uct_pcie_md_t);
     uct_pcie_iface_addr_t *iface_addr = (uct_pcie_iface_addr_t *)addr;
 
-    iface_addr->interrupt_no    = iface->interrupt_no;
-    iface_addr->rma_seg_id = md->rma_seg_id;
-    iface_addr->rma_base          = (uint64_t)(uintptr_t)md->rma_buf;
+    iface_addr->interrupt_no = iface->interrupt_no;
 
     return UCS_OK;
 }
@@ -707,6 +1030,110 @@ ucs_status_t uct_pcie_iface_get_address(
  */
 void uct_pcie_iface_progress_enable(uct_iface_h iface, unsigned flags) {
     uct_base_iface_progress_enable(iface, flags);
+}
+
+/* Polls for the lines of a line message that arrive after its header */
+#define UCT_PCIE_AM_LINES_SPIN 1000
+
+/* Reassemble a UCT_PCIE_AM_FLAG_LINES message, or NULL if not all its lines
+ * have arrived yet */
+static void *uct_pcie_iface_gather_lines(uct_pcie_iface_t *iface,
+                                         uct_pcie_am_hdr_t *packet)
+{
+    uct_pcie_am_line_t *lines = (uct_pcie_am_line_t*)(packet + 1);
+    size_t              rest  = packet->am_length - UCT_PCIE_AM_INLINE_MAX;
+    size_t              count = ucs_div_round_up(rest, UCT_PCIE_AM_LINE_DATA);
+    uint8_t            *dst   = iface->lines_rx_buf;
+    unsigned            spin  = 0;
+    size_t              i;
+
+    /* The header line can overtake the others; they are nanoseconds behind,
+     * so wait a little here instead of in another progress round */
+    for (i = 0; i < count; i++) {
+        while (lines[i].seq != packet->seq) {
+            if (++spin > UCT_PCIE_AM_LINES_SPIN) {
+                return NULL;
+            }
+            ucs_cpu_relax();
+        }
+    }
+    ucs_memory_cpu_load_fence();
+
+    memcpy(dst, packet->data, UCT_PCIE_AM_INLINE_MAX);
+    dst += UCT_PCIE_AM_INLINE_MAX;
+    for (i = 0; i < count; i++) {
+        memcpy(dst, lines[i].data, ucs_min(rest, UCT_PCIE_AM_LINE_DATA));
+        dst  += UCT_PCIE_AM_LINE_DATA;
+        rest -= ucs_min(rest, UCT_PCIE_AM_LINE_DATA);
+    }
+    return iface->lines_rx_buf;
+}
+
+static UCS_F_ALWAYS_INLINE void
+uct_pcie_iface_send_ack(uct_pcie_iface_t *iface, uct_pcie_conn_desc_t *cd)
+{
+    uct_pcie_ctl_t line;
+
+    line.ep_conn_ack = cd->ep_conn_last_ack;
+    iface->store_line(cd->ctl_buf, &line);
+    cd->ep_conn_sent_ack = cd->ep_conn_last_ack;
+    iface->wc_dirty      = 1;
+}
+
+/**
+ * @brief Complete finished DMA transfers and the ep flushes waiting for them.
+ *
+ * @return Number of transfers completed.
+ */
+static unsigned uct_pcie_iface_progress_dma(uct_pcie_iface_t *iface)
+{
+    uct_pcie_flush_req_t  *req;
+    ucs_queue_iter_t       iter;
+    sci_dma_queue_state_t  state;
+    uct_pcie_dma_t        *dma;
+    ucs_status_t           status;
+    unsigned               count = 0;
+    unsigned int           i;
+
+    for (i = 0; i < iface->num_dmas; i++) {
+        dma = &iface->dmas[i];
+        if (dma->ep == NULL) {
+            continue;
+        }
+
+        state = SCIDMAQueueState(dma->queue);
+        if (state == SCI_DMAQUEUE_DONE) {
+            status = UCS_OK;
+        } else if ((state == SCI_DMAQUEUE_ERROR) ||
+                   (state == SCI_DMAQUEUE_ABORTED)) {
+            ucs_error("pcie DMA transfer failed (queue state %d)", state);
+            status = UCS_ERR_IO_ERROR;
+        } else {
+            continue;
+        }
+
+        if (dma->copy_len > 0) {
+            memcpy(dma->copy_dst, dma->copy_src, dma->copy_len);
+            dma->copy_len = 0;
+        }
+        dma->ep->dma_outstanding--;
+        dma->ep                                  = NULL;
+        iface->free_dmas[iface->num_free_dmas++] = i;
+        if (dma->comp != NULL) {
+            uct_invoke_completion(dma->comp, status);
+        }
+        count++;
+    }
+
+    ucs_queue_for_each_safe(req, iter, &iface->flush_reqs, queue) {
+        if (req->ep->dma_outstanding == 0) {
+            ucs_queue_del_iter(&iface->flush_reqs, iter);
+            uct_invoke_completion(req->comp, UCS_OK);
+            ucs_free(req);
+        }
+    }
+
+    return count;
 }
 
 /**
@@ -759,6 +1186,13 @@ unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
     uint32_t              packet_offset;
     unsigned              count = 0;
 
+    uct_pcie_iface_wc_flush(iface);
+    count += uct_pcie_iface_progress_gets(iface);
+
+    if (iface->num_free_dmas != iface->num_dmas) {
+        count += uct_pcie_iface_progress_dma(iface);
+    }
+
     for (size_t i = 0; i < iface->connections; i++) {
         cd = &iface->sci_cds[i];
 
@@ -773,12 +1207,21 @@ unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
             packet             = (uct_pcie_am_hdr_t *) &cd->packet_queue_buf[packet_offset];
 
             /* Stop if the next slot has not been posted by the sender yet */
-            if (packet->am_message_posted != 1) {
+            if (packet->seq != cd->ep_conn_last_ack + 1) {
                 break;
             }
+            ucs_memory_cpu_load_fence();
 
-            packet_payload_ptr = (void *)
-                &cd->packet_queue_buf[packet_offset + sizeof(uct_pcie_am_hdr_t)];
+            if (packet->am_flags & UCT_PCIE_AM_FLAG_INLINE) {
+                packet_payload_ptr = (void*)packet->data;
+            } else if (packet->am_flags & UCT_PCIE_AM_FLAG_LINES) {
+                packet_payload_ptr = uct_pcie_iface_gather_lines(iface, packet);
+                if (packet_payload_ptr == NULL) {
+                    break; /* some lines still in flight, retry next time */
+                }
+            } else {
+                packet_payload_ptr = (void*)(packet + 1);
+            }
 
             ucs_ret = uct_iface_invoke_am(
                 &iface->super,
@@ -798,13 +1241,17 @@ unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
                 break;
             }
 
-            /* Mark the slot as free and notify the sender by advancing the ack counter */
-            packet->am_message_posted = 0;
+            /* The slot is free again; tell the sender in batches */
             cd->ep_conn_last_ack++;
-            cd->ctl_buf->ep_conn_ack = cd->ep_conn_last_ack;
-            SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+            if (cd->ep_conn_last_ack - cd->ep_conn_sent_ack >= iface->ack_batch) {
+                uct_pcie_iface_send_ack(iface, cd);
+            }
 
             count++;
+        }
+
+        if (cd->ep_conn_last_ack != cd->ep_conn_sent_ack) {
+            uct_pcie_iface_send_ack(iface, cd);
         }
     }
 
@@ -822,10 +1269,10 @@ unsigned uct_pcie_iface_progress(uct_iface_h tl_iface) {
 /**
  * @brief Report interface capabilities and performance parameters.
  *
- * Advertises AM and put operations in short, bcopy, and zcopy variants, plus
- * get in all three variants via CPU reads through the PCIe MMIO window.
- * Atomics are not advertised (see [NO_ATOMICS] in pcie_ep.c). Latency and
- * bandwidth figures are conservative estimates for a PCIe 4.0 x16 link.
+ * Advertises AM and put operations in short, bcopy, and zcopy variants, and
+ * get as DMA zero-copy. Atomics are not advertised (see [NO_ATOMICS] in
+ * pcie_ep.c). The latency and bandwidth figures describe CPU stores; DMA
+ * figures are reported per operation by uct_pcie_iface_estimate_perf.
  *
  * @param[in]  tl_iface  Interface handle.
  * @param[out] attr       Attribute structure to populate.
@@ -848,16 +1295,19 @@ static ucs_status_t uct_pcie_iface_query(
                       UCT_IFACE_FLAG_PUT_SHORT        |
                       UCT_IFACE_FLAG_PUT_BCOPY        |
                       UCT_IFACE_FLAG_PUT_ZCOPY        |
-                      UCT_IFACE_FLAG_GET_SHORT        |
-                      UCT_IFACE_FLAG_GET_BCOPY        |
-                      UCT_IFACE_FLAG_GET_ZCOPY;
+                      UCT_IFACE_FLAG_GET_ZCOPY        |
+                      UCT_IFACE_FLAG_PENDING;
+    if (iface->get_pio_max > 0) {
+        attr->cap.flags        |= UCT_IFACE_FLAG_GET_BCOPY;
+        attr->cap.get.max_bcopy = iface->get_pio_max;
+    }
     attr->cap.event_flags = 0;
 
     attr->device_addr_len = sizeof(uct_pcie_device_addr_t);
     attr->iface_addr_len  = sizeof(uct_pcie_iface_addr_t);
     attr->ep_addr_len     = 0;
 
-    /* AM limits: each slot holds one uct_pcie_am_hdr_t followed by user data.
+    /* AM limits: each slot holds the header line followed by user data.
      * All variants share the same slot-remainder bound. */
     am_max = iface->packet_size_bytes - sizeof(uct_pcie_am_hdr_t);
     attr->cap.am.max_short = am_max;
@@ -867,36 +1317,32 @@ static ucs_status_t uct_pcie_iface_query(
     attr->cap.am.max_iov   = 10;
     attr->cap.am.max_hdr   = am_max;
 
-    /* Put limits: writes go directly into the remote SISCI segment through the
-     * PCIe MMIO window.  put_bcopy has no transport-level size limit (bounded
-     * only by the remote segment size).  put_short is limited to keep it a
-     * fast inline path. */
+    /* Put: short and bcopy are CPU stores through the mapping of the remote
+     * registered range, zcopy is DMA from the registered local buffer (or CPU
+     * stores up to put_pio_max). Get is DMA, or streaming CPU loads up to
+     * get_pio_max (bcopy). */
     attr->cap.put.max_short        = UCT_PCIE_MAX_PUT_SHORT;
-    attr->cap.put.max_bcopy        = UCT_PCIE_RMA_SEG_SIZE;
+    attr->cap.put.max_bcopy        = iface->zcopy_max;
     attr->cap.put.min_zcopy        = 0;
-    attr->cap.put.max_zcopy        = UCT_PCIE_RMA_SEG_SIZE;
+    attr->cap.put.max_zcopy        = iface->zcopy_max;
     attr->cap.put.opt_zcopy_align  = 1;
     attr->cap.put.align_mtu        = 1;
     attr->cap.put.max_iov          = 1;
 
-    /* Get limits: reads go directly from the remote SISCI segment window.
-     * Synchronous PIO; zcopy scatters into caller-supplied iov buffers. */
-    attr->cap.get.max_short        = UCT_PCIE_MAX_PUT_SHORT;
-    attr->cap.get.max_bcopy        = UCT_PCIE_RMA_SEG_SIZE;
     attr->cap.get.min_zcopy        = 0;
-    attr->cap.get.max_zcopy        = UCT_PCIE_RMA_SEG_SIZE;
+    attr->cap.get.max_zcopy        = iface->zcopy_max;
     attr->cap.get.opt_zcopy_align  = 1;
     attr->cap.get.align_mtu        = 1;
     attr->cap.get.max_iov          = 1;
 
-    /* Conservative PCIe performance estimates.
-     * Latency: ~1 microsecond for a PCIe round trip.
-     * Bandwidth: ~20 GB/s (conservative for PCIe 4.0 x16, actual numbers depends on slot width and gen).
-     */
-    attr->latency             = ucs_linear_func_make(1e-6, 0);
-    attr->bandwidth.dedicated = 20 * UCS_GBYTE;
+    /* CPU stores, measured fpga1614 <-> fpga1610 (MXH930, Gen4 x16): 8-byte
+     * AM one way 1.04 us, a stream of them 0.05-0.07 us each, 20.4 GB/s from
+     * one core. With the former 1 us overhead UCP preferred rendezvous (DMA)
+     * from 32 KiB on, at twice the time per message. */
+    attr->latency             = ucs_linear_func_make(1.0e-6, 0);
+    attr->bandwidth.dedicated = 20.4 * UCS_GBYTE;
     attr->bandwidth.shared    = 0;
-    attr->overhead            = 1e-6;
+    attr->overhead            = 0.07e-6;
     attr->priority            = 0;
 
     return UCS_OK;
@@ -906,7 +1352,6 @@ static uct_iface_ops_t uct_pcie_iface_ops = {
     .ep_put_short             = uct_pcie_ep_put_short,
     .ep_put_bcopy             = uct_pcie_ep_put_bcopy,
     .ep_put_zcopy             = uct_pcie_ep_put_zcopy,
-    .ep_get_short             = uct_pcie_ep_get_short,
     .ep_get_bcopy             = uct_pcie_ep_get_bcopy,
     .ep_get_zcopy             = uct_pcie_ep_get_zcopy,
     
@@ -923,14 +1368,14 @@ static uct_iface_ops_t uct_pcie_iface_ops = {
     .ep_atomic32_post         = uct_pcie_ep_atomic32_post,
     .ep_atomic32_fetch        = uct_pcie_ep_atomic32_fetch,
 
-    .ep_flush                 = uct_base_ep_flush,
+    .ep_flush                 = uct_pcie_ep_flush,
     .ep_fence                 = uct_base_ep_fence,
     .ep_check                 = (uct_ep_check_func_t)ucs_empty_function_return_success,
     .ep_pending_add           = uct_pcie_ep_pending_add,
     .ep_pending_purge         = uct_pcie_ep_pending_purge,
     .ep_create                = UCS_CLASS_NEW_FUNC_NAME(uct_pcie_ep_t),
     .ep_destroy               = UCS_CLASS_DELETE_FUNC_NAME(uct_pcie_ep_t),
-    .iface_flush              = uct_base_iface_flush,
+    .iface_flush              = uct_pcie_iface_flush,
     .iface_fence              = uct_base_iface_fence,
     .iface_progress_enable    = uct_pcie_iface_progress_enable,
     .iface_progress_disable   = uct_base_iface_progress_disable,
