@@ -1,128 +1,104 @@
+/*
+ * Copyright (C) Dolphin Interconnect Solutions AS, 2025-2026. ALL RIGHTS RESERVED.
+ * See file LICENSE for terms.
+ */
+
 #ifndef UCT_PCIE_SISCI_HELPER_H
 #define UCT_PCIE_SISCI_HELPER_H
 
 #include "pcie_iface.h"
 
-/**
- * @brief Creates, prepares and maps a local sisci segment. Gets sisci to
- *        automatically assign a segment ID that is unique to this node.
- * @param[in] sd 
- * @param[in] segment 
- * @param[in] segment_map 
- * @param[in] segment_size 
- * @param[out] segment_id 
- * @param[out] buf 
- * @return 
- */
-int uct_pcie_helper_create_segment(
-    sci_desc_t sd,
-    sci_local_segment_t *segment,
-    sci_map_t *segment_map,
-    size_t segment_size,
-    unsigned int *segment_id,
-    void **buf);
 
 /**
- * @brief Undos setup by uct_pcie_helper_create_segment.
- * 
- * @details Unmaps and removes local segment set up by
- * uct_pcie_helper_create_segment.
- * 
- * @param[in] segment 
- */
-void uct_pcie_helper_remove_segment(
-    sci_local_segment_t segment,
-    sci_map_t segment_map);
-
-/**
- * @brief Creates, prepares and maps a local sisci segment, then sets it
- *        available for remote connections. Gets sisci to automatically assign
- *        a segment ID that is unique to this node.
- * @param[in] sd 
- * @param[in] segment 
- * @param[in] segment_map 
- * @param[in] segment_size 
- * @param[out] segment_id 
- * @param[out] buf 
- * @return 
- */
-int uct_pcie_helper_create_seg_set_avail(
-    sci_desc_t sd,
-    sci_local_segment_t *segment,
-    sci_map_t *segment_map,
-    size_t segment_size,
-    unsigned int *segment_id,
-    void **buf);
-
-/**
- * @brief Unmaps, removes local segment (after first setting it to unavailable)
- *        set up by uct_pcie_helper_create_segment.
- *        (Undos setup by uct_pcie_helper_create_segment)
+ * Create, prepare and map a local SISCI segment. SISCI assigns a segment ID
+ * that is unique on this node.
  *
- * @details Unmaps, removes local segment set up by
- *          uct_pcie_helper_create_segment.
- *          (after first setting it to unavailable)
- * 
- * @param[in] segment 
- * @param[in] segment_map 
+ * @param [in]  sd             SISCI virtual device descriptor.
+ * @param [in]  size           Segment size in bytes.
+ * @param [out] segment_p      Created segment.
+ * @param [out] segment_map_p  Local mapping of the segment.
+ * @param [out] segment_id_p   Assigned segment ID.
+ * @param [out] buf_p          Local VA of the mapping.
+ *
+ * @return UCS_OK on success, UCS_ERR_NO_RESOURCE on failure.
  */
-void uct_pcie_helper_remove_seg_set_unavail(
-    sci_local_segment_t segment,
-    sci_map_t segment_map);
+ucs_status_t uct_pcie_segment_create(sci_desc_t sd, size_t size,
+                                     sci_local_segment_t *segment_p,
+                                     sci_map_t *segment_map_p,
+                                     unsigned int *segment_id_p, void **buf_p);
+
 
 /**
- * @brief Connects to and maps remote sisci segment at a given offset and size.
- *
- * @note Tries to connect in a loop until it succeeds.
- *
- * @param callback     Optional SISCI remote segment callback. Pass NULL for no
- *                     callback. When non-NULL, SCI_FLAG_USE_CALLBACK is set
- *                     automatically.
- * @param callback_arg User argument forwarded to the callback.
+ * Unmap and remove a segment created by @ref uct_pcie_segment_create.
  */
-int uct_pcie_connect_segment(
-    sci_desc_t sd,
-    size_t offset,
-    size_t segment_size,
-    unsigned int node_id,
-    unsigned int segment_id,
-    sci_remote_segment_t *segment,
-    sci_map_t *segment_map,
-    volatile void **buf,
-    sci_cb_remote_segment_t callback,
-    void *callback_arg);
+void uct_pcie_segment_remove(sci_local_segment_t segment,
+                             sci_map_t segment_map);
+
 
 /**
- * @brief Connects to a remote SISCI segment, queries its full size via
- *        SCIGetRemoteSegmentSize, and maps the entire segment from offset 0.
- *
- * Avoids the caller needing to know the segment size in advance; useful for
- * put/get where size is not carried in the 8-byte wire rkey.
- *
- * @param[in]  sd           Open SISCI virtual device descriptor
- * @param[in]  node_id      Remote SISCI node ID
- * @param[in]  segment_id   Remote SISCI segment ID
- * @param[out] segment      Connected remote segment handle
- * @param[out] segment_map  Map handle for the connected segment
- * @param[out] buf          Local VA of the mapped remote segment window
- * @return 0 on success, -1 on failure
+ * Same as @ref uct_pcie_segment_create, then make the segment available for
+ * remote connections.
  */
-int uct_pcie_connect_segment_full(
-    sci_desc_t sd,
-    unsigned int node_id,
-    unsigned int segment_id,
-    sci_remote_segment_t *segment,
-    sci_map_t *segment_map,
-    volatile void **buf);
+ucs_status_t uct_pcie_segment_create_available(sci_desc_t sd, size_t size,
+                                               sci_local_segment_t *segment_p,
+                                               sci_map_t *segment_map_p,
+                                               unsigned int *segment_id_p,
+                                               void **buf_p);
+
 
 /**
- * @brief Unmaps and disconnects from remote segment segment.
- *        (Reverses what is done in uct_pcie_connect_segment)
- * @param[in] segment 
- * @param[in] segment_map 
+ * Make a segment created by @ref uct_pcie_segment_create_available
+ * unavailable, then unmap and remove it.
  */
-void uct_pcie_disconnect_segment(
-    sci_remote_segment_t segment,
-    sci_map_t segment_map);
+void uct_pcie_segment_remove_available(sci_local_segment_t segment,
+                                       sci_map_t segment_map);
+
+
+/**
+ * Connect to a remote SISCI segment and map size bytes of it from offset.
+ * Retries the connect until it succeeds.
+ *
+ * @param [in]  sd             SISCI virtual device descriptor.
+ * @param [in]  node_id        Remote SISCI node ID.
+ * @param [in]  segment_id     Remote segment ID.
+ * @param [in]  offset         Offset in the remote segment to map from.
+ * @param [in]  size           Number of bytes to map.
+ * @param [in]  callback       Optional remote segment callback, NULL for none.
+ *                             SCI_FLAG_USE_CALLBACK is set when non-NULL.
+ * @param [in]  callback_arg   Argument passed to callback.
+ * @param [out] segment_p      Connected remote segment.
+ * @param [out] segment_map_p  Local mapping of the remote segment.
+ * @param [out] buf_p          Local VA of the mapping.
+ *
+ * @return UCS_OK on success, UCS_ERR_NO_RESOURCE on failure.
+ */
+ucs_status_t
+uct_pcie_segment_connect(sci_desc_t sd, unsigned int node_id,
+                         unsigned int segment_id, size_t offset, size_t size,
+                         sci_cb_remote_segment_t callback, void *callback_arg,
+                         sci_remote_segment_t *segment_p,
+                         sci_map_t *segment_map_p, volatile void **buf_p);
+
+
+/**
+ * Connect to a remote SISCI segment and map all of it. The size is queried
+ * with SCIGetRemoteSegmentSize, so the caller doesn't need to know it.
+ * Retries the connect until it succeeds.
+ *
+ * @return UCS_OK on success, UCS_ERR_NO_RESOURCE on failure.
+ */
+ucs_status_t uct_pcie_segment_connect_full(sci_desc_t sd, unsigned int node_id,
+                                           unsigned int segment_id,
+                                           sci_remote_segment_t *segment_p,
+                                           sci_map_t *segment_map_p,
+                                           volatile void **buf_p);
+
+
+/**
+ * Unmap and disconnect a segment connected by @ref uct_pcie_segment_connect or
+ * @ref uct_pcie_segment_connect_full.
+ */
+void uct_pcie_segment_disconnect(sci_remote_segment_t segment,
+                                 sci_map_t segment_map);
 
 #endif

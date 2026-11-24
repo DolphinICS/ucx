@@ -1,9 +1,14 @@
+#
+# Copyright (C) Dolphin Interconnect Solutions AS, 2025-2026. ALL RIGHTS RESERVED.
+# See file LICENSE for terms.
+#
+
 DIS_HOME = /opt/DIS
 INCLUDE  = -I$(DIS_HOME)/include -I$(DIS_HOME)/include/dis -I $(DIS_HOME)/src/include
 
 module_LTLIBRARIES    = libuct_pcie.la
 
-libuct_pcie_la_CPPFLAGS = $(BASE_CPPFLAGS) 
+libuct_pcie_la_CPPFLAGS = $(BASE_CPPFLAGS)
 libuct_pcie_la_CFLAGS   = $(BASE_CFLAGS) $(INCLUDE) -D_REENTRANT
 libuct_pcie_la_LIBADD   = $(top_builddir)/src/ucs/libucs.la \
                         $(top_builddir)/src/uct/libuct.la \
