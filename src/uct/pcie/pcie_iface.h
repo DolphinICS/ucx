@@ -1,79 +1,59 @@
+/*
+ * Copyright (C) Dolphin Interconnect Solutions AS, 2025-2026. ALL RIGHTS RESERVED.
+ * See file LICENSE for terms.
+ */
+
 #ifndef UCT_PCIE_IFACE_H
 #define UCT_PCIE_IFACE_H
-
-#include "pthread.h"
 
 #include <uct/base/uct_iface.h>
 #include <ucs/datastruct/arbiter.h>
 
 #include <sisci_error.h>
 #include <sisci_api.h>
+#include <pthread.h>
 
 #define UCT_PCIE_NAME "pcie"
 
 #define UCT_PCIE_LOCAL_ADAPTER_NO 0
-#define UCT_PCIE_NO_FLAGS 0
-#define UCT_PCIE_NO_CALLBACK 0
-/* Compile-time array size for SISCI connection slots (sci_cds[] in
- * uct_pcie_iface_t). Must match the PCIE_MAX_EPS and MAX_NUM_EPS config
- * defaults in uct_pcie_iface_config_table; change all three together.
- *
- * MAX_NUM_EPS is advisory: UCX upper layers use it for planning but the UCT
- * framework does not gate ep_create calls against it. The transport refuses
- * new connections when it runs out of sci_cds[] slots. */
+#define UCT_PCIE_NO_FLAGS         0
+/* Size of sci_cds[]. The MAX_NUM_EPS and MAX_EPS config defaults must match */
 #define UCT_PCIE_MAX_EPS 32
 
-/* Maximum bytes for put_short. This threshold is arbitrary for a PIO
- * transport: put_short and put_bcopy both do a memcpy into the MMIO window,
- * so there is no physical reason to prefer one over the other at any
- * particular size. The UCT distinction is API shape: put_short takes a plain
- * (buffer, length) pair while put_bcopy takes a pack callback that writes
- * directly into the destination. 4096 is a reasonable default; it can be
- * raised further without consequence. */
+/* Maximum bytes for put_short. put_short and put_bcopy both copy into the
+ * PIO window, so this limit only decides where the caller switches from one
+ * to the other. */
 #define UCT_PCIE_MAX_PUT_SHORT 4096
 
-/* Size of the shared segment pre-allocated in the MD.  All mem_alloc
- * calls draw from this pool, and the iface's DMA staging segment uses the
- * same size, so each process allocates two of these. Sizes this large need
- * the SISCI driver's ntb_memory_preallocation_size_mb (dis_mx.conf) raised
- * above its 10 MB default. */
+/* Size of the MD's RMA segment and of the iface's DMA staging segment. Needs
+ * the driver's ntb_memory_preallocation_size_mb raised above its default. */
 #define UCT_PCIE_RMA_SEG_SIZE (16 * 1024 * 1024)
 
-/* Transfer-size threshold above which get_short/get_zcopy/get_bcopy use a
- * DMA transfer into the iface's staging buffer instead of their PIO read
- * loop. DMA has a fixed per-call cost (SCIStartDmaTransfer plus a blocking
- * SCIWaitForDMAQueue) that PIO doesn't, so it only pays off once the
- * transfer is big enough to amortize that cost. */
+/* get above this size uses DMA instead of PIO reads */
 #define UCT_PCIE_GET_DMA_THRESHOLD 255
 
-/* Transfer-size threshold above which put_zcopy uses a DMA transfer, when
- * its source is in the MD's mem_alloc pool. PIO writes are posted and
- * pipeline, so they plateau close to link bandwidth; DMA only overtakes them
- * for large transfers. Set from one sweep on a direct-attached Gen5 pair,
- * where the crossover was between 512 KiB and 1 MiB. */
+/* put_zcopy from the MD pool above this size uses DMA. PIO writes are posted,
+ * so DMA only wins for large transfers. */
 #define UCT_PCIE_PUT_DMA_THRESHOLD (512 * 1024)
 
-/* Iface address exchanged OOB before EP creation.
- * Were ucx_perftest to follow the UCT rkey contract, this struct would only
- * carry interrupt_no. The two extra fields are workarounds for libperf bugs. */
-typedef struct {
-    unsigned int interrupt_no;   /* Connection interrupt */
+/* DMA queue length. Transfers are waited for before the op returns. */
+#define UCT_PCIE_DMA_QUEUE_MAX_ENTRIES 10
 
-    /* [LIBPERF_RKEY_QUIRK] quirk 1: rma_seg_id belongs in the rkey, not here.
-     * libperf sends the rkey buffer to the remote side before calling mkey_pack,
-     * so the remote side always receives zeros. Segment identity therefore cannot
-     * travel via rkey and is piggybacked on iface_addr instead. */
+/* Maximum iov count for active messages */
+#define UCT_PCIE_AM_MAX_IOV 10
+
+/* Iface address exchanged before EP creation. The MD has a single RMA segment
+ * per process, so its identity is carried here rather than in the rkey, and
+ * rkey_packed_size is 0. */
+typedef struct {
+    unsigned int interrupt_no; /* Connection interrupt */
+
+    /* SISCI segment ID of the MD's RMA segment */
     unsigned int rma_seg_id;
 
-    /* [LIBPERF_RKEY_QUIRK] quirk 2: this field exists only to cancel noise
-     * introduced by a second libperf quirk. libperf dereferences *address_p
-     * locally (memset, verify), so mem_alloc must return a real local VA
-     * (rma_buf + offset) rather than a plain segment offset. That bakes
-     * rma_buf into the value the initiator receives as remote_addr.
-     * rma_base = rma_buf on the target, sent here so the initiator can
-     * recover the plain offset:  seg_offset = remote_addr - rma_base
-     * Were libperf not to dereference *address_p, remote_addr could be a plain
-     * offset from zero and this field would not exist. */
+    /* Local VA of the RMA segment on this node. mem_alloc returns addresses
+     * inside the segment, so a peer turns remote_addr into a segment offset
+     * with remote_addr - rma_base. */
     uint64_t     rma_base;
 } UCS_S_PACKED uct_pcie_iface_addr_t;
 
@@ -95,41 +75,32 @@ typedef enum {
     UCT_PCIE_CD_AVAILABLE,
     UCT_PCIE_CD_RESERVED,
     UCT_PCIE_CD_READY,
-} conn_desc_status_t;
+} uct_pcie_conn_desc_status_t;
 
-/*
- * Connection Descriptor.
- *
- * Each incoming connection gets its own dedicated receive segment, created
- * in the connection handler. The cd owns the full lifecycle of that segment.
- */
+/* Incoming connection, owns the receive segment created for it */
 typedef struct {
-    conn_desc_status_t      cd_status;
-    int                     remote_node;
-    uint64_t                ep_conn_last_ack;
+    uct_pcie_conn_desc_status_t cd_status;
+    uint64_t                    ep_conn_last_ack;
 
-    /* Per-connection receive segment: created when the connection is accepted,
-     * torn down when the iface is destroyed. */
-    sci_local_segment_t     recv_segment;
-    sci_map_t               recv_segment_map;
-    unsigned int            recv_segment_id;
+    sci_local_segment_t         recv_segment;
+    sci_map_t                   recv_segment_map;
+    unsigned int                recv_segment_id;
 
-    /* Mapped base of recv_segment: the ring buffer the remote EP writes into. */
-    uint8_t*                packet_queue_buf;
+    /* Mapped base of recv_segment, the ring buffer the remote EP writes to */
+    uint8_t                     *packet_queue_buf;
 
-    /* Control segment (used by iface to send signals to endpoints).
-     * Currently, the only signals are ack messages */
-    uint32_t                ctl_segment_id;
-    sci_remote_segment_t    ctl_segment;
-    sci_map_t               ctl_segment_map;
-    uct_pcie_ctl_t*          ctl_buf;
+    /* Peer EP's ack slot in its iface's control segment */
+    uint32_t                    ctl_segment_id;
+    sci_remote_segment_t        ctl_segment;
+    sci_map_t                   ctl_segment_map;
+    uct_pcie_ctl_t              *ctl_buf;
 } uct_pcie_conn_desc_t;
 
 typedef struct {
-    int     node_id;
-    int     interrupt;
-    int     ctl_segment_id;
-    int     ep_conn_index;
+    int node_id;
+    int interrupt;
+    int ctl_segment_id;
+    int ep_conn_index;
 } uct_pcie_conn_req_t;
 
 typedef struct {
@@ -137,98 +108,70 @@ typedef struct {
 } uct_pcie_conn_ans_t;
 
 typedef struct {
-    uct_iface_config_t    super;
-    /* Size of packet in bytes (Maximal send size) */
-    size_t                packet_size_bytes;
-    /* Number of packets in the packet queue */
-    unsigned int          packet_queue_len;
+    uct_iface_config_t super;
+    /* AM slot size in bytes, the largest AM that fits */
+    size_t             packet_size_bytes;
+    /* Number of AM slots per connection */
+    unsigned int       packet_queue_len;
     /* Maximum number of endpoints supported by the iface */
-    unsigned int          max_eps;
-
+    unsigned int       max_eps;
 } uct_pcie_iface_config_t;
 
 typedef struct {
-    uct_pcie_am_hdr_t              super;
-    /* Local UCT completion object */
-    uct_completion_t              *comp;
-    /* Current IOV index */
-    size_t                        iov_index;
-    /* Number of IOVs that should be sent */
-    size_t                        iov_cnt;
-    /* IOVs that should be sent */
-    struct iovec                  iov[0];
-} uct_pcie_ep_zcopy_tx_t;
-
-typedef struct {
-    uct_base_iface_t            super;
+    uct_base_iface_t           super;
 
     /* Local SISCI node ID, obtained from SCIGetLocalNodeId at init time. */
-    unsigned int                device_addr;
+    unsigned int               device_addr;
 
     /* Per-slot byte size for the AM ring buffer. Each AM send occupies one
      * slot; the slot holds a uct_pcie_am_hdr_t followed by the payload. */
-    size_t                      packet_size_bytes;
+    size_t                     packet_size_bytes;
     /* Number of ring-buffer slots per endpoint connection. */
-    uint32_t                    packet_queue_len;
+    uint32_t                   packet_queue_len;
     /* Maximum number of simultaneously connected endpoints. */
-    unsigned int                max_eps;
+    unsigned int               max_eps;
 
-    /* DMA engine, initialized at iface creation. Used by get_short/
-     * get_zcopy/get_bcopy for transfers above UCT_PCIE_GET_DMA_THRESHOLD:
-     * the staging segment is a pinned local buffer DMA reads land in before
-     * being copied out to the caller's destination, and the queue
-     * serializes per-iface DMA requests. Completion is synchronous (these
-     * functions block on SCIWaitForDMAQueue before returning), so only one
-     * transfer is ever posted to the queue at a time. */
-    sci_dma_queue_t             dma_queue;
-    sci_local_segment_t         dma_segment;
-    sci_map_t                   dma_map;
-    void*                       dma_buffer;
+    /* DMA for get and put_zcopy. Transfers finish before the op returns, so
+     * at most one is queued. */
+    sci_dma_queue_t            dma_queue;
+    sci_local_segment_t        dma_segment;
+    sci_map_t                  dma_map;
+    void                       *dma_buffer;
 
-    /* One descriptor per potential incoming connection, allocated round-robin
-     * by the connection handler. */
-    uct_pcie_conn_desc_t        sci_cds[UCT_PCIE_MAX_EPS];
+    /* One descriptor per incoming connection */
+    uct_pcie_conn_desc_t       sci_cds[UCT_PCIE_MAX_EPS];
 
-    /* Data interrupt that receives incoming connection requests. The interrupt
-     * number is published in iface_addr so remote EPs know where to send them. */
-    sci_local_data_interrupt_t  interrupt;
-    unsigned int                interrupt_no;
+    /* Data interrupt that receives incoming connection requests. Its number
+     * is published in iface_addr so remote EPs know where to send them. */
+    sci_local_data_interrupt_t interrupt;
+    unsigned int               interrupt_no;
 
-    /* Four SISCI virtual devices, one per segment role, so that each
-     * descriptor holds at most one segment of its type per EP connection.
-     * SISCI limits a descriptor to 32 resources of the same type; without
-     * this split two remote-segment types on one descriptor would halve the
-     * EP limit to 16, and local recv segments on the MD descriptor would
-     * overflow its local-segment quota at 32 connections.
-     * To scale past 32 EPs, turn each of these into an array of descriptors. */
-    sci_desc_t                  vdev_recv; /* per-connection local recv segments */
-    sci_desc_t                  vdev_ep;   /* AM receive segment connections     */
-    sci_desc_t                  vdev_rma;  /* RMA segment connections            */
-    sci_desc_t                  vdev_ctl;  /* control segment connections        */
+    /* A SISCI descriptor holds at most 32 resources of a type, so each
+     * segment role gets its own to allow 32 EPs */
+    sci_desc_t                 vdev_recv; /* per-connection recv segments */
+    sci_desc_t                 vdev_ep; /* AM receive segment connections */
+    sci_desc_t                 vdev_rma; /* RMA segment connections */
+    sci_desc_t                 vdev_ctl; /* control segment connections */
 
     /* Protects connections count and sci_cds slot allocation in the
-     * connection handler, which runs on SISCI's interrupt thread. */
-    pthread_mutex_t             lock;
+     * connection handler, which runs on the SISCI callback thread. */
+    pthread_mutex_t            lock;
 
-    /* Arbiter for pending send requests. When an AM send returns
-     * UCS_ERR_NO_RESOURCE (flow-control window full), ep_pending_add queues
-     * the request here. uct_pcie_iface_progress drains it each tick. */
-    ucs_arbiter_t               arbiter;
+    /* Pending sends, retried from progress */
+    ucs_arbiter_t              arbiter;
 
     /* Monotonically increasing count of EPs ever created on this iface.
      * Used to assign each new EP a unique ep_conn_index. */
-    unsigned int                eps_init_cnt;
+    unsigned int               eps_init_cnt;
     /* Number of currently active incoming connections. */
-    volatile unsigned int       connections;
+    volatile unsigned int      connections;
 
     /* Control segment: a local segment that remote EPs map and write
      * acknowledgement counters into. One uct_pcie_ctl_t slot per EP. */
-    unsigned int                ctl_segment_id;
-    sci_local_segment_t         ctl_segment;
-    sci_map_t                   ctl_segment_map;
-    uct_pcie_ctl_t*             ctls;
+    unsigned int               ctl_segment_id;
+    sci_local_segment_t        ctl_segment;
+    sci_map_t                  ctl_segment_map;
+    uct_pcie_ctl_t             *ctls;
 } uct_pcie_iface_t;
-
-
 
 #endif
