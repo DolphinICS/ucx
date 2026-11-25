@@ -84,14 +84,31 @@ typedef struct {
     unsigned int node_id;
 } UCS_S_PACKED uct_pcie_device_addr_t;
 
+/* Connection state in an EP's ctl slot, written by the peer */
+typedef enum {
+    UCT_PCIE_CONN_NONE,     /* No answer yet */
+    UCT_PCIE_CONN_ACCEPTED, /* recv_seg_id is valid, acks follow */
+    UCT_PCIE_CONN_REFUSED,  /* The peer won't write the slot again */
+    UCT_PCIE_CONN_CLOSED    /* The peer has closed its side and won't write the
+                             * slot again */
+} uct_pcie_conn_state_t;
+
 /* One EP's slot in its iface's control segment, written by the peer */
 typedef struct {
     volatile uint64_t ep_conn_ack;
     /* Answer to the connection request: the receive segment the peer created
-     * for this EP. recv_seg_id is written first, then conn_answered. */
+     * for this EP. recv_seg_id is written before conn_state. */
     volatile uint32_t recv_seg_id;
-    volatile uint32_t conn_answered;
+    volatile uint32_t conn_state; /* uct_pcie_conn_state_t */
 } uct_pcie_ctl_t;
+
+/* Who owns a slot in the iface's control segment */
+typedef enum {
+    UCT_PCIE_CTL_SLOT_FREE,
+    UCT_PCIE_CTL_SLOT_IN_USE, /* By an EP */
+    UCT_PCIE_CTL_SLOT_CLOSING /* EP destroyed, the peer may still write the
+                               * slot until it's REFUSED or CLOSED */
+} uct_pcie_ctl_slot_state_t;
 
 typedef struct {
     uint8_t          am_id;
@@ -203,6 +220,8 @@ typedef struct {
     sci_desc_t                 vdev_ctl; /* control segment connections */
     sci_desc_t                 vdev_setup; /* peer inbox and interrupt,
                                             * during a connection request */
+    sci_desc_t                 vdev_refuse; /* peer ctl slot, while refusing
+                                             * its request */
 
     /* Protects sci_cds slot allocation: the connection handler on the SISCI
      * callback thread reserves, progress releases. */
@@ -214,9 +233,9 @@ typedef struct {
     /* EPs waiting for the peer's answer, polled from progress */
     ucs_list_link_t            connecting_eps;
 
-    /* Monotonically increasing count of EPs ever created on this iface.
-     * Used to assign each new EP a unique ep_conn_index. */
-    unsigned int               eps_init_cnt;
+    /* Owner of each slot in ctls. A CLOSING slot is freed once the peer has
+     * written REFUSED or CLOSED into it, see uct_pcie_iface_ctl_slot_get. */
+    uct_pcie_ctl_slot_state_t  ctl_slot_state[UCT_PCIE_MAX_EPS];
 
     /* Control segment: a local segment that remote EPs map and write
      * acknowledgement counters into. One uct_pcie_ctl_t slot per EP. */
@@ -225,5 +244,12 @@ typedef struct {
     sci_map_t                  ctl_segment_map;
     uct_pcie_ctl_t             *ctls;
 } uct_pcie_iface_t;
+
+
+ucs_status_t
+uct_pcie_iface_ctl_slot_get(uct_pcie_iface_t *iface, unsigned int *index_p);
+
+void uct_pcie_iface_ctl_slot_put(uct_pcie_iface_t *iface, unsigned int index,
+                                 int request_sent);
 
 #endif

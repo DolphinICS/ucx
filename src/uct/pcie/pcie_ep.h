@@ -15,7 +15,8 @@
 typedef enum {
     UCT_PCIE_EP_CONN_QUEUED,  /* Behind other EPs in connecting_eps */
     UCT_PCIE_EP_CONN_SENDING, /* Trying to send the connection request */
-    UCT_PCIE_EP_CONN_WAITING  /* Request sent, waiting for the answer */
+    UCT_PCIE_EP_CONN_WAITING  /* Request in the peer's inbox, so the peer may
+                               * write the ctl slot. Kept after the answer. */
 } uct_pcie_ep_conn_step_t;
 
 typedef struct {

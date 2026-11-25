@@ -16,7 +16,8 @@
 /* Write a connection request into this iface's slot in the peer's inbox and
  * trigger the peer's connection interrupt. Returns UCS_ERR_BUSY, with the
  * reason in busy_reason, if that can't be done yet; the caller tries again on
- * a later call. */
+ * a later call. Moves the EP to UCT_PCIE_EP_CONN_WAITING once the request is
+ * written. */
 static ucs_status_t
 uct_pcie_ep_send_conn_request(uct_pcie_ep_t *ep, const char **busy_reason)
 {
@@ -68,6 +69,10 @@ uct_pcie_ep_send_conn_request(uct_pcie_ep_t *ep, const char **busy_reason)
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     slot->pending = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+
+    /* The peer may answer into this EP's ctl slot from now on, even if the
+     * trigger below fails */
+    ep->conn_step = UCT_PCIE_EP_CONN_WAITING;
 
     /* Runs uct_pcie_iface_conn_handler on the peer, which answers in this EP's
      * ctl slot */
@@ -127,7 +132,12 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
 
     /* This EP's ack slot in the iface control segment. No lock needed,
      * multi-threaded workers are refused at iface init. */
-    ep_conn_index = iface->eps_init_cnt++;
+    status = uct_pcie_iface_ctl_slot_get(iface, &ep_conn_index);
+    if (status != UCS_OK) {
+        ucs_error("iface %p: all %u endpoint slots are in use or closing",
+                  iface, iface->max_eps);
+        return status;
+    }
 
     self->ep_conn_index   = ep_conn_index;
     self->ep_conn_seq_num = 1;
@@ -141,7 +151,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     if (status != UCS_OK) {
         ucs_error("failed to connect to rma segment %u on node %u",
                   iface_addr->rma_seg_id, self->remote_node_id);
-        goto err_dec_eps_init_cnt;
+        goto err_put_ctl_slot;
     }
 
     self->remote_rma_base = iface_addr->rma_base;
@@ -161,8 +171,8 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
 
     return UCS_OK;
 
-err_dec_eps_init_cnt:
-    iface->eps_init_cnt--;
+err_put_ctl_slot:
+    uct_pcie_iface_ctl_slot_put(iface, ep_conn_index, 0);
     return status;
 }
 
@@ -175,6 +185,7 @@ ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
                                              uct_pcie_iface_t);
     uct_pcie_ctl_t *ctl     = &iface->ctls[ep->ep_conn_index];
     const char *busy_reason = NULL;
+    uint32_t conn_state;
     ucs_status_t status;
     sci_error_t sci_error;
 
@@ -189,7 +200,6 @@ ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
     if (ep->conn_step == UCT_PCIE_EP_CONN_SENDING) {
         status = uct_pcie_ep_send_conn_request(ep, &busy_reason);
         if (status == UCS_OK) {
-            ep->conn_step = UCT_PCIE_EP_CONN_WAITING;
             return UCS_INPROGRESS;
         } else if (status != UCS_ERR_BUSY) {
             goto out;
@@ -204,7 +214,8 @@ ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
         goto out;
     }
 
-    if (!ctl->conn_answered) {
+    conn_state = ctl->conn_state;
+    if (conn_state == UCT_PCIE_CONN_NONE) {
         if (ucs_get_time() < ep->conn_deadline) {
             return UCS_INPROGRESS;
         }
@@ -214,9 +225,19 @@ ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
                   UCT_PCIE_CONNECT_TIMEOUT_MS);
         status = UCS_ERR_ENDPOINT_TIMEOUT;
         goto out;
+    } else if (conn_state == UCT_PCIE_CONN_REFUSED) {
+        ucs_error("ep %p: node %u refused the connection", ep,
+                  ep->remote_node_id);
+        status = UCS_ERR_REJECTED;
+        goto out;
+    } else if (conn_state != UCT_PCIE_CONN_ACCEPTED) {
+        ucs_error("ep %p: node %u closed the connection before it was set up",
+                  ep, ep->remote_node_id);
+        status = UCS_ERR_CONNECTION_RESET;
+        goto out;
     }
 
-    /* recv_seg_id was written before conn_answered */
+    /* recv_seg_id was written before conn_state */
     ucs_memory_cpu_load_fence();
     ep->remote_seg_id = ctl->recv_seg_id;
 
@@ -291,6 +312,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
         ucs_debug("ep %p destroyed before connecting to node %u: %s", self,
                   self->remote_node_id, ucs_status_string(self->conn_status));
     }
+
+    uct_pcie_iface_ctl_slot_put(iface, self->ep_conn_index,
+                                self->conn_step == UCT_PCIE_EP_CONN_WAITING);
 }
 
 UCS_CLASS_DEFINE(uct_pcie_ep_t, uct_base_ep_t);
