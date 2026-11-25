@@ -261,30 +261,26 @@ uct_pcie_segment_connect(sci_desc_t sd, unsigned int node_id,
     return status;
 }
 
-ucs_status_t uct_pcie_segment_connect_full(sci_desc_t sd, unsigned int node_id,
-                                           unsigned int segment_id,
-                                           sci_remote_segment_t *segment_p,
-                                           sci_map_t *segment_map_p,
-                                           volatile void **buf_p)
+ucs_status_t
+uct_pcie_segment_try_connect_full(sci_desc_t sd, unsigned int node_id,
+                                  unsigned int segment_id,
+                                  sci_remote_segment_t *segment_p,
+                                  sci_map_t *segment_map_p,
+                                  volatile void **buf_p,
+                                  sci_error_t *connect_error)
 {
     sci_remote_segment_t segment;
     sci_map_t segment_map;
-    ucs_time_t deadline;
     sci_error_t sci_error;
     volatile void *buf;
     size_t size;
 
-    deadline = uct_pcie_connect_deadline();
-    do {
-        SCIConnectSegment(sd, &segment, node_id, segment_id,
-                          UCT_PCIE_LOCAL_ADAPTER_NO, NULL, NULL, 0,
-                          UCT_PCIE_NO_FLAGS, &sci_error);
-    } while ((sci_error != SCI_ERR_OK) && (ucs_get_time() < deadline));
-
+    SCIConnectSegment(sd, &segment, node_id, segment_id,
+                      UCT_PCIE_LOCAL_ADAPTER_NO, NULL, NULL, 0,
+                      UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCIConnectSegment failed after %d ms: %s",
-                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
-        return UCS_ERR_TIMED_OUT;
+        *connect_error = sci_error;
+        return UCS_ERR_BUSY;
     }
 
     size = SCIGetRemoteSegmentSize(segment);
