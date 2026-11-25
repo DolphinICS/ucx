@@ -7,15 +7,12 @@
 # See file LICENSE for terms.
 #
 
-DIS_HOME = /opt/DIS
-INCLUDE  = -I$(DIS_HOME)/include -I$(DIS_HOME)/include/dis -I $(DIS_HOME)/src/include
-
 SUBDIRS = . gaudi cuda ib rocm sm ugni ze pcie
 
 lib_LTLIBRARIES    = libuct.la
-libuct_la_CFLAGS   = $(BASE_CFLAGS) $(LT_CFLAGS) $(INCLUDE) -D_REENTRANT
-libuct_la_CPPFLAGS = $(BASE_CPPFLAGS) $(INCLUDE)
-libuct_la_LIBADD   = $(top_builddir)/src/ucs/libucs.la -L/opt/DIS/lib64 -lsisci
+libuct_la_CFLAGS   = $(BASE_CFLAGS) $(LT_CFLAGS)
+libuct_la_CPPFLAGS = $(BASE_CPPFLAGS)
+libuct_la_LIBADD   = $(top_builddir)/src/ucs/libucs.la
 libuct_la_LDFLAGS  = -ldl -version-info $(SOVERSION) $(UCX_LT_RELEASE)
 libuct_ladir       = $(includedir)/uct
 
@@ -49,11 +46,7 @@ noinst_HEADERS = \
 	tcp/tcp.h \
 	tcp/tcp_sockcm.h \
 	tcp/tcp_listener.h \
-	tcp/tcp_sockcm_ep.h \
-	pcie/pcie_iface.h \
-	pcie/pcie_ep.h \
-	pcie/pcie_md.h \
-	pcie/pcie_sisci_helper.h
+	tcp/tcp_sockcm_ep.h
 
 
 libuct_la_SOURCES = \
