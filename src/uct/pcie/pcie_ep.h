@@ -36,8 +36,10 @@ typedef struct {
      * remote_segment is mapped, then UCS_OK, or the error that failed it. AM
      * sends need it, put and get only need rma_seg, mapped at creation. */
     ucs_status_t         conn_status;
-    /* Peer iface's connection interrupt, from uct_pcie_iface_addr_t */
+    /* Peer iface's connection interrupt and inbox, from
+     * uct_pcie_iface_addr_t */
     unsigned int         remote_interrupt_no;
+    unsigned int         remote_inbox_seg_id;
     /* Handshake step while conn_status is UCS_INPROGRESS */
     uct_pcie_ep_conn_step_t conn_step;
     /* When to give up on the handshake, set when sending starts */

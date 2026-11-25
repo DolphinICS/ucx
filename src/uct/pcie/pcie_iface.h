@@ -47,11 +47,29 @@
  * answer, before giving up */
 #define UCT_PCIE_CONNECT_TIMEOUT_MS 10000
 
+/* Most pcie ifaces that can be open on one node at a time, across all
+ * processes. Each iface's inbox has a request slot per iface on every node, and
+ * iface open fails past this. */
+#define UCT_PCIE_MAX_IFACES_PER_NODE 16
+
+/* Inbox slots per iface index: node IDs are multiples of 4, below 256 */
+#define UCT_PCIE_INBOX_NODES 64
+#define UCT_PCIE_INBOX_SLOTS \
+    (UCT_PCIE_INBOX_NODES * UCT_PCIE_MAX_IFACES_PER_NODE)
+
+/* Segments get IDs from [UCT_PCIE_AUTO_SEG_ID_START, +128] with
+ * SCI_FLAG_AUTO_ID. Inbox segments take fixed IDs from
+ * UCT_PCIE_INBOX_SEG_ID_BASE, outside that range, and the offset is the
+ * iface's index on its node. */
+#define UCT_PCIE_AUTO_SEG_ID_START 1024
+#define UCT_PCIE_INBOX_SEG_ID_BASE 2048
+
 /* Iface address exchanged before EP creation. The MD has a single RMA segment
  * per process, so its identity is carried here rather than in the rkey, and
  * rkey_packed_size is 0. */
 typedef struct {
     unsigned int interrupt_no; /* Connection interrupt */
+    unsigned int inbox_seg_id; /* Where connection requests are written */
 
     /* SISCI segment ID of the MD's RMA segment */
     unsigned int rma_seg_id;
@@ -112,6 +130,14 @@ typedef struct {
     int ep_conn_index;
 } uct_pcie_conn_req_t;
 
+/* The initiator iface's slot in the peer's inbox. The initiator writes request,
+ * then sets pending and triggers the peer's interrupt. The peer clears pending
+ * once it has handled the request. */
+typedef struct {
+    uct_pcie_conn_req_t request;
+    volatile uint32_t   pending;
+} uct_pcie_inbox_slot_t;
+
 typedef struct {
     uct_iface_config_t super;
     /* AM slot size in bytes, the largest AM that fits */
@@ -146,10 +172,20 @@ typedef struct {
     /* One descriptor per incoming connection */
     uct_pcie_conn_desc_t       sci_cds[UCT_PCIE_MAX_EPS];
 
-    /* Data interrupt that receives incoming connection requests. Its number
-     * is published in iface_addr so remote EPs know where to send them. */
-    sci_local_data_interrupt_t interrupt;
+    /* Interrupt peers trigger after writing a connection request into the
+     * inbox. Its number is published in iface_addr. */
+    sci_local_interrupt_t      interrupt;
     unsigned int               interrupt_no;
+
+    /* Connection requests, one slot per iface on every node, see
+     * uct_pcie_inbox_slot_t. Its ID is published in iface_addr. */
+    sci_local_segment_t        inbox_segment;
+    sci_map_t                  inbox_map;
+    unsigned int               inbox_seg_id;
+    uct_pcie_inbox_slot_t      *inbox;
+    /* This iface's index on its node, inbox_seg_id -
+     * UCT_PCIE_INBOX_SEG_ID_BASE. Picks this iface's slot in peers' inboxes. */
+    unsigned int               local_index;
 
     /* A SISCI descriptor holds at most 32 resources of a type, so each
      * segment role gets its own to allow 32 EPs */
@@ -157,6 +193,8 @@ typedef struct {
     sci_desc_t                 vdev_ep; /* AM receive segment connections */
     sci_desc_t                 vdev_rma; /* RMA segment connections */
     sci_desc_t                 vdev_ctl; /* control segment connections */
+    sci_desc_t                 vdev_setup; /* peer inbox and interrupt,
+                                            * during a connection request */
 
     /* Protects connections count and sci_cds slot allocation in the
      * connection handler, which runs on the SISCI callback thread. */

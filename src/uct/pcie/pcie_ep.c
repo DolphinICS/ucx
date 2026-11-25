@@ -13,40 +13,77 @@
 
 #include <uct/base/uct_iov.inl>
 
-/* Send a connection request to the iface listening on remote_interrupt_no.
- * Returns UCS_ERR_BUSY, with the SISCI error in connect_error, if the
- * interrupt can't be connected; the caller tries again on a later call. */
+/* Write a connection request into this iface's slot in the peer's inbox and
+ * trigger the peer's connection interrupt. Returns UCS_ERR_BUSY, with the
+ * reason in busy_reason, if that can't be done yet; the caller tries again on
+ * a later call. */
 static ucs_status_t
-uct_pcie_ep_send_conn_request(uct_pcie_conn_req_t *request,
-                              unsigned int node_id,
-                              unsigned int remote_interrupt_no,
-                              sci_desc_t sci_virtual_device,
-                              sci_error_t *connect_error)
+uct_pcie_ep_send_conn_request(uct_pcie_ep_t *ep, const char **busy_reason)
 {
-    ucs_status_t status = UCS_OK;
-    sci_remote_data_interrupt_t req_interrupt;
+    uct_pcie_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                             uct_pcie_iface_t);
+    unsigned int slot_index = (iface->device_addr / 4) *
+                                      UCT_PCIE_MAX_IFACES_PER_NODE +
+                              iface->local_index;
+    volatile uct_pcie_inbox_slot_t *slot;
+    sci_remote_interrupt_t req_interrupt;
+    sci_remote_segment_t inbox_segment;
+    sci_map_t inbox_map;
+    ucs_status_t status;
     sci_error_t sci_error;
 
-    SCIConnectDataInterrupt(sci_virtual_device, &req_interrupt, node_id,
-                            UCT_PCIE_LOCAL_ADAPTER_NO, remote_interrupt_no,
-                            SCI_INFINITE_TIMEOUT, UCT_PCIE_NO_FLAGS,
-                            &sci_error);
+    SCIConnectInterrupt(iface->vdev_setup, &req_interrupt, ep->remote_node_id,
+                        UCT_PCIE_LOCAL_ADAPTER_NO, ep->remote_interrupt_no,
+                        SCI_INFINITE_TIMEOUT, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        *connect_error = sci_error;
+        *busy_reason = SCIGetErrorString(sci_error);
         return UCS_ERR_BUSY;
     }
 
-    SCITriggerDataInterrupt(req_interrupt, (void*)request, sizeof(*request),
-                            UCT_PCIE_NO_FLAGS, &sci_error);
+    /* Only this iface's slot is mapped */
+    status = uct_pcie_segment_try_connect(
+            iface->vdev_setup, ep->remote_node_id, ep->remote_inbox_seg_id,
+            slot_index * sizeof(uct_pcie_inbox_slot_t),
+            sizeof(uct_pcie_inbox_slot_t), NULL, NULL, &inbox_segment,
+            &inbox_map, (volatile void**)&slot, &sci_error);
+    if (status == UCS_ERR_BUSY) {
+        *busy_reason = SCIGetErrorString(sci_error);
+        goto out_disconnect_interrupt;
+    } else if (status != UCS_OK) {
+        goto out_disconnect_interrupt;
+    }
+
+    /* A read over PCIe, but only once per connection */
+    if (slot->pending) {
+        *busy_reason = "the peer has not handled the previous request yet";
+        status       = UCS_ERR_BUSY;
+        goto out_disconnect_inbox;
+    }
+
+    slot->request.node_id        = iface->device_addr;
+    slot->request.ctl_segment_id = iface->ctl_segment_id;
+    slot->request.ep_conn_index  = ep->ep_conn_index;
+
+    /* The peer checks pending first, so the request has to land before it */
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    slot->pending = 1;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+
+    /* Runs uct_pcie_iface_conn_handler on the peer, which answers in this EP's
+     * ctl slot */
+    SCITriggerInterrupt(req_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCITriggerDataInterrupt failed: %s",
+        ucs_error("SCITriggerInterrupt failed: %s",
                   SCIGetErrorString(sci_error));
         status = UCS_ERR_NO_RESOURCE;
     }
 
-    SCIDisconnectDataInterrupt(req_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
+out_disconnect_inbox:
+    uct_pcie_segment_disconnect(inbox_segment, inbox_map);
+out_disconnect_interrupt:
+    SCIDisconnectInterrupt(req_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_warn("SCIDisconnectDataInterrupt failed: %s",
+        ucs_warn("SCIDisconnectInterrupt failed: %s",
                  SCIGetErrorString(sci_error));
     }
 
@@ -116,6 +153,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     /* The connection request goes out from progress, see
      * uct_pcie_ep_progress_connect */
     self->remote_interrupt_no = iface_addr->interrupt_no;
+    self->remote_inbox_seg_id = iface_addr->inbox_seg_id;
     self->conn_step           = UCT_PCIE_EP_CONN_QUEUED;
     self->conn_status         = UCS_INPROGRESS;
     self->is_connected        = 1;
@@ -129,17 +167,15 @@ err_dec_eps_init_cnt:
 }
 
 /* Called from progress for the first EP in the iface's connecting_eps only.
- * The peer's data interrupt queues few requests and drops the rest without
- * telling the sender, so an iface has one request in flight at a time. */
+ * An iface has one slot in each peer's inbox, so one request in flight at a
+ * time. */
 ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
 {
     uct_pcie_iface_t *iface = ucs_derived_of(ep->super.super.iface,
                                              uct_pcie_iface_t);
-    uct_pcie_md_t *md       = ucs_derived_of(iface->super.md, uct_pcie_md_t);
     uct_pcie_ctl_t *ctl     = &iface->ctls[ep->ep_conn_index];
-    uct_pcie_conn_req_t request;
+    const char *busy_reason = NULL;
     ucs_status_t status;
-    sci_error_t sci_error;
 
     ucs_assert(ep->conn_status == UCS_INPROGRESS);
 
@@ -150,16 +186,7 @@ ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
     }
 
     if (ep->conn_step == UCT_PCIE_EP_CONN_SENDING) {
-        request.node_id        = iface->device_addr;
-        request.ctl_segment_id = iface->ctl_segment_id;
-        request.ep_conn_index  = ep->ep_conn_index;
-
-        /* Runs uct_pcie_iface_conn_handler on the peer, which answers in
-         * this EP's ctl slot */
-        status = uct_pcie_ep_send_conn_request(&request, ep->remote_node_id,
-                                               ep->remote_interrupt_no,
-                                               md->sci_virtual_device,
-                                               &sci_error);
+        status = uct_pcie_ep_send_conn_request(ep, &busy_reason);
         if (status == UCS_OK) {
             ep->conn_step = UCT_PCIE_EP_CONN_WAITING;
             return UCS_INPROGRESS;
@@ -169,9 +196,9 @@ ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
             return UCS_INPROGRESS;
         }
 
-        ucs_error("ep %p: SCIConnectDataInterrupt to node %u still failing"
-                  " after %d ms: %s", ep, ep->remote_node_id,
-                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
+        ucs_error("ep %p: could not send connection request to node %u for"
+                  " %d ms: %s", ep, ep->remote_node_id,
+                  UCT_PCIE_CONNECT_TIMEOUT_MS, busy_reason);
         status = UCS_ERR_ENDPOINT_TIMEOUT;
         goto out;
     }
