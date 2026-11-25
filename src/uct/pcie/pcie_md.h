@@ -11,6 +11,7 @@
 #include <ucs/datastruct/list.h>
 
 #include <sisci_api.h>
+#include <pthread.h>
 
 /* One RMA segment per MD that mem_alloc carves up. mkey_pack puts its node,
  * ID and base VA in the rkey. */
@@ -19,13 +20,23 @@ typedef struct {
     sci_desc_t          sci_virtual_device;
     unsigned int        node_id;
     /* RMA segment, pre-allocated at md_open with UCT_PCIE_RMA_SEG_SIZE bytes.
-     * mem_alloc bump-allocates from it, peers map it through the rkey */
+     * mem_alloc hands out ranges of it, peers map it through the rkey */
     sci_local_segment_t rma_seg;
     sci_map_t           rma_seg_map;
     void                *rma_buf; /* local VA of segment start (this process) */
     unsigned int        rma_seg_id;
-    size_t              rma_allocated; /* bump allocator pointer (bytes used) */
+    /* Unallocated ranges of the segment, uct_pcie_free_range_t sorted by
+     * offset, with no two adjacent */
+    ucs_list_link_t     free_ranges;
+    pthread_mutex_t     alloc_lock; /* Protects free_ranges */
 } uct_pcie_md_t;
+
+/* A range of the RMA segment that mem_alloc can hand out */
+typedef struct {
+    ucs_list_link_t list;
+    size_t          offset;
+    size_t          length;
+} uct_pcie_free_range_t;
 
 /* Packed rkey: where the peer's RMA segment is */
 typedef struct {
@@ -59,8 +70,8 @@ typedef struct {
     void                 *va;
 } uct_pcie_rkey_t;
 
-/* Handle returned by mem_alloc.  Points into the MD's shared segment;
- * mem_free releases only the handle struct, not the underlying segment. */
+/* Handle returned by mem_alloc, a range of the MD's RMA segment. mem_free
+ * gives the range back to the MD. */
 typedef struct {
     void   *ptr; /* md->rma_buf + offset */
     size_t length;

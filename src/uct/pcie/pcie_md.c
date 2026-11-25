@@ -33,7 +33,14 @@ static UCS_LIST_HEAD(uct_pcie_rkey_descs);
 static void uct_pcie_md_close(uct_md_h md)
 {
     uct_pcie_md_t *sci_md = ucs_derived_of(md, uct_pcie_md_t);
+    uct_pcie_free_range_t *range, *tmp;
     sci_error_t sci_error;
+
+    ucs_list_for_each_safe(range, tmp, &sci_md->free_ranges, list) {
+        ucs_list_del(&range->list);
+        ucs_free(range);
+    }
+    pthread_mutex_destroy(&sci_md->alloc_lock);
 
     uct_pcie_segment_remove_available(sci_md->rma_seg, sci_md->rma_seg_map);
 
@@ -61,8 +68,7 @@ static ucs_status_t uct_pcie_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
     return UCS_OK;
 }
 
-/* Bump-allocate from the MD's RMA segment. Space is not reused until the MD
- * is closed. */
+/* Hand out the first free range of the RMA segment that fits, first fit */
 static ucs_status_t
 uct_pcie_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
                    ucs_memory_type_t mem_type, ucs_sys_device_t sys_dev,
@@ -70,6 +76,7 @@ uct_pcie_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
 {
     uct_pcie_md_t *md = ucs_derived_of(uct_md, uct_pcie_md_t);
     uct_pcie_mem_handle_t *handle;
+    uct_pcie_free_range_t *range;
     size_t offset;
     size_t length;
 
@@ -82,17 +89,34 @@ uct_pcie_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
         return UCS_ERR_NO_MEMORY;
     }
 
-    offset = md->rma_allocated;
-    if (offset + length > UCT_PCIE_RMA_SEG_SIZE) {
-        ucs_error("pcie rma segment exhausted (%zu of %d bytes needed)",
-                  offset + length, UCT_PCIE_RMA_SEG_SIZE);
+    pthread_mutex_lock(&md->alloc_lock);
+
+    ucs_list_for_each(range, &md->free_ranges, list) {
+        if (range->length >= length) {
+            break;
+        }
+    }
+
+    if (&range->list == &md->free_ranges) {
+        pthread_mutex_unlock(&md->alloc_lock);
+        ucs_error("pcie rma segment has no free range of %zu bytes", length);
         ucs_free(handle);
         return UCS_ERR_NO_MEMORY;
     }
 
-    md->rma_allocated += length;
-    handle->ptr        = UCS_PTR_BYTE_OFFSET(md->rma_buf, offset);
-    handle->length     = length;
+    offset = range->offset;
+    if (range->length == length) {
+        ucs_list_del(&range->list);
+        ucs_free(range);
+    } else {
+        range->offset += length;
+        range->length -= length;
+    }
+
+    pthread_mutex_unlock(&md->alloc_lock);
+
+    handle->ptr    = UCS_PTR_BYTE_OFFSET(md->rma_buf, offset);
+    handle->length = length;
 
     *memh_p    = handle;
     *address_p = handle->ptr;
@@ -100,10 +124,66 @@ uct_pcie_mem_alloc(uct_md_h uct_md, size_t *length_p, void **address_p,
     return UCS_OK;
 }
 
-static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
+/* Give the handle's range back, merged with free neighbours */
+static ucs_status_t uct_pcie_mem_free(uct_md_h uct_md, uct_mem_h memh)
 {
-    ucs_free(memh);
-    return UCS_OK;
+    uct_pcie_md_t *md             = ucs_derived_of(uct_md, uct_pcie_md_t);
+    uct_pcie_mem_handle_t *handle = memh;
+    size_t offset = UCS_PTR_BYTE_DIFF(md->rma_buf, handle->ptr);
+    size_t length = handle->length;
+    uct_pcie_free_range_t *prev   = NULL;
+    uct_pcie_free_range_t *next   = NULL;
+    uct_pcie_free_range_t *range;
+    ucs_status_t status           = UCS_OK;
+
+    ucs_free(handle);
+
+    pthread_mutex_lock(&md->alloc_lock);
+
+    /* The free ranges on either side of this one */
+    ucs_list_for_each(range, &md->free_ranges, list) {
+        if (range->offset > offset) {
+            next = range;
+            break;
+        }
+        prev = range;
+    }
+
+    ucs_assertv((prev == NULL) || (prev->offset + prev->length <= offset),
+                "freed range %zu+%zu overlaps free range %zu+%zu", offset,
+                length, prev->offset, prev->length);
+    ucs_assertv((next == NULL) || (offset + length <= next->offset),
+                "freed range %zu+%zu overlaps free range %zu+%zu", offset,
+                length, next->offset, next->length);
+
+    if ((prev != NULL) && (prev->offset + prev->length == offset)) {
+        prev->length += length;
+        range         = prev;
+    } else {
+        range = ucs_malloc(sizeof(*range), "uct_pcie_free_range_t");
+        if (range == NULL) {
+            ucs_error("failed to allocate uct_pcie_free_range_t, %zu bytes at"
+                      " offset %zu of the rma segment stay in use", length,
+                      offset);
+            status = UCS_ERR_NO_MEMORY;
+            goto out;
+        }
+
+        range->offset = offset;
+        range->length = length;
+        ucs_list_insert_after((prev != NULL) ? &prev->list : &md->free_ranges,
+                              &range->list);
+    }
+
+    if ((next != NULL) && (range->offset + range->length == next->offset)) {
+        range->length += next->length;
+        ucs_list_del(&next->list);
+        ucs_free(next);
+    }
+
+out:
+    pthread_mutex_unlock(&md->alloc_lock);
+    return status;
 }
 
 /* All memory from mem_alloc is in the MD's one RMA segment, so the rkey is the
@@ -291,6 +371,7 @@ uct_pcie_md_open(uct_component_t *component, const char *md_name,
         .detect_memory_type = (uct_md_detect_memory_type_func_t)
                 ucs_empty_function_return_unsupported
     };
+    uct_pcie_free_range_t *range;
     uct_pcie_md_t *md;
     sci_error_t sci_error;
     ucs_status_t status;
@@ -318,8 +399,8 @@ uct_pcie_md_open(uct_component_t *component, const char *md_name,
         goto err_free_md;
     }
 
-    /* Pre-allocate the shared segment that all mem_alloc calls draw from, and
-     * make it available now so remote EPs can connect during the handshake */
+    /* Pre-allocate the segment that all mem_alloc calls draw from, and make it
+     * available so peers can map it through the rkey */
     status = uct_pcie_segment_create_available(md->sci_virtual_device,
                                                UCT_PCIE_RMA_SEG_SIZE, NULL,
                                                NULL, &md->rma_seg,
@@ -330,7 +411,20 @@ uct_pcie_md_open(uct_component_t *component, const char *md_name,
         goto err_close_vdev;
     }
 
-    md->rma_allocated   = 0;
+    /* The whole segment starts out free */
+    range = ucs_malloc(sizeof(*range), "uct_pcie_free_range_t");
+    if (range == NULL) {
+        ucs_error("failed to allocate uct_pcie_free_range_t");
+        status = UCS_ERR_NO_MEMORY;
+        goto err_remove_seg;
+    }
+
+    range->offset = 0;
+    range->length = UCT_PCIE_RMA_SEG_SIZE;
+    ucs_list_head_init(&md->free_ranges);
+    ucs_list_add_tail(&md->free_ranges, &range->list);
+    pthread_mutex_init(&md->alloc_lock, NULL);
+
     md->super.ops       = &md_ops;
     md->super.component = &uct_pcie_component;
 
@@ -341,6 +435,8 @@ uct_pcie_md_open(uct_component_t *component, const char *md_name,
 
     return UCS_OK;
 
+err_remove_seg:
+    uct_pcie_segment_remove_available(md->rma_seg, md->rma_seg_map);
 err_close_vdev:
     SCIClose(md->sci_virtual_device, UCT_PCIE_NO_FLAGS, &sci_error);
 err_free_md:
