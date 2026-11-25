@@ -58,11 +58,44 @@ ucs_status_t uct_pcie_segment_create_available(sci_desc_t sd, size_t size,
 
 
 /**
- * Make a segment created by @ref uct_pcie_segment_create_available
- * unavailable, then unmap and remove it.
+ * Same as @ref uct_pcie_segment_create_available, but with the given segment
+ * ID instead of one SISCI picks.
+ *
+ * @return UCS_OK on success, UCS_ERR_BUSY if segment_id is already used on
+ *         this node (not logged), UCS_ERR_NO_RESOURCE on other failures.
+ */
+ucs_status_t
+uct_pcie_segment_create_available_id(sci_desc_t sd, size_t size,
+                                     unsigned int segment_id,
+                                     sci_local_segment_t *segment_p,
+                                     sci_map_t *segment_map_p, void **buf_p);
+
+
+/**
+ * Make a segment created by @ref uct_pcie_segment_create_available or
+ * @ref uct_pcie_segment_create_available_id unavailable, then unmap and
+ * remove it.
  */
 void uct_pcie_segment_remove_available(sci_local_segment_t segment,
                                        sci_map_t segment_map);
+
+
+/**
+ * One attempt at what @ref uct_pcie_segment_connect does, for callers that
+ * retry from progress.
+ *
+ * @return UCS_OK on success, UCS_ERR_BUSY with the SISCI error in
+ *         connect_error if the connect failed (not logged),
+ *         UCS_ERR_NO_RESOURCE if mapping failed.
+ */
+ucs_status_t
+uct_pcie_segment_try_connect(sci_desc_t sd, unsigned int node_id,
+                             unsigned int segment_id, size_t offset,
+                             size_t size, sci_cb_remote_segment_t callback,
+                             void *callback_arg,
+                             sci_remote_segment_t *segment_p,
+                             sci_map_t *segment_map_p, volatile void **buf_p,
+                             sci_error_t *connect_error);
 
 
 /**
@@ -108,8 +141,8 @@ ucs_status_t uct_pcie_segment_connect_full(sci_desc_t sd, unsigned int node_id,
 
 
 /**
- * Unmap and disconnect a segment connected by @ref uct_pcie_segment_connect or
- * @ref uct_pcie_segment_connect_full.
+ * Unmap and disconnect a segment connected by @ref uct_pcie_segment_connect,
+ * @ref uct_pcie_segment_try_connect or @ref uct_pcie_segment_connect_full.
  */
 void uct_pcie_segment_disconnect(sci_remote_segment_t segment,
                                  sci_map_t segment_map);

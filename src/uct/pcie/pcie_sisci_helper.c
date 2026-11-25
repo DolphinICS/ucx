@@ -11,21 +11,25 @@
 
 #include <ucs/debug/log.h>
 
-ucs_status_t uct_pcie_segment_create(sci_desc_t sd, size_t size,
-                                     sci_local_segment_t *segment_p,
-                                     sci_map_t *segment_map_p,
-                                     unsigned int *segment_id_p, void **buf_p)
+/* Create, prepare and map a local segment with SCICreateSegment's segment_id
+ * and flags. UCS_ERR_BUSY, not logged, if segment_id is taken. */
+static ucs_status_t
+uct_pcie_segment_create_common(sci_desc_t sd, size_t size,
+                               unsigned int segment_id, unsigned int flags,
+                               sci_local_segment_t *segment_p,
+                               sci_map_t *segment_map_p,
+                               unsigned int *segment_id_p, void **buf_p)
 {
-    /* With SCI_FLAG_AUTO_ID, SISCI picks a free ID from [1024,1152] */
-    unsigned int auto_segid_start = 1024;
     sci_local_segment_t segment;
     sci_map_t segment_map;
     sci_error_t sci_error;
     void *buf;
 
-    SCICreateSegment(sd, &segment, auto_segid_start, size, NULL, NULL,
-                     SCI_FLAG_AUTO_ID, &sci_error);
-    if (sci_error != SCI_ERR_OK) {
+    SCICreateSegment(sd, &segment, segment_id, size, NULL, NULL, flags,
+                     &sci_error);
+    if (sci_error == SCI_ERR_SEGMENTID_USED) {
+        return UCS_ERR_BUSY;
+    } else if (sci_error != SCI_ERR_OK) {
         ucs_error("SCICreateSegment failed: %s", SCIGetErrorString(sci_error));
         return UCS_ERR_NO_RESOURCE;
     }
@@ -57,6 +61,28 @@ err_remove_segment:
     return UCS_ERR_NO_RESOURCE;
 }
 
+ucs_status_t uct_pcie_segment_create(sci_desc_t sd, size_t size,
+                                     sci_local_segment_t *segment_p,
+                                     sci_map_t *segment_map_p,
+                                     unsigned int *segment_id_p, void **buf_p)
+{
+    ucs_status_t status;
+
+    /* With SCI_FLAG_AUTO_ID, SISCI picks a free ID from [1024,1152] */
+    status = uct_pcie_segment_create_common(sd, size,
+                                            UCT_PCIE_AUTO_SEG_ID_START,
+                                            SCI_FLAG_AUTO_ID, segment_p,
+                                            segment_map_p, segment_id_p,
+                                            buf_p);
+    if (status == UCS_ERR_BUSY) {
+        ucs_error("SCICreateSegment found no free segment ID from %u",
+                  UCT_PCIE_AUTO_SEG_ID_START);
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    return status;
+}
+
 void uct_pcie_segment_remove(sci_local_segment_t segment, sci_map_t segment_map)
 {
     sci_error_t sci_error;
@@ -72,13 +98,29 @@ void uct_pcie_segment_remove(sci_local_segment_t segment, sci_map_t segment_map)
     }
 }
 
+static ucs_status_t uct_pcie_segment_set_available(sci_local_segment_t segment,
+                                                   sci_map_t segment_map)
+{
+    sci_error_t sci_error;
+
+    SCISetSegmentAvailable(segment, UCT_PCIE_LOCAL_ADAPTER_NO,
+                           UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCISetSegmentAvailable failed: %s",
+                  SCIGetErrorString(sci_error));
+        uct_pcie_segment_remove(segment, segment_map);
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    return UCS_OK;
+}
+
 ucs_status_t uct_pcie_segment_create_available(sci_desc_t sd, size_t size,
                                                sci_local_segment_t *segment_p,
                                                sci_map_t *segment_map_p,
                                                unsigned int *segment_id_p,
                                                void **buf_p)
 {
-    sci_error_t sci_error;
     ucs_status_t status;
 
     status = uct_pcie_segment_create(sd, size, segment_p, segment_map_p,
@@ -87,16 +129,26 @@ ucs_status_t uct_pcie_segment_create_available(sci_desc_t sd, size_t size,
         return status;
     }
 
-    SCISetSegmentAvailable(*segment_p, UCT_PCIE_LOCAL_ADAPTER_NO,
-                           UCT_PCIE_NO_FLAGS, &sci_error);
-    if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCISetSegmentAvailable failed: %s",
-                  SCIGetErrorString(sci_error));
-        uct_pcie_segment_remove(*segment_p, *segment_map_p);
-        return UCS_ERR_NO_RESOURCE;
+    return uct_pcie_segment_set_available(*segment_p, *segment_map_p);
+}
+
+ucs_status_t
+uct_pcie_segment_create_available_id(sci_desc_t sd, size_t size,
+                                     unsigned int segment_id,
+                                     sci_local_segment_t *segment_p,
+                                     sci_map_t *segment_map_p, void **buf_p)
+{
+    unsigned int created_id;
+    ucs_status_t status;
+
+    status = uct_pcie_segment_create_common(sd, size, segment_id,
+                                            UCT_PCIE_NO_FLAGS, segment_p,
+                                            segment_map_p, &created_id, buf_p);
+    if (status != UCS_OK) {
+        return status;
     }
 
-    return UCS_OK;
+    return uct_pcie_segment_set_available(*segment_p, *segment_map_p);
 }
 
 void uct_pcie_segment_remove_available(sci_local_segment_t segment,
@@ -115,31 +167,27 @@ void uct_pcie_segment_remove_available(sci_local_segment_t segment,
 }
 
 ucs_status_t
-uct_pcie_segment_connect(sci_desc_t sd, unsigned int node_id,
-                         unsigned int segment_id, size_t offset, size_t size,
-                         sci_cb_remote_segment_t callback, void *callback_arg,
-                         sci_remote_segment_t *segment_p,
-                         sci_map_t *segment_map_p, volatile void **buf_p)
+uct_pcie_segment_try_connect(sci_desc_t sd, unsigned int node_id,
+                             unsigned int segment_id, size_t offset,
+                             size_t size, sci_cb_remote_segment_t callback,
+                             void *callback_arg,
+                             sci_remote_segment_t *segment_p,
+                             sci_map_t *segment_map_p, volatile void **buf_p,
+                             sci_error_t *connect_error)
 {
     unsigned int flags = (callback != NULL) ? SCI_FLAG_USE_CALLBACK :
                                               UCT_PCIE_NO_FLAGS;
     sci_remote_segment_t segment;
     sci_map_t segment_map;
-    ucs_time_t deadline;
     sci_error_t sci_error;
     volatile void *buf;
 
-    deadline = uct_pcie_connect_deadline();
-    do {
-        SCIConnectSegment(sd, &segment, node_id, segment_id,
-                          UCT_PCIE_LOCAL_ADAPTER_NO, callback, callback_arg, 0,
-                          flags, &sci_error);
-    } while ((sci_error != SCI_ERR_OK) && (ucs_get_time() < deadline));
-
+    SCIConnectSegment(sd, &segment, node_id, segment_id,
+                      UCT_PCIE_LOCAL_ADAPTER_NO, callback, callback_arg, 0,
+                      flags, &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCIConnectSegment failed after %d ms: %s",
-                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
-        return UCS_ERR_TIMED_OUT;
+        *connect_error = sci_error;
+        return UCS_ERR_BUSY;
     }
 
     /* TODO: maybe keep the volatile qualifier? */
@@ -160,6 +208,34 @@ uct_pcie_segment_connect(sci_desc_t sd, unsigned int node_id,
 err_disconnect_segment:
     SCIDisconnectSegment(segment, UCT_PCIE_NO_FLAGS, &sci_error);
     return UCS_ERR_NO_RESOURCE;
+}
+
+ucs_status_t
+uct_pcie_segment_connect(sci_desc_t sd, unsigned int node_id,
+                         unsigned int segment_id, size_t offset, size_t size,
+                         sci_cb_remote_segment_t callback, void *callback_arg,
+                         sci_remote_segment_t *segment_p,
+                         sci_map_t *segment_map_p, volatile void **buf_p)
+{
+    ucs_time_t deadline;
+    sci_error_t sci_error;
+    ucs_status_t status;
+
+    deadline = uct_pcie_connect_deadline();
+    do {
+        status = uct_pcie_segment_try_connect(sd, node_id, segment_id, offset,
+                                              size, callback, callback_arg,
+                                              segment_p, segment_map_p, buf_p,
+                                              &sci_error);
+    } while ((status == UCS_ERR_BUSY) && (ucs_get_time() < deadline));
+
+    if (status == UCS_ERR_BUSY) {
+        ucs_error("SCIConnectSegment failed after %d ms: %s",
+                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
+        return UCS_ERR_TIMED_OUT;
+    }
+
+    return status;
 }
 
 ucs_status_t uct_pcie_segment_connect_full(sci_desc_t sd, unsigned int node_id,

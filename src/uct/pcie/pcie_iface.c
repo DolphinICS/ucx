@@ -80,15 +80,11 @@ uct_pcie_iface_conn_desc_release(uct_pcie_iface_t *iface, unsigned int cd_index)
     pthread_mutex_unlock(&iface->lock);
 }
 
-/* SISCI callback for an incoming connection request: create a receive
- * segment for the peer EP, map the peer EP's ctl slot and answer there */
-static sci_callback_action_t
-uct_pcie_iface_conn_handler(void *arg, sci_local_data_interrupt_t interrupt,
-                            void *data, unsigned int length,
-                            sci_error_t sci_error)
+/* Handle one connection request: create a receive segment for the peer EP,
+ * map the peer EP's ctl slot and answer there */
+static void uct_pcie_iface_accept(uct_pcie_iface_t *iface,
+                                  const uct_pcie_conn_req_t *request)
 {
-    uct_pcie_conn_req_t *request = (uct_pcie_conn_req_t*)data;
-    uct_pcie_iface_t *iface      = (uct_pcie_iface_t*)arg;
     unsigned int sci_cd_index;
     uct_pcie_conn_desc_t *sci_cd;
     ucs_status_t status;
@@ -96,7 +92,7 @@ uct_pcie_iface_conn_handler(void *arg, sci_local_data_interrupt_t interrupt,
     status = uct_pcie_iface_conn_desc_reserve(iface, &sci_cd_index);
     if (status != UCS_OK) {
         ucs_error("number of endpoints exceeds limit %u", iface->max_eps);
-        return SCI_CALLBACK_CONTINUE;
+        return;
     }
 
     sci_cd = &(iface->sci_cds[sci_cd_index]);
@@ -130,13 +126,47 @@ uct_pcie_iface_conn_handler(void *arg, sci_local_data_interrupt_t interrupt,
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     sci_cd->cd_status = UCT_PCIE_CD_READY;
-    return SCI_CALLBACK_CONTINUE;
+    return;
 
 err_remove_recv_seg:
     uct_pcie_segment_remove_available(sci_cd->recv_segment,
                                       sci_cd->recv_segment_map);
 err_release_cd:
     uct_pcie_iface_conn_desc_release(iface, sci_cd_index);
+}
+
+/* SISCI callback for the connection interrupt. Triggers that arrive while one
+ * is pending merge into one call, so every inbox slot is checked. */
+static sci_callback_action_t
+uct_pcie_iface_conn_handler(void *arg, sci_local_interrupt_t interrupt,
+                            sci_error_t sci_error)
+{
+    uct_pcie_iface_t *iface = (uct_pcie_iface_t*)arg;
+    uct_pcie_inbox_slot_t *slot;
+    uct_pcie_conn_req_t request;
+    unsigned int i;
+
+    if (sci_error != SCI_ERR_OK) {
+        ucs_debug("iface %p connection interrupt: %s", iface,
+                  SCIGetErrorString(sci_error));
+        return SCI_CALLBACK_CONTINUE;
+    }
+
+    for (i = 0; i < UCT_PCIE_INBOX_SLOTS; i++) {
+        slot = &iface->inbox[i];
+        if (!slot->pending) {
+            continue;
+        }
+
+        /* The initiator wrote the request before pending. The slot is free
+         * again before the answer goes out, so the initiator's next request
+         * finds it free. */
+        ucs_memory_cpu_load_fence();
+        request       = slot->request;
+        slot->pending = 0;
+        uct_pcie_iface_accept(iface, &request);
+    }
+
     return SCI_CALLBACK_CONTINUE;
 }
 
@@ -247,6 +277,15 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
         goto err_destroy_mutex;
     }
 
+    /* The inbox has a slot per node, see uct_pcie_inbox_slot_t */
+    if ((node_id / 4) >= UCT_PCIE_INBOX_NODES) {
+        ucs_error("SISCI node id %u is above %u, the highest the pcie"
+                  " transport supports", node_id,
+                  (UCT_PCIE_INBOX_NODES - 1) * 4);
+        status = UCS_ERR_UNSUPPORTED;
+        goto err_destroy_mutex;
+    }
+
     self->device_addr       = node_id;
     self->packet_size_bytes = config->packet_size_bytes;
     self->packet_queue_len  = config->packet_queue_len;
@@ -286,6 +325,14 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
         goto err_close_vdev_rma;
     }
 
+    SCIOpen(&self->vdev_setup, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIOpen (vdev_setup) failed: %s",
+                  SCIGetErrorString(sci_error));
+        status = UCS_ERR_NO_RESOURCE;
+        goto err_close_vdev_ctl;
+    }
+
     /* Peers write their ack counters into the control segment */
     control_segment_size = sizeof(uct_pcie_ctl_t) * self->max_eps;
     status = uct_pcie_segment_create_available(sci_md->sci_virtual_device,
@@ -296,17 +343,46 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
                                                (void**)&self->ctls);
     if (status != UCS_OK) {
         ucs_error("failed to set up control segment");
-        goto err_close_vdev_ctl;
+        goto err_close_vdev_setup;
     }
 
     /* Initialize connection descriptors. Receive segments are created per
-     * connection in uct_pcie_iface_conn_handler. */
+     * connection in uct_pcie_iface_accept. */
     for (i = 0; i < self->max_eps; i++) {
         self->sci_cds[i].cd_status        = UCT_PCIE_CD_AVAILABLE;
         self->sci_cds[i].ep_conn_last_ack = 0;
         self->ctls[i].ep_conn_ack         = 0;
         self->ctls[i].recv_seg_id         = 0;
         self->ctls[i].conn_answered       = 0;
+    }
+
+    /* The first free inbox segment ID gives this iface its index on the node */
+    for (i = 0; i < UCT_PCIE_MAX_IFACES_PER_NODE; i++) {
+        status = uct_pcie_segment_create_available_id(
+                sci_md->sci_virtual_device,
+                sizeof(uct_pcie_inbox_slot_t) * UCT_PCIE_INBOX_SLOTS,
+                UCT_PCIE_INBOX_SEG_ID_BASE + i, &self->inbox_segment,
+                &self->inbox_map, (void**)&self->inbox);
+        if (status != UCS_ERR_BUSY) {
+            break;
+        }
+    }
+
+    if (status == UCS_ERR_BUSY) {
+        ucs_error("node %u already has %d pcie ifaces open, the most"
+                  " supported (UCT_PCIE_MAX_IFACES_PER_NODE)", node_id,
+                  UCT_PCIE_MAX_IFACES_PER_NODE);
+        status = UCS_ERR_EXCEEDS_LIMIT;
+        goto err_remove_ctl_seg;
+    } else if (status != UCS_OK) {
+        ucs_error("failed to set up inbox segment");
+        goto err_remove_ctl_seg;
+    }
+
+    self->local_index  = i;
+    self->inbox_seg_id = UCT_PCIE_INBOX_SEG_ID_BASE + i;
+    for (i = 0; i < UCT_PCIE_INBOX_SLOTS; i++) {
+        self->inbox[i].pending = 0;
     }
 
     /* DMA staging segment for get, large enough for any read */
@@ -316,7 +392,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
                                      &self->dma_buffer);
     if (status != UCS_OK) {
         ucs_error("failed to set up DMA staging segment");
-        goto err_remove_ctl_seg;
+        goto err_remove_inbox_seg;
     }
 
     SCICreateDMAQueue(sci_md->sci_virtual_device, &self->dma_queue,
@@ -328,20 +404,21 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
         goto err_remove_dma_seg;
     }
 
-    /* Peers send connection requests to this interrupt */
-    SCICreateDataInterrupt(sci_md->sci_virtual_device, &self->interrupt,
-                           UCT_PCIE_LOCAL_ADAPTER_NO, &self->interrupt_no,
-                           uct_pcie_iface_conn_handler, self,
-                           SCI_FLAG_USE_CALLBACK, &sci_error);
+    /* Peers trigger this after writing a request into the inbox */
+    SCICreateInterrupt(sci_md->sci_virtual_device, &self->interrupt,
+                       UCT_PCIE_LOCAL_ADAPTER_NO, &self->interrupt_no,
+                       uct_pcie_iface_conn_handler, self, SCI_FLAG_USE_CALLBACK,
+                       &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCICreateDataInterrupt failed: %s",
+        ucs_error("SCICreateInterrupt failed: %s",
                   SCIGetErrorString(sci_error));
         status = UCS_ERR_NO_RESOURCE;
         goto err_remove_dma_queue;
     }
 
-    ucs_debug("iface %p interrupt %u node %u packet size %zu", self,
-              self->interrupt_no, self->device_addr, self->packet_size_bytes);
+    ucs_debug("iface %p node %u index %u interrupt %u inbox %u packet size %zu",
+              self, self->device_addr, self->local_index, self->interrupt_no,
+              self->inbox_seg_id, self->packet_size_bytes);
 
     return UCS_OK;
 
@@ -352,8 +429,12 @@ err_remove_dma_queue:
     }
 err_remove_dma_seg:
     uct_pcie_segment_remove(self->dma_segment, self->dma_map);
+err_remove_inbox_seg:
+    uct_pcie_segment_remove_available(self->inbox_segment, self->inbox_map);
 err_remove_ctl_seg:
     uct_pcie_segment_remove_available(self->ctl_segment, self->ctl_segment_map);
+err_close_vdev_setup:
+    SCIClose(self->vdev_setup, UCT_PCIE_NO_FLAGS, &sci_error);
 err_close_vdev_ctl:
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
 err_close_vdev_rma:
@@ -377,7 +458,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
                                     UCT_PROGRESS_SEND | UCT_PROGRESS_RECV);
 
     /* Stop new connections before tearing down segments */
-    SCIRemoveDataInterrupt(self->interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
+    SCIRemoveInterrupt(self->interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
 
     for (i = 0; i < self->connections; i++) {
         cd = &self->sci_cds[i];
@@ -397,8 +478,11 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
 
     uct_pcie_segment_remove(self->dma_segment, self->dma_map);
 
+    uct_pcie_segment_remove_available(self->inbox_segment, self->inbox_map);
+
     uct_pcie_segment_remove_available(self->ctl_segment, self->ctl_segment_map);
 
+    SCIClose(self->vdev_setup, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
@@ -444,6 +528,7 @@ uct_pcie_iface_get_address(uct_iface_h tl_iface, uct_iface_addr_t *addr)
     uct_pcie_iface_addr_t *iface_addr = (uct_pcie_iface_addr_t*)addr;
 
     iface_addr->interrupt_no = iface->interrupt_no;
+    iface_addr->inbox_seg_id = iface->inbox_seg_id;
     iface_addr->rma_seg_id   = md->rma_seg_id;
     iface_addr->rma_base     = (uint64_t)(uintptr_t)md->rma_buf;
     return UCS_OK;
