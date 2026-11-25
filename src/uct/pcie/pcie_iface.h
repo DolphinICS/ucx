@@ -64,20 +64,11 @@
 #define UCT_PCIE_AUTO_SEG_ID_START 1024
 #define UCT_PCIE_INBOX_SEG_ID_BASE 2048
 
-/* Iface address exchanged before EP creation. The MD has a single RMA segment
- * per process, so its identity is carried here rather than in the rkey, and
- * rkey_packed_size is 0. */
+/* Iface address exchanged before EP creation. Where put and get go is in the
+ * rkey, see uct_pcie_packed_rkey_t. */
 typedef struct {
     unsigned int interrupt_no; /* Connection interrupt */
     unsigned int inbox_seg_id; /* Where connection requests are written */
-
-    /* SISCI segment ID of the MD's RMA segment */
-    unsigned int rma_seg_id;
-
-    /* Local VA of the RMA segment on this node. mem_alloc returns addresses
-     * inside the segment, so a peer turns remote_addr into a segment offset
-     * with remote_addr - rma_base. */
-    uint64_t     rma_base;
 } UCS_S_PACKED uct_pcie_iface_addr_t;
 
 typedef struct {
@@ -216,7 +207,6 @@ typedef struct {
      * segment role gets its own to allow 32 EPs */
     sci_desc_t                 vdev_recv; /* per-connection recv segments */
     sci_desc_t                 vdev_ep; /* AM receive segment connections */
-    sci_desc_t                 vdev_rma; /* RMA segment connections */
     sci_desc_t                 vdev_ctl; /* control segment connections */
     sci_desc_t                 vdev_setup; /* peer inbox and interrupt,
                                             * during a connection request */
