@@ -107,8 +107,16 @@ typedef enum {
 
 /* Incoming connection, owns the receive segment created for it */
 typedef struct {
-    uct_pcie_conn_desc_status_t cd_status;
+    volatile uct_pcie_conn_desc_status_t cd_status;
     uint64_t                    ep_conn_last_ack;
+
+    /* Set by uct_pcie_iface_recv_segment_cb on the SISCI callback thread:
+     * the EP has mapped recv_segment, and has unmapped it again or its node
+     * is gone. Progress closes the connection on either of the last two. */
+    volatile int                peer_connected;
+    volatile int                peer_gone;
+    /* Close the connection if the EP hasn't mapped recv_segment by then */
+    ucs_time_t                  connect_deadline;
 
     sci_local_segment_t         recv_segment;
     sci_map_t                   recv_segment_map;
@@ -196,8 +204,8 @@ typedef struct {
     sci_desc_t                 vdev_setup; /* peer inbox and interrupt,
                                             * during a connection request */
 
-    /* Protects connections count and sci_cds slot allocation in the
-     * connection handler, which runs on the SISCI callback thread. */
+    /* Protects sci_cds slot allocation: the connection handler on the SISCI
+     * callback thread reserves, progress releases. */
     pthread_mutex_t            lock;
 
     /* Pending sends, retried from progress */
@@ -209,8 +217,6 @@ typedef struct {
     /* Monotonically increasing count of EPs ever created on this iface.
      * Used to assign each new EP a unique ep_conn_index. */
     unsigned int               eps_init_cnt;
-    /* Number of currently active incoming connections. */
-    volatile unsigned int      connections;
 
     /* Control segment: a local segment that remote EPs map and write
      * acknowledgement counters into. One uct_pcie_ctl_t slot per EP. */

@@ -49,12 +49,18 @@ void uct_pcie_segment_remove(sci_local_segment_t segment,
 /**
  * Same as @ref uct_pcie_segment_create, then make the segment available for
  * remote connections.
+ *
+ * @param [in]  callback       Optional local segment callback, NULL for none.
+ *                             SCI_FLAG_USE_CALLBACK is set when non-NULL.
+ * @param [in]  callback_arg   Argument passed to callback.
  */
-ucs_status_t uct_pcie_segment_create_available(sci_desc_t sd, size_t size,
-                                               sci_local_segment_t *segment_p,
-                                               sci_map_t *segment_map_p,
-                                               unsigned int *segment_id_p,
-                                               void **buf_p);
+ucs_status_t
+uct_pcie_segment_create_available(sci_desc_t sd, size_t size,
+                                  sci_cb_local_segment_t callback,
+                                  void *callback_arg,
+                                  sci_local_segment_t *segment_p,
+                                  sci_map_t *segment_map_p,
+                                  unsigned int *segment_id_p, void **buf_p);
 
 
 /**

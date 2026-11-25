@@ -16,6 +16,8 @@
 static ucs_status_t
 uct_pcie_segment_create_common(sci_desc_t sd, size_t size,
                                unsigned int segment_id, unsigned int flags,
+                               sci_cb_local_segment_t callback,
+                               void *callback_arg,
                                sci_local_segment_t *segment_p,
                                sci_map_t *segment_map_p,
                                unsigned int *segment_id_p, void **buf_p)
@@ -25,8 +27,12 @@ uct_pcie_segment_create_common(sci_desc_t sd, size_t size,
     sci_error_t sci_error;
     void *buf;
 
-    SCICreateSegment(sd, &segment, segment_id, size, NULL, NULL, flags,
-                     &sci_error);
+    if (callback != NULL) {
+        flags |= SCI_FLAG_USE_CALLBACK;
+    }
+
+    SCICreateSegment(sd, &segment, segment_id, size, callback, callback_arg,
+                     flags, &sci_error);
     if (sci_error == SCI_ERR_SEGMENTID_USED) {
         return UCS_ERR_BUSY;
     } else if (sci_error != SCI_ERR_OK) {
@@ -61,17 +67,21 @@ err_remove_segment:
     return UCS_ERR_NO_RESOURCE;
 }
 
-ucs_status_t uct_pcie_segment_create(sci_desc_t sd, size_t size,
-                                     sci_local_segment_t *segment_p,
-                                     sci_map_t *segment_map_p,
-                                     unsigned int *segment_id_p, void **buf_p)
+/* With SCI_FLAG_AUTO_ID, SISCI picks a free ID from [1024,1152] */
+static ucs_status_t
+uct_pcie_segment_create_auto_id(sci_desc_t sd, size_t size,
+                                sci_cb_local_segment_t callback,
+                                void *callback_arg,
+                                sci_local_segment_t *segment_p,
+                                sci_map_t *segment_map_p,
+                                unsigned int *segment_id_p, void **buf_p)
 {
     ucs_status_t status;
 
-    /* With SCI_FLAG_AUTO_ID, SISCI picks a free ID from [1024,1152] */
     status = uct_pcie_segment_create_common(sd, size,
                                             UCT_PCIE_AUTO_SEG_ID_START,
-                                            SCI_FLAG_AUTO_ID, segment_p,
+                                            SCI_FLAG_AUTO_ID, callback,
+                                            callback_arg, segment_p,
                                             segment_map_p, segment_id_p,
                                             buf_p);
     if (status == UCS_ERR_BUSY) {
@@ -81,6 +91,15 @@ ucs_status_t uct_pcie_segment_create(sci_desc_t sd, size_t size,
     }
 
     return status;
+}
+
+ucs_status_t uct_pcie_segment_create(sci_desc_t sd, size_t size,
+                                     sci_local_segment_t *segment_p,
+                                     sci_map_t *segment_map_p,
+                                     unsigned int *segment_id_p, void **buf_p)
+{
+    return uct_pcie_segment_create_auto_id(sd, size, NULL, NULL, segment_p,
+                                           segment_map_p, segment_id_p, buf_p);
 }
 
 void uct_pcie_segment_remove(sci_local_segment_t segment, sci_map_t segment_map)
@@ -115,16 +134,19 @@ static ucs_status_t uct_pcie_segment_set_available(sci_local_segment_t segment,
     return UCS_OK;
 }
 
-ucs_status_t uct_pcie_segment_create_available(sci_desc_t sd, size_t size,
-                                               sci_local_segment_t *segment_p,
-                                               sci_map_t *segment_map_p,
-                                               unsigned int *segment_id_p,
-                                               void **buf_p)
+ucs_status_t
+uct_pcie_segment_create_available(sci_desc_t sd, size_t size,
+                                  sci_cb_local_segment_t callback,
+                                  void *callback_arg,
+                                  sci_local_segment_t *segment_p,
+                                  sci_map_t *segment_map_p,
+                                  unsigned int *segment_id_p, void **buf_p)
 {
     ucs_status_t status;
 
-    status = uct_pcie_segment_create(sd, size, segment_p, segment_map_p,
-                                     segment_id_p, buf_p);
+    status = uct_pcie_segment_create_auto_id(sd, size, callback, callback_arg,
+                                             segment_p, segment_map_p,
+                                             segment_id_p, buf_p);
     if (status != UCS_OK) {
         return status;
     }
@@ -142,8 +164,9 @@ uct_pcie_segment_create_available_id(sci_desc_t sd, size_t size,
     ucs_status_t status;
 
     status = uct_pcie_segment_create_common(sd, size, segment_id,
-                                            UCT_PCIE_NO_FLAGS, segment_p,
-                                            segment_map_p, &created_id, buf_p);
+                                            UCT_PCIE_NO_FLAGS, NULL, NULL,
+                                            segment_p, segment_map_p,
+                                            &created_id, buf_p);
     if (status != UCS_OK) {
         return status;
     }
