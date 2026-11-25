@@ -176,6 +176,7 @@ ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
     uct_pcie_ctl_t *ctl     = &iface->ctls[ep->ep_conn_index];
     const char *busy_reason = NULL;
     ucs_status_t status;
+    sci_error_t sci_error;
 
     ucs_assert(ep->conn_status == UCS_INPROGRESS);
 
@@ -219,14 +220,27 @@ ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
     ucs_memory_cpu_load_fence();
     ep->remote_seg_id = ctl->recv_seg_id;
 
-    /* Map the receive segment the peer created for this EP (AM ring) */
-    status = uct_pcie_segment_connect(
+    /* Map the receive segment the peer created for this EP (AM ring). Only
+     * before the deadline: the peer frees a connection that isn't mapped by
+     * twice the timeout after answering, see uct_pcie_iface_accept. */
+    status = uct_pcie_segment_try_connect(
             iface->vdev_ep, ep->remote_node_id, ep->remote_seg_id, 0,
             iface->packet_size_bytes * iface->packet_queue_len,
             uct_pcie_ep_remote_segment_cb, ep, &ep->remote_segment,
-            &ep->remote_seg_map, (volatile void**)&ep->remote_seg_buf);
-    if (status != UCS_OK) {
-        ucs_error("failed to connect to receive segment %u on node %u",
+            &ep->remote_seg_map, (volatile void**)&ep->remote_seg_buf,
+            &sci_error);
+    if (status == UCS_ERR_BUSY) {
+        if (ucs_get_time() < ep->conn_deadline) {
+            return UCS_INPROGRESS;
+        }
+
+        ucs_error("ep %p: could not connect to receive segment %u on node %u"
+                  " for %d ms: %s", ep, ep->remote_seg_id, ep->remote_node_id,
+                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
+        status = UCS_ERR_ENDPOINT_TIMEOUT;
+        goto out;
+    } else if (status != UCS_OK) {
+        ucs_error("failed to map receive segment %u on node %u",
                   ep->remote_seg_id, ep->remote_node_id);
         goto out;
     }

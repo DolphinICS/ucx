@@ -58,7 +58,6 @@ static ucs_status_t uct_pcie_iface_conn_desc_reserve(uct_pcie_iface_t *iface,
     if (i < iface->max_eps) {
         *cd_index                   = i;
         iface->sci_cds[i].cd_status = UCT_PCIE_CD_RESERVED;
-        iface->connections++;
     } else {
         status = UCS_ERR_EXCEEDS_LIMIT;
     }
@@ -75,9 +74,49 @@ uct_pcie_iface_conn_desc_release(uct_pcie_iface_t *iface, unsigned int cd_index)
     pthread_mutex_lock(&iface->lock);
 
     iface->sci_cds[cd_index].cd_status = UCT_PCIE_CD_AVAILABLE;
-    iface->connections--;
 
     pthread_mutex_unlock(&iface->lock);
+}
+
+/* SISCI callback for an incoming connection's receive segment. Runs on the
+ * SISCI callback thread, so it only records the event; progress closes the
+ * connection. */
+static sci_callback_action_t
+uct_pcie_iface_recv_segment_cb(void *arg, sci_local_segment_t segment,
+                               sci_segment_cb_reason_t reason,
+                               unsigned int node_id, unsigned int adapter_no,
+                               sci_error_t sci_error)
+{
+    uct_pcie_conn_desc_t *cd = (uct_pcie_conn_desc_t*)arg;
+
+    /* An event for a segment this descriptor no longer owns */
+    if (segment != cd->recv_segment) {
+        return SCI_CALLBACK_CONTINUE;
+    }
+
+    if (reason == SCI_CB_CONNECT) {
+        cd->peer_connected = 1;
+    } else if ((reason == SCI_CB_DISCONNECT) || (reason == SCI_CB_LOST)) {
+        cd->peer_gone = 1;
+    }
+
+    return SCI_CALLBACK_CONTINUE;
+}
+
+/* Tear down a READY connection and free its descriptor. Runs on the worker
+ * thread, so progress isn't reading the ring while it goes away. */
+static void uct_pcie_iface_conn_desc_close(uct_pcie_iface_t *iface,
+                                           unsigned int cd_index)
+{
+    uct_pcie_conn_desc_t *cd = &iface->sci_cds[cd_index];
+
+    ucs_debug("iface %p closing connection %u, receive segment %u", iface,
+              cd_index, cd->recv_segment_id);
+
+    cd->cd_status = UCT_PCIE_CD_RESERVED;
+    uct_pcie_segment_disconnect(cd->ctl_segment, cd->ctl_segment_map);
+    uct_pcie_segment_remove_available(cd->recv_segment, cd->recv_segment_map);
+    uct_pcie_iface_conn_desc_release(iface, cd_index);
 }
 
 /* Handle one connection request: create a receive segment for the peer EP,
@@ -97,16 +136,25 @@ static void uct_pcie_iface_accept(uct_pcie_iface_t *iface,
 
     sci_cd = &(iface->sci_cds[sci_cd_index]);
 
-    /* Create a dedicated receive segment for this connection */
+    /* Create a dedicated receive segment for this connection. Its callback
+     * tells when the EP maps and unmaps it. */
     status = uct_pcie_segment_create_available(
             iface->vdev_recv,
             iface->packet_size_bytes * iface->packet_queue_len,
-            &sci_cd->recv_segment, &sci_cd->recv_segment_map,
-            &sci_cd->recv_segment_id, (void**)&sci_cd->packet_queue_buf);
+            uct_pcie_iface_recv_segment_cb, sci_cd, &sci_cd->recv_segment,
+            &sci_cd->recv_segment_map, &sci_cd->recv_segment_id,
+            (void**)&sci_cd->packet_queue_buf);
     if (status != UCS_OK) {
         ucs_error("failed to create per-connection receive segment");
         goto err_release_cd;
     }
+
+    /* Reset only now that recv_segment is the new one, so a late event for
+     * the descriptor's previous segment can't set them. Nothing can connect
+     * to the new one before the answer below. */
+    sci_cd->ep_conn_last_ack = 0;
+    sci_cd->peer_connected   = 0;
+    sci_cd->peer_gone        = 0;
 
     /* The peer EP's ctl slot takes both the answer and the acks */
     status = uct_pcie_segment_connect(
@@ -125,6 +173,15 @@ static void uct_pcie_iface_accept(uct_pcie_iface_t *iface,
     sci_cd->ctl_buf->conn_answered = 1;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
+    /* The EP gives up on the answer at its own deadline, which started before
+     * the request went out, and doesn't map recv_segment after that. Twice
+     * the timeout from now is past it. */
+    sci_cd->connect_deadline = ucs_get_time() +
+                               ucs_time_from_msec(2 *
+                                                  UCT_PCIE_CONNECT_TIMEOUT_MS);
+
+    /* Progress reads the fields above once it sees READY */
+    ucs_memory_cpu_store_fence();
     sci_cd->cd_status = UCT_PCIE_CD_READY;
     return;
 
@@ -291,7 +348,6 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
     self->packet_queue_len  = config->packet_queue_len;
     self->max_eps           = ucs_min(UCT_PCIE_MAX_EPS, config->max_eps);
     self->eps_init_cnt      = 0;
-    self->connections       = 0;
 
     /* One descriptor per segment role, see uct_pcie_iface_t */
     SCIOpen(&self->vdev_recv, UCT_PCIE_NO_FLAGS, &sci_error);
@@ -336,7 +392,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
     /* Peers write their ack counters into the control segment */
     control_segment_size = sizeof(uct_pcie_ctl_t) * self->max_eps;
     status = uct_pcie_segment_create_available(sci_md->sci_virtual_device,
-                                               control_segment_size,
+                                               control_segment_size, NULL, NULL,
                                                &self->ctl_segment,
                                                &self->ctl_segment_map,
                                                &self->ctl_segment_id,
@@ -450,7 +506,6 @@ err_destroy_mutex:
 
 static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
 {
-    uct_pcie_conn_desc_t *cd;
     sci_error_t sci_error;
     unsigned int i;
 
@@ -460,14 +515,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
     /* Stop new connections before tearing down segments */
     SCIRemoveInterrupt(self->interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
 
-    for (i = 0; i < self->connections; i++) {
-        cd = &self->sci_cds[i];
-        if (cd->cd_status == UCT_PCIE_CD_READY) {
-            cd->cd_status = UCT_PCIE_CD_RESERVED;
-            uct_pcie_segment_disconnect(cd->ctl_segment, cd->ctl_segment_map);
-            uct_pcie_segment_remove_available(cd->recv_segment,
-                                              cd->recv_segment_map);
-            cd->cd_status = UCT_PCIE_CD_AVAILABLE;
+    for (i = 0; i < self->max_eps; i++) {
+        if (self->sci_cds[i].cd_status == UCT_PCIE_CD_READY) {
+            uct_pcie_iface_conn_desc_close(self, i);
         }
     }
 
@@ -589,10 +639,19 @@ static unsigned uct_pcie_iface_progress(uct_iface_h tl_iface)
         count += uct_pcie_iface_progress_connecting(iface);
     }
 
-    for (i = 0; i < iface->connections; i++) {
+    /* Descriptors are freed in any order, so all of them are checked */
+    for (i = 0; i < iface->max_eps; i++) {
         cd = &iface->sci_cds[i];
 
         if (cd->cd_status != UCT_PCIE_CD_READY) {
+            continue;
+        }
+
+        /* The EP is gone, or never mapped the ring */
+        if (ucs_unlikely(cd->peer_gone ||
+                         (!cd->peer_connected &&
+                          (ucs_get_time() > cd->connect_deadline)))) {
+            uct_pcie_iface_conn_desc_close(iface, i);
             continue;
         }
 

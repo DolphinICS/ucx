@@ -160,8 +160,9 @@ uct_pcie_md_open(uct_component_t *component, const char *md_name,
     /* Pre-allocate the shared segment that all mem_alloc calls draw from, and
      * make it available now so remote EPs can connect during the handshake */
     status = uct_pcie_segment_create_available(md->sci_virtual_device,
-                                               UCT_PCIE_RMA_SEG_SIZE,
-                                               &md->rma_seg, &md->rma_seg_map,
+                                               UCT_PCIE_RMA_SEG_SIZE, NULL,
+                                               NULL, &md->rma_seg,
+                                               &md->rma_seg_map,
                                                &md->rma_seg_id, &md->rma_buf);
     if (status != UCS_OK) {
         ucs_error("failed to create pcie rma segment");
