@@ -132,23 +132,27 @@ uct_pcie_segment_connect(sci_desc_t sd, unsigned int node_id,
 
 
 /**
- * Connect to a remote SISCI segment and map all of it. The size is queried
- * with SCIGetRemoteSegmentSize, so the caller doesn't need to know it.
- * Retries the connect for up to UCT_PCIE_CONNECT_TIMEOUT_MS.
+ * Try once to connect to a remote SISCI segment and map all of it. The size is
+ * queried with SCIGetRemoteSegmentSize, so the caller doesn't need to know it.
  *
- * @return UCS_OK on success, UCS_ERR_TIMED_OUT if the connect never succeeded,
- *         UCS_ERR_NO_RESOURCE if mapping failed.
+ * @param [out] connect_error  SCIConnectSegment's error, set when
+ *                             UCS_ERR_BUSY is returned.
+ *
+ * @return UCS_OK on success, UCS_ERR_BUSY if the connect failed and may be
+ *         retried, UCS_ERR_NO_RESOURCE if mapping failed.
  */
-ucs_status_t uct_pcie_segment_connect_full(sci_desc_t sd, unsigned int node_id,
-                                           unsigned int segment_id,
-                                           sci_remote_segment_t *segment_p,
-                                           sci_map_t *segment_map_p,
-                                           volatile void **buf_p);
+ucs_status_t
+uct_pcie_segment_try_connect_full(sci_desc_t sd, unsigned int node_id,
+                                  unsigned int segment_id,
+                                  sci_remote_segment_t *segment_p,
+                                  sci_map_t *segment_map_p,
+                                  volatile void **buf_p,
+                                  sci_error_t *connect_error);
 
 
 /**
  * Unmap and disconnect a segment connected by @ref uct_pcie_segment_connect,
- * @ref uct_pcie_segment_try_connect or @ref uct_pcie_segment_connect_full.
+ * @ref uct_pcie_segment_try_connect or @ref uct_pcie_segment_try_connect_full.
  */
 void uct_pcie_segment_disconnect(sci_remote_segment_t segment,
                                  sci_map_t segment_map);
