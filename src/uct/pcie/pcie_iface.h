@@ -8,6 +8,7 @@
 
 #include <uct/base/uct_iface.h>
 #include <ucs/datastruct/arbiter.h>
+#include <ucs/datastruct/list.h>
 
 #include <sisci_error.h>
 #include <sisci_api.h>
@@ -65,8 +66,13 @@ typedef struct {
     unsigned int node_id;
 } UCS_S_PACKED uct_pcie_device_addr_t;
 
+/* One EP's slot in its iface's control segment, written by the peer */
 typedef struct {
     volatile uint64_t ep_conn_ack;
+    /* Answer to the connection request: the receive segment the peer created
+     * for this EP. recv_seg_id is written first, then conn_answered. */
+    volatile uint32_t recv_seg_id;
+    volatile uint32_t conn_answered;
 } uct_pcie_ctl_t;
 
 typedef struct {
@@ -102,14 +108,9 @@ typedef struct {
 
 typedef struct {
     int node_id;
-    int interrupt;
     int ctl_segment_id;
     int ep_conn_index;
 } uct_pcie_conn_req_t;
-
-typedef struct {
-    unsigned int segment_id;
-} uct_pcie_conn_ans_t;
 
 typedef struct {
     uct_iface_config_t super;
@@ -163,6 +164,9 @@ typedef struct {
 
     /* Pending sends, retried from progress */
     ucs_arbiter_t              arbiter;
+
+    /* EPs waiting for the peer's answer, polled from progress */
+    ucs_list_link_t            connecting_eps;
 
     /* Monotonically increasing count of EPs ever created on this iface.
      * Used to assign each new EP a unique ep_conn_index. */

@@ -80,54 +80,8 @@ uct_pcie_iface_conn_desc_release(uct_pcie_iface_t *iface, unsigned int cd_index)
     pthread_mutex_unlock(&iface->lock);
 }
 
-/* Send the receive segment ID back to the EP that sent request */
-static ucs_status_t
-uct_pcie_iface_send_conn_answer(uct_pcie_iface_t *iface,
-                                uct_pcie_conn_req_t *request,
-                                uct_pcie_conn_desc_t *sci_cd)
-{
-    uct_pcie_md_t *md   = ucs_derived_of(iface->super.md, uct_pcie_md_t);
-    ucs_status_t status = UCS_OK;
-    uct_pcie_conn_ans_t answer;
-    sci_remote_data_interrupt_t ans_interrupt;
-    ucs_time_t deadline;
-    sci_error_t sci_error;
-
-    deadline = uct_pcie_connect_deadline();
-    do {
-        SCIConnectDataInterrupt(md->sci_virtual_device, &ans_interrupt,
-                                request->node_id, UCT_PCIE_LOCAL_ADAPTER_NO,
-                                request->interrupt, SCI_INFINITE_TIMEOUT,
-                                UCT_PCIE_NO_FLAGS, &sci_error);
-    } while ((sci_error != SCI_ERR_OK) && (ucs_get_time() < deadline));
-
-    if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCIConnectDataInterrupt failed after %d ms: %s",
-                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
-        return UCS_ERR_TIMED_OUT;
-    }
-
-    answer.segment_id = sci_cd->recv_segment_id;
-
-    SCITriggerDataInterrupt(ans_interrupt, (void*)&answer, sizeof(answer),
-                            UCT_PCIE_NO_FLAGS, &sci_error);
-    if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCITriggerDataInterrupt failed: %s",
-                  SCIGetErrorString(sci_error));
-        status = UCS_ERR_NO_RESOURCE;
-    }
-
-    SCIDisconnectDataInterrupt(ans_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
-    if (sci_error != SCI_ERR_OK) {
-        ucs_warn("SCIDisconnectDataInterrupt failed: %s",
-                 SCIGetErrorString(sci_error));
-    }
-
-    return status;
-}
-
 /* SISCI callback for an incoming connection request: create a receive
- * segment for the peer EP, send its ID back and map the peer's ack slot */
+ * segment for the peer EP, map the peer EP's ctl slot and answer there */
 static sci_callback_action_t
 uct_pcie_iface_conn_handler(void *arg, sci_local_data_interrupt_t interrupt,
                             void *data, unsigned int length,
@@ -158,13 +112,7 @@ uct_pcie_iface_conn_handler(void *arg, sci_local_data_interrupt_t interrupt,
         goto err_release_cd;
     }
 
-    status = uct_pcie_iface_send_conn_answer(iface, request, sci_cd);
-    if (status != UCS_OK) {
-        ucs_error("failed to send answer to connection request");
-        goto err_remove_recv_seg;
-    }
-
-    /* Connect to remote endpoint's control buffer */
+    /* The peer EP's ctl slot takes both the answer and the acks */
     status = uct_pcie_segment_connect(
             iface->vdev_ctl, request->node_id, request->ctl_segment_id,
             request->ep_conn_index * sizeof(uct_pcie_ctl_t),
@@ -174,6 +122,12 @@ uct_pcie_iface_conn_handler(void *arg, sci_local_data_interrupt_t interrupt,
         ucs_error("failed to connect to remote control buffer");
         goto err_remove_recv_seg;
     }
+
+    /* The EP polls conn_answered, so the segment ID has to land first */
+    sci_cd->ctl_buf->recv_seg_id = sci_cd->recv_segment_id;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    sci_cd->ctl_buf->conn_answered = 1;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     sci_cd->cd_status = UCT_PCIE_CD_READY;
     return SCI_CALLBACK_CONTINUE;
@@ -274,6 +228,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
     /* Arbiter must be ready before any EP is created, since EPs schedule
      * their pending groups here. */
     ucs_arbiter_init(&self->arbiter);
+    ucs_list_head_init(&self->connecting_eps);
 
     UCS_CLASS_CALL_SUPER_INIT(uct_base_iface_t, &uct_pcie_iface_ops,
                               &uct_pcie_iface_internal_ops, md, worker, params,
@@ -350,6 +305,8 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
         self->sci_cds[i].cd_status        = UCT_PCIE_CD_AVAILABLE;
         self->sci_cds[i].ep_conn_last_ack = 0;
         self->ctls[i].ep_conn_ack         = 0;
+        self->ctls[i].recv_seg_id         = 0;
+        self->ctls[i].conn_answered       = 0;
     }
 
     /* DMA staging segment for get, large enough for any read */
@@ -508,6 +465,27 @@ uct_pcie_ep_dispatch_pending(ucs_arbiter_t *arbiter, ucs_arbiter_group_t *group,
     }
 }
 
+/* Move the connect of the first connecting EP along, see
+ * uct_pcie_ep_progress_connect */
+static UCS_F_NOINLINE unsigned
+uct_pcie_iface_progress_connecting(uct_pcie_iface_t *iface)
+{
+    uct_pcie_ep_t *ep = ucs_list_head(&iface->connecting_eps, uct_pcie_ep_t,
+                                      conn_list);
+    ucs_status_t status;
+
+    status = uct_pcie_ep_progress_connect(ep);
+    if (status == UCS_INPROGRESS) {
+        return 0;
+    }
+
+    if (status != UCS_OK) {
+        uct_iface_handle_ep_err(&iface->super.super, &ep->super.super, status);
+    }
+
+    return 1;
+}
+
 /* Drain posted packets from each connection's ring in order and ack them,
  * then retry pending sends */
 static unsigned uct_pcie_iface_progress(uct_iface_h tl_iface)
@@ -521,6 +499,10 @@ static unsigned uct_pcie_iface_progress(uct_iface_h tl_iface)
     uint32_t packet_queue_index;
     uint32_t packet_offset;
     unsigned int i;
+
+    if (ucs_unlikely(!ucs_list_is_empty(&iface->connecting_eps))) {
+        count += uct_pcie_iface_progress_connecting(iface);
+    }
 
     for (i = 0; i < iface->connections; i++) {
         cd = &iface->sci_cds[i];
@@ -665,7 +647,7 @@ static uct_iface_ops_t uct_pcie_iface_ops = {
     .ep_atomic32_fetch = (uct_ep_atomic32_fetch_func_t)
             ucs_empty_function_return_unsupported,
 
-    .ep_flush          = uct_base_ep_flush,
+    .ep_flush          = uct_pcie_ep_flush,
     .ep_fence          = uct_base_ep_fence,
     .ep_check         = (uct_ep_check_func_t)ucs_empty_function_return_success,
     .ep_pending_add   = uct_pcie_ep_pending_add,

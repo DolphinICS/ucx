@@ -13,30 +13,27 @@
 
 #include <uct/base/uct_iov.inl>
 
-/* Send a connection request to the iface listening on remote_interrupt_no */
+/* Send a connection request to the iface listening on remote_interrupt_no.
+ * Returns UCS_ERR_BUSY, with the SISCI error in connect_error, if the
+ * interrupt can't be connected; the caller tries again on a later call. */
 static ucs_status_t
 uct_pcie_ep_send_conn_request(uct_pcie_conn_req_t *request,
                               unsigned int node_id,
                               unsigned int remote_interrupt_no,
-                              sci_desc_t sci_virtual_device)
+                              sci_desc_t sci_virtual_device,
+                              sci_error_t *connect_error)
 {
     ucs_status_t status = UCS_OK;
     sci_remote_data_interrupt_t req_interrupt;
-    ucs_time_t deadline;
     sci_error_t sci_error;
 
-    deadline = uct_pcie_connect_deadline();
-    do {
-        SCIConnectDataInterrupt(sci_virtual_device, &req_interrupt, node_id,
-                                UCT_PCIE_LOCAL_ADAPTER_NO, remote_interrupt_no,
-                                SCI_INFINITE_TIMEOUT, UCT_PCIE_NO_FLAGS,
-                                &sci_error);
-    } while ((sci_error != SCI_ERR_OK) && (ucs_get_time() < deadline));
-
+    SCIConnectDataInterrupt(sci_virtual_device, &req_interrupt, node_id,
+                            UCT_PCIE_LOCAL_ADAPTER_NO, remote_interrupt_no,
+                            SCI_INFINITE_TIMEOUT, UCT_PCIE_NO_FLAGS,
+                            &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCIConnectDataInterrupt failed after %d ms: %s",
-                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
-        return UCS_ERR_TIMED_OUT;
+        *connect_error = sci_error;
+        return UCS_ERR_BUSY;
     }
 
     SCITriggerDataInterrupt(req_interrupt, (void*)request, sizeof(*request),
@@ -53,58 +50,6 @@ uct_pcie_ep_send_conn_request(uct_pcie_conn_req_t *request,
                  SCIGetErrorString(sci_error));
     }
 
-    return status;
-}
-
-/* Connection handshake: send the request along with a reply interrupt, then
- * wait for the answer carrying the peer's receive segment ID */
-static ucs_status_t
-uct_pcie_ep_send_recv_conn_request(uct_pcie_conn_req_t request,
-                                   unsigned int node_id,
-                                   unsigned int remote_interrupt_no,
-                                   sci_desc_t sci_virtual_device,
-                                   uct_pcie_conn_ans_t *answer)
-{
-    unsigned int ans_size = sizeof(*answer);
-    sci_local_data_interrupt_t ans_interrupt;
-    ucs_status_t status;
-    sci_error_t sci_error;
-
-    /* Reply interrupt, SISCI picks a free number that goes in the request */
-    SCICreateDataInterrupt(sci_virtual_device, &ans_interrupt,
-                           UCT_PCIE_LOCAL_ADAPTER_NO, &request.interrupt, NULL,
-                           NULL, /* No callback arguments */
-                           UCT_PCIE_NO_FLAGS, &sci_error);
-    if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCICreateDataInterrupt failed: %s",
-                  SCIGetErrorString(sci_error));
-        return UCS_ERR_NO_RESOURCE;
-    }
-
-    /* Runs uct_pcie_iface_conn_handler on the peer, which sends the answer */
-    status = uct_pcie_ep_send_conn_request(&request, node_id,
-                                           remote_interrupt_no,
-                                           sci_virtual_device);
-    if (status != UCS_OK) {
-        goto out_remove_interrupt;
-    }
-
-    /* Wait for the answer */
-    SCIWaitForDataInterrupt(ans_interrupt, (void*)answer, &ans_size,
-                            UCT_PCIE_CONNECT_TIMEOUT_MS, UCT_PCIE_NO_FLAGS,
-                            &sci_error);
-    if (sci_error == SCI_ERR_TIMEOUT) {
-        ucs_error("no answer to connection request after %d ms",
-                  UCT_PCIE_CONNECT_TIMEOUT_MS);
-        status = UCS_ERR_TIMED_OUT;
-    } else if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCIWaitForDataInterrupt failed: %s",
-                  SCIGetErrorString(sci_error));
-        status = UCS_ERR_NO_RESOURCE;
-    }
-
-out_remove_interrupt:
-    SCIRemoveDataInterrupt(ans_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
     return status;
 }
 
@@ -131,9 +76,6 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     const uct_pcie_device_addr_t *dev_addr  = (const uct_pcie_device_addr_t*)
                                                       params->dev_addr;
     uct_pcie_iface_t *iface = ucs_derived_of(params->iface, uct_pcie_iface_t);
-    uct_pcie_md_t *md       = ucs_derived_of(iface->super.md, uct_pcie_md_t);
-    uct_pcie_conn_ans_t answer;
-    uct_pcie_conn_req_t request;
     ucs_status_t status;
     unsigned int ep_conn_index;
 
@@ -150,19 +92,6 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
      * multi-threaded workers are refused at iface init. */
     ep_conn_index = iface->eps_init_cnt++;
 
-    request.node_id        = iface->device_addr;
-    request.ep_conn_index  = ep_conn_index;
-    request.ctl_segment_id = iface->ctl_segment_id;
-
-    status = uct_pcie_ep_send_recv_conn_request(request, self->remote_node_id,
-                                                iface_addr->interrupt_no,
-                                                md->sci_virtual_device,
-                                                &answer);
-    if (status != UCS_OK) {
-        goto err_dec_eps_init_cnt;
-    }
-
-    self->remote_seg_id   = answer.segment_id;
     self->ep_conn_index   = ep_conn_index;
     self->ep_conn_seq_num = 1;
     ucs_arbiter_group_init(&self->pending_q);
@@ -184,29 +113,106 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
               self, iface_addr->rma_seg_id, self->remote_node_id,
               self->remote_rma_va);
 
-    /* Map the receive segment the peer created for this EP (AM ring) */
-    status = uct_pcie_segment_connect(
-            iface->vdev_ep, self->remote_node_id, self->remote_seg_id, 0,
-            iface->packet_size_bytes * iface->packet_queue_len,
-            uct_pcie_ep_remote_segment_cb, self, &self->remote_segment,
-            &self->remote_seg_map, (volatile void**)&self->remote_seg_buf);
-    if (status != UCS_OK) {
-        ucs_error("failed to connect to receive segment %u on node %u",
-                  self->remote_seg_id, self->remote_node_id);
-        goto err_disconnect_rma_seg;
-    }
-
-    self->is_connected = 1;
-
-    ucs_debug("ep %p connected to receive segment %u on node %u", self,
-              self->remote_seg_id, self->remote_node_id);
+    /* The connection request goes out from progress, see
+     * uct_pcie_ep_progress_connect */
+    self->remote_interrupt_no = iface_addr->interrupt_no;
+    self->conn_step           = UCT_PCIE_EP_CONN_QUEUED;
+    self->conn_status         = UCS_INPROGRESS;
+    self->is_connected        = 1;
+    ucs_list_add_tail(&iface->connecting_eps, &self->conn_list);
 
     return UCS_OK;
 
-err_disconnect_rma_seg:
-    uct_pcie_segment_disconnect(self->rma_seg, self->rma_seg_map);
 err_dec_eps_init_cnt:
     iface->eps_init_cnt--;
+    return status;
+}
+
+/* Called from progress for the first EP in the iface's connecting_eps only.
+ * The peer's data interrupt queues few requests and drops the rest without
+ * telling the sender, so an iface has one request in flight at a time. */
+ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
+{
+    uct_pcie_iface_t *iface = ucs_derived_of(ep->super.super.iface,
+                                             uct_pcie_iface_t);
+    uct_pcie_md_t *md       = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    uct_pcie_ctl_t *ctl     = &iface->ctls[ep->ep_conn_index];
+    uct_pcie_conn_req_t request;
+    ucs_status_t status;
+    sci_error_t sci_error;
+
+    ucs_assert(ep->conn_status == UCS_INPROGRESS);
+
+    /* The timeout covers sending the request and waiting for the answer */
+    if (ep->conn_step == UCT_PCIE_EP_CONN_QUEUED) {
+        ep->conn_step     = UCT_PCIE_EP_CONN_SENDING;
+        ep->conn_deadline = uct_pcie_connect_deadline();
+    }
+
+    if (ep->conn_step == UCT_PCIE_EP_CONN_SENDING) {
+        request.node_id        = iface->device_addr;
+        request.ctl_segment_id = iface->ctl_segment_id;
+        request.ep_conn_index  = ep->ep_conn_index;
+
+        /* Runs uct_pcie_iface_conn_handler on the peer, which answers in
+         * this EP's ctl slot */
+        status = uct_pcie_ep_send_conn_request(&request, ep->remote_node_id,
+                                               ep->remote_interrupt_no,
+                                               md->sci_virtual_device,
+                                               &sci_error);
+        if (status == UCS_OK) {
+            ep->conn_step = UCT_PCIE_EP_CONN_WAITING;
+            return UCS_INPROGRESS;
+        } else if (status != UCS_ERR_BUSY) {
+            goto out;
+        } else if (ucs_get_time() < ep->conn_deadline) {
+            return UCS_INPROGRESS;
+        }
+
+        ucs_error("ep %p: SCIConnectDataInterrupt to node %u still failing"
+                  " after %d ms: %s", ep, ep->remote_node_id,
+                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
+        status = UCS_ERR_ENDPOINT_TIMEOUT;
+        goto out;
+    }
+
+    if (!ctl->conn_answered) {
+        if (ucs_get_time() < ep->conn_deadline) {
+            return UCS_INPROGRESS;
+        }
+
+        ucs_error("ep %p: no answer to connection request from node %u after"
+                  " %d ms", ep, ep->remote_node_id,
+                  UCT_PCIE_CONNECT_TIMEOUT_MS);
+        status = UCS_ERR_ENDPOINT_TIMEOUT;
+        goto out;
+    }
+
+    /* recv_seg_id was written before conn_answered */
+    ucs_memory_cpu_load_fence();
+    ep->remote_seg_id = ctl->recv_seg_id;
+
+    /* Map the receive segment the peer created for this EP (AM ring) */
+    status = uct_pcie_segment_connect(
+            iface->vdev_ep, ep->remote_node_id, ep->remote_seg_id, 0,
+            iface->packet_size_bytes * iface->packet_queue_len,
+            uct_pcie_ep_remote_segment_cb, ep, &ep->remote_segment,
+            &ep->remote_seg_map, (volatile void**)&ep->remote_seg_buf);
+    if (status != UCS_OK) {
+        ucs_error("failed to connect to receive segment %u on node %u",
+                  ep->remote_seg_id, ep->remote_node_id);
+        goto out;
+    }
+
+    ucs_debug("ep %p connected to receive segment %u on node %u", ep,
+              ep->remote_seg_id, ep->remote_node_id);
+
+    /* Sends queued while connecting can go now */
+    ucs_arbiter_group_schedule(&iface->arbiter, &ep->pending_q);
+
+out:
+    ucs_list_del(&ep->conn_list);
+    ep->conn_status = status;
     return status;
 }
 
@@ -228,12 +234,22 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
     ucs_arbiter_group_purge(&iface->arbiter, &self->pending_q,
                             uct_pcie_ep_pending_discard_cb, NULL);
 
-    uct_pcie_segment_disconnect(self->rma_seg, self->rma_seg_map);
-    self->remote_seg_buf = NULL;
-    uct_pcie_segment_disconnect(self->remote_segment, self->remote_seg_map);
+    if (self->conn_status == UCS_INPROGRESS) {
+        ucs_list_del(&self->conn_list);
+    }
 
-    ucs_debug("ep %p destroyed, receive segment %u on node %u", self,
-              self->remote_seg_id, self->remote_node_id);
+    uct_pcie_segment_disconnect(self->rma_seg, self->rma_seg_map);
+
+    if (self->conn_status == UCS_OK) {
+        self->remote_seg_buf = NULL;
+        uct_pcie_segment_disconnect(self->remote_segment,
+                                    self->remote_seg_map);
+        ucs_debug("ep %p destroyed, receive segment %u on node %u", self,
+                  self->remote_seg_id, self->remote_node_id);
+    } else {
+        ucs_debug("ep %p destroyed before connecting to node %u: %s", self,
+                  self->remote_node_id, ucs_status_string(self->conn_status));
+    }
 }
 
 UCS_CLASS_DEFINE(uct_pcie_ep_t, uct_base_ep_t);
@@ -465,6 +481,18 @@ ucs_status_t uct_pcie_ep_get_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov,
     return UCS_OK;
 }
 
+/* AM sends write into the receive segment, mapped once the peer answers */
+static UCS_F_ALWAYS_INLINE ucs_status_t
+uct_pcie_ep_check_conn(const uct_pcie_ep_t *ep)
+{
+    if (ucs_likely(ep->conn_status == UCS_OK)) {
+        return UCS_OK;
+    }
+
+    return (ep->conn_status == UCS_INPROGRESS) ? UCS_ERR_NO_RESOURCE :
+                                                 ep->conn_status;
+}
+
 /* Slot layout: [ uct_pcie_am_hdr_t | uint64_t header | payload ] */
 ucs_status_t uct_pcie_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
                                   const void *payload, unsigned length)
@@ -475,6 +503,12 @@ ucs_status_t uct_pcie_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
     uct_pcie_am_hdr_t *am_hdr;
     uint32_t slot_offset;
     uint32_t payload_offset;
+    ucs_status_t status;
+
+    status = uct_pcie_ep_check_conn(ep);
+    if (ucs_unlikely(status != UCS_OK)) {
+        return status;
+    }
 
     /* No free slot until the peer acks */
     if (ep->ep_conn_seq_num - ctl->ep_conn_ack > iface->packet_queue_len) {
@@ -518,6 +552,12 @@ ucs_status_t uct_pcie_ep_am_short_iov(uct_ep_h tl_ep, uint8_t id,
     uint32_t payload_offset;
     size_t iov_total_len;
     size_t bytes_copied;
+    ucs_status_t status;
+
+    status = uct_pcie_ep_check_conn(ep);
+    if (ucs_unlikely(status != UCS_OK)) {
+        return status;
+    }
 
     /* No free slot until the peer acks */
     if (ep->ep_conn_seq_num - ctl->ep_conn_ack > iface->packet_queue_len) {
@@ -565,6 +605,12 @@ ssize_t uct_pcie_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
     uint32_t slot_offset;
     uint32_t payload_offset;
     ssize_t length;
+    ucs_status_t status;
+
+    status = uct_pcie_ep_check_conn(ep);
+    if (ucs_unlikely(status != UCS_OK)) {
+        return status;
+    }
 
     /* No free slot until the peer acks */
     if (ep->ep_conn_seq_num - ctl->ep_conn_ack > iface->packet_queue_len) {
@@ -611,6 +657,12 @@ ucs_status_t uct_pcie_ep_am_zcopy(uct_ep_h uct_ep, uint8_t id,
     ucs_iov_iter_t iov_iter;
     size_t bytes_copied;
     uint32_t slot_offset;
+    ucs_status_t status;
+
+    status = uct_pcie_ep_check_conn(ep);
+    if (ucs_unlikely(status != UCS_OK)) {
+        return status;
+    }
 
     /* No free slot until the peer acks */
     if (ep->ep_conn_seq_num - ctl->ep_conn_ack > iface->packet_queue_len) {
@@ -673,15 +725,25 @@ uct_pcie_ep_pending_add(uct_ep_h tl_ep, uct_pending_req_t *req, unsigned flags)
     uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
     uct_pcie_ctl_t *ctl     = &iface->ctls[ep->ep_conn_index];
 
-    /* Room in the window and nothing queued ahead, the caller retries */
-    if (ucs_arbiter_group_is_empty(&ep->pending_q) &&
+    /* Failed EP: the caller retries and gets the error from the send */
+    if (UCS_STATUS_IS_ERR(ep->conn_status)) {
+        return UCS_ERR_BUSY;
+    }
+
+    /* Connected, room in the window and nothing queued ahead: the caller
+     * retries */
+    if ((ep->conn_status == UCS_OK) &&
+        ucs_arbiter_group_is_empty(&ep->pending_q) &&
         (ep->ep_conn_seq_num - ctl->ep_conn_ack <= iface->packet_queue_len)) {
         return UCS_ERR_BUSY;
     }
 
     uct_pending_req_arb_group_push(&ep->pending_q, req);
 
-    ucs_arbiter_group_schedule(&iface->arbiter, &ep->pending_q);
+    /* While connecting, uct_pcie_ep_progress_connect schedules the group */
+    if (ep->conn_status == UCS_OK) {
+        ucs_arbiter_group_schedule(&iface->arbiter, &ep->pending_q);
+    }
 
     return UCS_OK;
 }
@@ -698,4 +760,26 @@ void uct_pcie_ep_pending_purge(uct_ep_h tl_ep, uct_pending_purge_callback_t cb,
 
     ucs_arbiter_group_purge(&iface->arbiter, &ep->pending_q,
                             uct_pcie_ep_pending_purge_cb, &args);
+}
+
+ucs_status_t uct_pcie_ep_flush(uct_ep_h tl_ep, unsigned flags,
+                               uct_completion_t *comp)
+{
+    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
+    ucs_status_t status;
+
+    /* Sends are done when they return, so only sends that haven't gone out
+     * yet are left to wait for */
+    if (!(flags & UCT_FLUSH_FLAG_CANCEL)) {
+        status = uct_pcie_ep_check_conn(ep);
+        if (status != UCS_OK) {
+            return status;
+        }
+
+        if (!ucs_arbiter_group_is_empty(&ep->pending_q)) {
+            return UCS_ERR_NO_RESOURCE;
+        }
+    }
+
+    return uct_base_ep_flush(tl_ep, flags, comp);
 }
