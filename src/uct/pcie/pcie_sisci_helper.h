@@ -8,6 +8,17 @@
 
 #include "pcie_iface.h"
 
+#include <ucs/time/time.h>
+
+
+/**
+ * Deadline for retrying a SISCI connect, UCT_PCIE_CONNECT_TIMEOUT_MS from now.
+ */
+static UCS_F_ALWAYS_INLINE ucs_time_t uct_pcie_connect_deadline()
+{
+    return ucs_get_time() + ucs_time_from_msec(UCT_PCIE_CONNECT_TIMEOUT_MS);
+}
+
 
 /**
  * Create, prepare and map a local SISCI segment. SISCI assigns a segment ID
@@ -56,7 +67,7 @@ void uct_pcie_segment_remove_available(sci_local_segment_t segment,
 
 /**
  * Connect to a remote SISCI segment and map size bytes of it from offset.
- * Retries the connect until it succeeds.
+ * Retries the connect for up to UCT_PCIE_CONNECT_TIMEOUT_MS.
  *
  * @param [in]  sd             SISCI virtual device descriptor.
  * @param [in]  node_id        Remote SISCI node ID.
@@ -70,7 +81,8 @@ void uct_pcie_segment_remove_available(sci_local_segment_t segment,
  * @param [out] segment_map_p  Local mapping of the remote segment.
  * @param [out] buf_p          Local VA of the mapping.
  *
- * @return UCS_OK on success, UCS_ERR_NO_RESOURCE on failure.
+ * @return UCS_OK on success, UCS_ERR_TIMED_OUT if the connect never succeeded,
+ *         UCS_ERR_NO_RESOURCE if mapping failed.
  */
 ucs_status_t
 uct_pcie_segment_connect(sci_desc_t sd, unsigned int node_id,
@@ -83,9 +95,10 @@ uct_pcie_segment_connect(sci_desc_t sd, unsigned int node_id,
 /**
  * Connect to a remote SISCI segment and map all of it. The size is queried
  * with SCIGetRemoteSegmentSize, so the caller doesn't need to know it.
- * Retries the connect until it succeeds.
+ * Retries the connect for up to UCT_PCIE_CONNECT_TIMEOUT_MS.
  *
- * @return UCS_OK on success, UCS_ERR_NO_RESOURCE on failure.
+ * @return UCS_OK on success, UCS_ERR_TIMED_OUT if the connect never succeeded,
+ *         UCS_ERR_NO_RESOURCE if mapping failed.
  */
 ucs_status_t uct_pcie_segment_connect_full(sci_desc_t sd, unsigned int node_id,
                                            unsigned int segment_id,

@@ -22,14 +22,22 @@ uct_pcie_ep_send_conn_request(uct_pcie_conn_req_t *request,
 {
     ucs_status_t status = UCS_OK;
     sci_remote_data_interrupt_t req_interrupt;
+    ucs_time_t deadline;
     sci_error_t sci_error;
 
+    deadline = uct_pcie_connect_deadline();
     do {
         SCIConnectDataInterrupt(sci_virtual_device, &req_interrupt, node_id,
                                 UCT_PCIE_LOCAL_ADAPTER_NO, remote_interrupt_no,
                                 SCI_INFINITE_TIMEOUT, UCT_PCIE_NO_FLAGS,
                                 &sci_error);
-    } while (sci_error != SCI_ERR_OK);
+    } while ((sci_error != SCI_ERR_OK) && (ucs_get_time() < deadline));
+
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIConnectDataInterrupt failed after %d ms: %s",
+                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
+        return UCS_ERR_TIMED_OUT;
+    }
 
     SCITriggerDataInterrupt(req_interrupt, (void*)request, sizeof(*request),
                             UCT_PCIE_NO_FLAGS, &sci_error);
@@ -40,9 +48,9 @@ uct_pcie_ep_send_conn_request(uct_pcie_conn_req_t *request,
     }
 
     SCIDisconnectDataInterrupt(req_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
-    if (sci_error == SCI_ERR_BUSY) {
-        ucs_error("SCIDisconnectDataInterrupt failed: %s",
-                  SCIGetErrorString(sci_error));
+    if (sci_error != SCI_ERR_OK) {
+        ucs_warn("SCIDisconnectDataInterrupt failed: %s",
+                 SCIGetErrorString(sci_error));
     }
 
     return status;
@@ -78,21 +86,25 @@ uct_pcie_ep_send_recv_conn_request(uct_pcie_conn_req_t request,
                                            remote_interrupt_no,
                                            sci_virtual_device);
     if (status != UCS_OK) {
-        return status;
+        goto out_remove_interrupt;
     }
 
     /* Wait for the answer */
     SCIWaitForDataInterrupt(ans_interrupt, (void*)answer, &ans_size,
-                            SCI_INFINITE_TIMEOUT, UCT_PCIE_NO_FLAGS,
+                            UCT_PCIE_CONNECT_TIMEOUT_MS, UCT_PCIE_NO_FLAGS,
                             &sci_error);
-    if (sci_error != SCI_ERR_OK) {
+    if (sci_error == SCI_ERR_TIMEOUT) {
+        ucs_error("no answer to connection request after %d ms",
+                  UCT_PCIE_CONNECT_TIMEOUT_MS);
+        status = UCS_ERR_TIMED_OUT;
+    } else if (sci_error != SCI_ERR_OK) {
         ucs_error("SCIWaitForDataInterrupt failed: %s",
                   SCIGetErrorString(sci_error));
         status = UCS_ERR_NO_RESOURCE;
     }
 
+out_remove_interrupt:
     SCIRemoveDataInterrupt(ans_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
-
     return status;
 }
 
@@ -416,6 +428,8 @@ ucs_status_t uct_pcie_ep_get_short(uct_ep_h tl_ep, void *buffer,
 {
     uct_pcie_ep_t *ep       = ucs_derived_of(tl_ep, uct_pcie_ep_t);
     uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+
+    UCT_CHECK_LENGTH(length, 0, UCT_PCIE_MAX_PUT_SHORT, "get_short");
 
     uct_pcie_ep_read(ep, iface, remote_addr, length, buffer);
     return UCS_OK;

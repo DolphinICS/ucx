@@ -42,6 +42,10 @@
 /* Maximum iov count for active messages */
 #define UCT_PCIE_AM_MAX_IOV 10
 
+/* How long connection setup retries a SISCI connect, or waits for the peer's
+ * answer, before giving up */
+#define UCT_PCIE_CONNECT_TIMEOUT_MS 10000
+
 /* Iface address exchanged before EP creation. The MD has a single RMA segment
  * per process, so its identity is carried here rather than in the rkey, and
  * rkey_packed_size is 0. */
