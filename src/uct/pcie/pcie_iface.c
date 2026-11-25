@@ -78,6 +78,52 @@ uct_pcie_iface_conn_desc_release(uct_pcie_iface_t *iface, unsigned int cd_index)
     pthread_mutex_unlock(&iface->lock);
 }
 
+/* Take a free slot in the control segment for a new EP. Returns
+ * UCS_ERR_EXCEEDS_LIMIT if all max_eps slots are in use or still closing. */
+ucs_status_t
+uct_pcie_iface_ctl_slot_get(uct_pcie_iface_t *iface, unsigned int *index_p)
+{
+    uct_pcie_ctl_t *ctl;
+    unsigned int i;
+
+    for (i = 0; i < iface->max_eps; i++) {
+        ctl = &iface->ctls[i];
+
+        /* The peer is done with a closing slot once it's REFUSED or CLOSED */
+        if ((iface->ctl_slot_state[i] == UCT_PCIE_CTL_SLOT_CLOSING) &&
+            ((ctl->conn_state == UCT_PCIE_CONN_REFUSED) ||
+             (ctl->conn_state == UCT_PCIE_CONN_CLOSED))) {
+            iface->ctl_slot_state[i] = UCT_PCIE_CTL_SLOT_FREE;
+        }
+
+        if (iface->ctl_slot_state[i] == UCT_PCIE_CTL_SLOT_FREE) {
+            break;
+        }
+    }
+
+    if (i == iface->max_eps) {
+        return UCS_ERR_EXCEEDS_LIMIT;
+    }
+
+    /* No peer writes a free slot */
+    ctl->ep_conn_ack         = 0;
+    ctl->recv_seg_id         = 0;
+    ctl->conn_state          = UCT_PCIE_CONN_NONE;
+    iface->ctl_slot_state[i] = UCT_PCIE_CTL_SLOT_IN_USE;
+    *index_p                 = i;
+    return UCS_OK;
+}
+
+/* Give back a destroyed EP's slot. Once the request is out, the peer may still
+ * answer or ack into the slot, so it stays closing until the peer writes
+ * REFUSED or CLOSED. */
+void uct_pcie_iface_ctl_slot_put(uct_pcie_iface_t *iface, unsigned int index,
+                                 int request_sent)
+{
+    iface->ctl_slot_state[index] = request_sent ? UCT_PCIE_CTL_SLOT_CLOSING :
+                                                  UCT_PCIE_CTL_SLOT_FREE;
+}
+
 /* SISCI callback for an incoming connection's receive segment. Runs on the
  * SISCI callback thread, so it only records the event; progress closes the
  * connection. */
@@ -114,13 +160,44 @@ static void uct_pcie_iface_conn_desc_close(uct_pcie_iface_t *iface,
               cd_index, cd->recv_segment_id);
 
     cd->cd_status = UCT_PCIE_CD_RESERVED;
+
+    /* The last write to the EP's ctl slot, so its iface can reuse it */
+    cd->ctl_buf->conn_state = UCT_PCIE_CONN_CLOSED;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     uct_pcie_segment_disconnect(cd->ctl_segment, cd->ctl_segment_map);
     uct_pcie_segment_remove_available(cd->recv_segment, cd->recv_segment_map);
     uct_pcie_iface_conn_desc_release(iface, cd_index);
 }
 
-/* Handle one connection request: create a receive segment for the peer EP,
- * map the peer EP's ctl slot and answer there */
+/* Refuse a request when every connection descriptor is taken, so the EP fails
+ * at once and its iface can reuse the ctl slot. vdev_ctl holds a connection per
+ * descriptor already, so this one goes on its own descriptor. */
+static void uct_pcie_iface_refuse(uct_pcie_iface_t *iface,
+                                  const uct_pcie_conn_req_t *request)
+{
+    sci_remote_segment_t ctl_segment;
+    sci_map_t ctl_segment_map;
+    uct_pcie_ctl_t *ctl;
+    ucs_status_t status;
+
+    status = uct_pcie_segment_connect(
+            iface->vdev_refuse, request->node_id, request->ctl_segment_id,
+            request->ep_conn_index * sizeof(uct_pcie_ctl_t),
+            sizeof(uct_pcie_ctl_t), NULL, NULL, &ctl_segment, &ctl_segment_map,
+            (volatile void**)&ctl);
+    if (status != UCS_OK) {
+        ucs_error("failed to connect to remote control buffer to refuse a"
+                  " connection from node %u", request->node_id);
+        return;
+    }
+
+    ctl->conn_state = UCT_PCIE_CONN_REFUSED;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    uct_pcie_segment_disconnect(ctl_segment, ctl_segment_map);
+}
+
+/* Handle one connection request: map the peer EP's ctl slot, create a receive
+ * segment for the EP and answer in the ctl slot */
 static void uct_pcie_iface_accept(uct_pcie_iface_t *iface,
                                   const uct_pcie_conn_req_t *request)
 {
@@ -131,10 +208,23 @@ static void uct_pcie_iface_accept(uct_pcie_iface_t *iface,
     status = uct_pcie_iface_conn_desc_reserve(iface, &sci_cd_index);
     if (status != UCS_OK) {
         ucs_error("number of endpoints exceeds limit %u", iface->max_eps);
+        uct_pcie_iface_refuse(iface, request);
         return;
     }
 
     sci_cd = &(iface->sci_cds[sci_cd_index]);
+
+    /* The peer EP's ctl slot takes the answer and the acks. Without it there
+     * is nowhere to answer. */
+    status = uct_pcie_segment_connect(
+            iface->vdev_ctl, request->node_id, request->ctl_segment_id,
+            request->ep_conn_index * sizeof(uct_pcie_ctl_t),
+            sizeof(uct_pcie_ctl_t), NULL, NULL, &sci_cd->ctl_segment,
+            &sci_cd->ctl_segment_map, (volatile void**)&sci_cd->ctl_buf);
+    if (status != UCS_OK) {
+        ucs_error("failed to connect to remote control buffer");
+        goto err_release_cd;
+    }
 
     /* Create a dedicated receive segment for this connection. Its callback
      * tells when the EP maps and unmaps it. */
@@ -146,7 +236,7 @@ static void uct_pcie_iface_accept(uct_pcie_iface_t *iface,
             (void**)&sci_cd->packet_queue_buf);
     if (status != UCS_OK) {
         ucs_error("failed to create per-connection receive segment");
-        goto err_release_cd;
+        goto err_refuse;
     }
 
     /* Reset only now that recv_segment is the new one, so a late event for
@@ -156,21 +246,10 @@ static void uct_pcie_iface_accept(uct_pcie_iface_t *iface,
     sci_cd->peer_connected   = 0;
     sci_cd->peer_gone        = 0;
 
-    /* The peer EP's ctl slot takes both the answer and the acks */
-    status = uct_pcie_segment_connect(
-            iface->vdev_ctl, request->node_id, request->ctl_segment_id,
-            request->ep_conn_index * sizeof(uct_pcie_ctl_t),
-            sizeof(uct_pcie_ctl_t), NULL, NULL, &sci_cd->ctl_segment,
-            &sci_cd->ctl_segment_map, (volatile void**)&sci_cd->ctl_buf);
-    if (status != UCS_OK) {
-        ucs_error("failed to connect to remote control buffer");
-        goto err_remove_recv_seg;
-    }
-
-    /* The EP polls conn_answered, so the segment ID has to land first */
+    /* The EP polls conn_state, so the segment ID has to land first */
     sci_cd->ctl_buf->recv_seg_id = sci_cd->recv_segment_id;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
-    sci_cd->ctl_buf->conn_answered = 1;
+    sci_cd->ctl_buf->conn_state = UCT_PCIE_CONN_ACCEPTED;
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
 
     /* The EP gives up on the answer at its own deadline, which started before
@@ -185,9 +264,10 @@ static void uct_pcie_iface_accept(uct_pcie_iface_t *iface,
     sci_cd->cd_status = UCT_PCIE_CD_READY;
     return;
 
-err_remove_recv_seg:
-    uct_pcie_segment_remove_available(sci_cd->recv_segment,
-                                      sci_cd->recv_segment_map);
+err_refuse:
+    sci_cd->ctl_buf->conn_state = UCT_PCIE_CONN_REFUSED;
+    SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
+    uct_pcie_segment_disconnect(sci_cd->ctl_segment, sci_cd->ctl_segment_map);
 err_release_cd:
     uct_pcie_iface_conn_desc_release(iface, sci_cd_index);
 }
@@ -347,7 +427,6 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
     self->packet_size_bytes = config->packet_size_bytes;
     self->packet_queue_len  = config->packet_queue_len;
     self->max_eps           = ucs_min(UCT_PCIE_MAX_EPS, config->max_eps);
-    self->eps_init_cnt      = 0;
 
     /* One descriptor per segment role, see uct_pcie_iface_t */
     SCIOpen(&self->vdev_recv, UCT_PCIE_NO_FLAGS, &sci_error);
@@ -389,6 +468,14 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
         goto err_close_vdev_ctl;
     }
 
+    SCIOpen(&self->vdev_refuse, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIOpen (vdev_refuse) failed: %s",
+                  SCIGetErrorString(sci_error));
+        status = UCS_ERR_NO_RESOURCE;
+        goto err_close_vdev_setup;
+    }
+
     /* Peers write their ack counters into the control segment */
     control_segment_size = sizeof(uct_pcie_ctl_t) * self->max_eps;
     status = uct_pcie_segment_create_available(sci_md->sci_virtual_device,
@@ -399,7 +486,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
                                                (void**)&self->ctls);
     if (status != UCS_OK) {
         ucs_error("failed to set up control segment");
-        goto err_close_vdev_setup;
+        goto err_close_vdev_refuse;
     }
 
     /* Initialize connection descriptors. Receive segments are created per
@@ -407,9 +494,7 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
     for (i = 0; i < self->max_eps; i++) {
         self->sci_cds[i].cd_status        = UCT_PCIE_CD_AVAILABLE;
         self->sci_cds[i].ep_conn_last_ack = 0;
-        self->ctls[i].ep_conn_ack         = 0;
-        self->ctls[i].recv_seg_id         = 0;
-        self->ctls[i].conn_answered       = 0;
+        self->ctl_slot_state[i]           = UCT_PCIE_CTL_SLOT_FREE;
     }
 
     /* The first free inbox segment ID gives this iface its index on the node */
@@ -489,6 +574,8 @@ err_remove_inbox_seg:
     uct_pcie_segment_remove_available(self->inbox_segment, self->inbox_map);
 err_remove_ctl_seg:
     uct_pcie_segment_remove_available(self->ctl_segment, self->ctl_segment_map);
+err_close_vdev_refuse:
+    SCIClose(self->vdev_refuse, UCT_PCIE_NO_FLAGS, &sci_error);
 err_close_vdev_setup:
     SCIClose(self->vdev_setup, UCT_PCIE_NO_FLAGS, &sci_error);
 err_close_vdev_ctl:
@@ -532,6 +619,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
 
     uct_pcie_segment_remove_available(self->ctl_segment, self->ctl_segment_map);
 
+    SCIClose(self->vdev_refuse, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_setup, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
