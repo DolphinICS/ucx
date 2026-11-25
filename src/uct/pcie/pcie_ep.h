@@ -11,6 +11,13 @@
 #include <uct/base/uct_iface.h>
 
 
+/* How far a connecting EP is, see uct_pcie_ep_progress_connect */
+typedef enum {
+    UCT_PCIE_EP_CONN_QUEUED,  /* Behind other EPs in connecting_eps */
+    UCT_PCIE_EP_CONN_SENDING, /* Trying to send the connection request */
+    UCT_PCIE_EP_CONN_WAITING  /* Request sent, waiting for the answer */
+} uct_pcie_ep_conn_step_t;
+
 typedef struct {
     uct_base_ep_t        super;
     unsigned int         remote_seg_id;
@@ -25,9 +32,22 @@ typedef struct {
      * when the flow-control window is full and drained by iface progress. */
     ucs_arbiter_group_t  pending_q;
 
-    /* Set to 1 after EP creation completes, cleared to 0 by the SISCI
-     * disconnect callback on remote_segment. Read by ep_is_connected.
-     * volatile because the callback runs on the SISCI callback thread. */
+    /* UCS_INPROGRESS until the peer answers the connection request and
+     * remote_segment is mapped, then UCS_OK, or the error that failed it. AM
+     * sends need it, put and get only need rma_seg, mapped at creation. */
+    ucs_status_t         conn_status;
+    /* Peer iface's connection interrupt, from uct_pcie_iface_addr_t */
+    unsigned int         remote_interrupt_no;
+    /* Handshake step while conn_status is UCS_INPROGRESS */
+    uct_pcie_ep_conn_step_t conn_step;
+    /* When to give up on the handshake, set when sending starts */
+    ucs_time_t           conn_deadline;
+    /* In the iface's connecting_eps while conn_status is UCS_INPROGRESS */
+    ucs_list_link_t      conn_list;
+
+    /* Set to 1 at EP creation, cleared to 0 by the SISCI disconnect callback
+     * on remote_segment. Read by ep_is_connected. volatile because the
+     * callback runs on the SISCI callback thread. */
     volatile int         is_connected;
 
     /* Peer's RMA segment, target of put and get */
@@ -43,6 +63,11 @@ typedef struct {
 
 UCS_CLASS_DECLARE_NEW_FUNC(uct_pcie_ep_t, uct_ep_t, const uct_ep_params_t*);
 UCS_CLASS_DECLARE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
+
+ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep);
+
+ucs_status_t uct_pcie_ep_flush(uct_ep_h tl_ep, unsigned flags,
+                               uct_completion_t *comp);
 
 ucs_status_t
 uct_pcie_ep_pending_add(uct_ep_h tl_ep, uct_pending_req_t *req, unsigned flags);
