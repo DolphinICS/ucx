@@ -143,10 +143,8 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_ep_t, const uct_ep_params_t *params)
     self->ep_conn_seq_num = 1;
     ucs_arbiter_group_init(&self->pending_q);
 
-    /* The RMA segment is mapped and the connection request goes out from
-     * progress, see uct_pcie_ep_progress_connect */
-    self->remote_rma_seg_id   = iface_addr->rma_seg_id;
-    self->remote_rma_base     = iface_addr->rma_base;
+    /* The connection request goes out from progress, see
+     * uct_pcie_ep_progress_connect */
     self->remote_interrupt_no = iface_addr->interrupt_no;
     self->remote_inbox_seg_id = iface_addr->inbox_seg_id;
     self->conn_step           = UCT_PCIE_EP_CONN_QUEUED;
@@ -172,40 +170,10 @@ ucs_status_t uct_pcie_ep_progress_connect(uct_pcie_ep_t *ep)
 
     ucs_assert(ep->conn_status == UCS_INPROGRESS);
 
-    /* The timeout covers mapping the RMA segment, sending the request and
-     * waiting for the answer */
+    /* The timeout covers sending the request and waiting for the answer */
     if (ep->conn_step == UCT_PCIE_EP_CONN_QUEUED) {
-        ep->conn_step     = UCT_PCIE_EP_CONN_RMA;
+        ep->conn_step     = UCT_PCIE_EP_CONN_SENDING;
         ep->conn_deadline = uct_pcie_connect_deadline();
-    }
-
-    /* Map the peer's whole RMA segment for put and get */
-    if (ep->conn_step == UCT_PCIE_EP_CONN_RMA) {
-        status = uct_pcie_segment_try_connect_full(
-                iface->vdev_rma, ep->remote_node_id, ep->remote_rma_seg_id,
-                &ep->rma_seg, &ep->rma_seg_map,
-                (volatile void**)&ep->remote_rma_va, &sci_error);
-        if (status == UCS_ERR_BUSY) {
-            if (ucs_get_time() < ep->conn_deadline) {
-                return UCS_INPROGRESS;
-            }
-
-            ucs_error("ep %p: could not connect to rma segment %u on node %u"
-                      " for %d ms: %s", ep, ep->remote_rma_seg_id,
-                      ep->remote_node_id, UCT_PCIE_CONNECT_TIMEOUT_MS,
-                      SCIGetErrorString(sci_error));
-            status = UCS_ERR_ENDPOINT_TIMEOUT;
-            goto out;
-        } else if (status != UCS_OK) {
-            ucs_error("failed to map rma segment %u on node %u",
-                      ep->remote_rma_seg_id, ep->remote_node_id);
-            goto out;
-        }
-
-        ucs_debug("ep %p connected to rma segment %u on node %u, mapped at %p",
-                  ep, ep->remote_rma_seg_id, ep->remote_node_id,
-                  ep->remote_rma_va);
-        ep->conn_step = UCT_PCIE_EP_CONN_SENDING;
     }
 
     if (ep->conn_step == UCT_PCIE_EP_CONN_SENDING) {
@@ -311,12 +279,6 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_ep_t)
         ucs_list_del(&self->conn_list);
     }
 
-    /* rma_seg is mapped once the EP gets to SENDING */
-    if ((self->conn_step == UCT_PCIE_EP_CONN_SENDING) ||
-        (self->conn_step == UCT_PCIE_EP_CONN_WAITING)) {
-        uct_pcie_segment_disconnect(self->rma_seg, self->rma_seg_map);
-    }
-
     if (self->conn_status == UCS_OK) {
         self->remote_seg_buf = NULL;
         uct_pcie_segment_disconnect(self->remote_segment,
@@ -337,7 +299,7 @@ UCS_CLASS_DEFINE(uct_pcie_ep_t, uct_base_ep_t);
 UCS_CLASS_DEFINE_NEW_FUNC(uct_pcie_ep_t, uct_ep_t, const uct_ep_params_t*);
 UCS_CLASS_DEFINE_DELETE_FUNC(uct_pcie_ep_t, uct_ep_t);
 
-/* Sends, puts and gets need the whole connect done, see conn_status */
+/* AM sends write into the receive segment, mapped once the peer answers */
 static UCS_F_ALWAYS_INLINE ucs_status_t
 uct_pcie_ep_check_conn(const uct_pcie_ep_t *ep)
 {
@@ -351,32 +313,27 @@ uct_pcie_ep_check_conn(const uct_pcie_ep_t *ep)
 
 /*
  * remote_addr in the put/get functions below is a VA in the peer's RMA
- * segment. It is turned into a pointer into the local mapping of that segment:
+ * segment, and rkey is that segment mapped here (uct_pcie_rkey_t). It is turned
+ * into a pointer into the local mapping:
  *
- *   seg_offset = remote_addr - ep->remote_rma_base
- *   local_ptr  = ep->remote_rma_va + seg_offset
+ *   seg_offset = remote_addr - rkey->base
+ *   local_ptr  = rkey->va + seg_offset
  */
 
 ucs_status_t uct_pcie_ep_put_short(uct_ep_h tl_ep, const void *buffer,
                                    unsigned length, uint64_t remote_addr,
                                    uct_rkey_t rkey)
 {
-    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
-    ucs_status_t status;
+    uct_pcie_rkey_t *pcie_rkey = (uct_pcie_rkey_t*)rkey;
     size_t seg_offset;
 
     UCT_CHECK_LENGTH(length, 0, UCT_PCIE_MAX_PUT_SHORT, "put_short");
 
-    status = uct_pcie_ep_check_conn(ep);
-    if (ucs_unlikely(status != UCS_OK)) {
-        return status;
-    }
-
-    ucs_assert(remote_addr >= ep->remote_rma_base);
-    seg_offset = (size_t)(remote_addr - ep->remote_rma_base);
+    ucs_assert(remote_addr >= pcie_rkey->base);
+    seg_offset = (size_t)(remote_addr - pcie_rkey->base);
     ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
 
-    memcpy(UCS_PTR_BYTE_OFFSET(ep->remote_rma_va, seg_offset), buffer, length);
+    memcpy(UCS_PTR_BYTE_OFFSET(pcie_rkey->va, seg_offset), buffer, length);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return UCS_OK;
 }
@@ -384,20 +341,14 @@ ucs_status_t uct_pcie_ep_put_short(uct_ep_h tl_ep, const void *buffer,
 ssize_t uct_pcie_ep_put_bcopy(uct_ep_h tl_ep, uct_pack_callback_t pack_cb,
                               void *arg, uint64_t remote_addr, uct_rkey_t rkey)
 {
-    uct_pcie_ep_t *ep = ucs_derived_of(tl_ep, uct_pcie_ep_t);
-    ucs_status_t status;
+    uct_pcie_rkey_t *pcie_rkey = (uct_pcie_rkey_t*)rkey;
     size_t seg_offset;
     ssize_t length;
 
-    status = uct_pcie_ep_check_conn(ep);
-    if (ucs_unlikely(status != UCS_OK)) {
-        return status;
-    }
+    ucs_assert(remote_addr >= pcie_rkey->base);
+    seg_offset = (size_t)(remote_addr - pcie_rkey->base);
 
-    ucs_assert(remote_addr >= ep->remote_rma_base);
-    seg_offset = (size_t)(remote_addr - ep->remote_rma_base);
-
-    length = pack_cb(UCS_PTR_BYTE_OFFSET(ep->remote_rma_va, seg_offset), arg);
+    length = pack_cb(UCS_PTR_BYTE_OFFSET(pcie_rkey->va, seg_offset), arg);
     ucs_assert(seg_offset + (size_t)length <= UCT_PCIE_RMA_SEG_SIZE);
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
     return length;
@@ -439,23 +390,17 @@ ucs_status_t uct_pcie_ep_put_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov,
                                    size_t iovcnt, uint64_t remote_addr,
                                    uct_rkey_t rkey, uct_completion_t *comp)
 {
-    uct_pcie_ep_t *ep       = ucs_derived_of(tl_ep, uct_pcie_ep_t);
-    uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
-    uct_pcie_md_t *md       = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    uct_pcie_iface_t *iface    = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
+    uct_pcie_md_t *md          = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    uct_pcie_rkey_t *pcie_rkey = (uct_pcie_rkey_t*)rkey;
     ucs_iov_iter_t iov_iter;
     size_t seg_offset;
     size_t total_len;
     ptrdiff_t src_offset;
-    ucs_status_t status;
     int src_in_pool;
 
-    status = uct_pcie_ep_check_conn(ep);
-    if (ucs_unlikely(status != UCS_OK)) {
-        return status;
-    }
-
-    ucs_assert(remote_addr >= ep->remote_rma_base);
-    seg_offset = (size_t)(remote_addr - ep->remote_rma_base);
+    ucs_assert(remote_addr >= pcie_rkey->base);
+    seg_offset = (size_t)(remote_addr - pcie_rkey->base);
 
     total_len = uct_iov_total_length(iov, iovcnt);
     ucs_assert(seg_offset + total_len <= UCT_PCIE_RMA_SEG_SIZE);
@@ -469,7 +414,8 @@ ucs_status_t uct_pcie_ep_put_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov,
                       ((size_t)src_offset + total_len <= UCT_PCIE_RMA_SEG_SIZE);
         if (src_in_pool &&
             (uct_pcie_iface_dma_transfer(iface, md->rma_seg, (size_t)src_offset,
-                                         ep->rma_seg, seg_offset, total_len,
+                                         pcie_rkey->segment, seg_offset,
+                                         total_len,
                                          UCT_PCIE_NO_FLAGS) == UCS_OK)) {
             return UCS_OK;
         }
@@ -477,7 +423,7 @@ ucs_status_t uct_pcie_ep_put_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov,
 
     ucs_iov_iter_init(&iov_iter);
     uct_iov_to_buffer(iov, iovcnt, &iov_iter,
-                      UCS_PTR_BYTE_OFFSET(ep->remote_rma_va, seg_offset),
+                      UCS_PTR_BYTE_OFFSET(pcie_rkey->va, seg_offset),
                       total_len);
 
     SCIFlush(NULL, SCI_FLAG_FLUSH_CPU_BUFFERS_ONLY);
@@ -486,37 +432,38 @@ ucs_status_t uct_pcie_ep_put_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov,
 
 /* Return where to read remote_addr from: the DMA staging buffer, or the PIO
  * window if the read is small or DMA fails */
-static const void *uct_pcie_ep_read_src(uct_pcie_ep_t *ep,
+static const void *uct_pcie_ep_read_src(const uct_pcie_rkey_t *pcie_rkey,
                                         uct_pcie_iface_t *iface,
                                         uint64_t remote_addr, size_t length)
 {
     size_t seg_offset;
 
-    ucs_assert(remote_addr >= ep->remote_rma_base);
-    seg_offset = (size_t)(remote_addr - ep->remote_rma_base);
+    ucs_assert(remote_addr >= pcie_rkey->base);
+    seg_offset = (size_t)(remote_addr - pcie_rkey->base);
     ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
 
     if ((length > UCT_PCIE_GET_DMA_THRESHOLD) &&
-        (uct_pcie_iface_dma_transfer(iface, iface->dma_segment, 0, ep->rma_seg,
-                                     seg_offset, length,
+        (uct_pcie_iface_dma_transfer(iface, iface->dma_segment, 0,
+                                     pcie_rkey->segment, seg_offset, length,
                                      SCI_FLAG_DMA_READ) == UCS_OK)) {
         return iface->dma_buffer;
     }
 
-    return (const uint8_t*)ep->remote_rma_va + seg_offset;
+    return (const uint8_t*)pcie_rkey->va + seg_offset;
 }
 
 /* Read length bytes at remote_addr into dest */
-static void uct_pcie_ep_read(uct_pcie_ep_t *ep, uct_pcie_iface_t *iface,
-                             uint64_t remote_addr, size_t length, void *dest)
+static void uct_pcie_ep_read(const uct_pcie_rkey_t *pcie_rkey,
+                             uct_pcie_iface_t *iface, uint64_t remote_addr,
+                             size_t length, void *dest)
 {
     uct_pcie_md_t *md     = ucs_derived_of(iface->super.md, uct_pcie_md_t);
     ptrdiff_t dest_offset = UCS_PTR_BYTE_DIFF(md->rma_buf, dest);
     size_t seg_offset;
     int dest_in_pool;
 
-    ucs_assert(remote_addr >= ep->remote_rma_base);
-    seg_offset = (size_t)(remote_addr - ep->remote_rma_base);
+    ucs_assert(remote_addr >= pcie_rkey->base);
+    seg_offset = (size_t)(remote_addr - pcie_rkey->base);
     ucs_assert(seg_offset + length <= UCT_PCIE_RMA_SEG_SIZE);
 
     dest_in_pool = (dest_offset >= 0) &&
@@ -524,46 +471,40 @@ static void uct_pcie_ep_read(uct_pcie_ep_t *ep, uct_pcie_iface_t *iface,
 
     /* Small reads: PIO */
     if (length <= UCT_PCIE_GET_DMA_THRESHOLD) {
-        memcpy(dest, (const uint8_t*)ep->remote_rma_va + seg_offset, length);
+        memcpy(dest, (const uint8_t*)pcie_rkey->va + seg_offset, length);
         return;
     }
 
     /* dest is in the MD pool: DMA straight into it */
     if (dest_in_pool &&
         (uct_pcie_iface_dma_transfer(iface, md->rma_seg, (size_t)dest_offset,
-                                     ep->rma_seg, seg_offset, length,
+                                     pcie_rkey->segment, seg_offset, length,
                                      SCI_FLAG_DMA_READ) == UCS_OK)) {
         return;
     }
 
     /* Otherwise, or if that failed: DMA into the staging segment, then copy */
-    if (uct_pcie_iface_dma_transfer(iface, iface->dma_segment, 0, ep->rma_seg,
-                                    seg_offset, length,
+    if (uct_pcie_iface_dma_transfer(iface, iface->dma_segment, 0,
+                                    pcie_rkey->segment, seg_offset, length,
                                     SCI_FLAG_DMA_READ) == UCS_OK) {
         memcpy(dest, iface->dma_buffer, length);
         return;
     }
 
     /* DMA failed: PIO */
-    memcpy(dest, (const uint8_t*)ep->remote_rma_va + seg_offset, length);
+    memcpy(dest, (const uint8_t*)pcie_rkey->va + seg_offset, length);
 }
 
 ucs_status_t uct_pcie_ep_get_short(uct_ep_h tl_ep, void *buffer,
                                    unsigned length, uint64_t remote_addr,
                                    uct_rkey_t rkey)
 {
-    uct_pcie_ep_t *ep       = ucs_derived_of(tl_ep, uct_pcie_ep_t);
     uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
-    ucs_status_t status;
 
     UCT_CHECK_LENGTH(length, 0, UCT_PCIE_MAX_PUT_SHORT, "get_short");
 
-    status = uct_pcie_ep_check_conn(ep);
-    if (ucs_unlikely(status != UCS_OK)) {
-        return status;
-    }
-
-    uct_pcie_ep_read(ep, iface, remote_addr, length, buffer);
+    uct_pcie_ep_read((uct_pcie_rkey_t*)rkey, iface, remote_addr, length,
+                     buffer);
     return UCS_OK;
 }
 
@@ -572,16 +513,11 @@ ucs_status_t uct_pcie_ep_get_bcopy(uct_ep_h tl_ep,
                                    size_t length, uint64_t remote_addr,
                                    uct_rkey_t rkey, uct_completion_t *comp)
 {
-    uct_pcie_ep_t *ep       = ucs_derived_of(tl_ep, uct_pcie_ep_t);
     uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
-    ucs_status_t status;
 
-    status = uct_pcie_ep_check_conn(ep);
-    if (ucs_unlikely(status != UCS_OK)) {
-        return status;
-    }
-
-    unpack_cb(arg, uct_pcie_ep_read_src(ep, iface, remote_addr, length),
+    unpack_cb(arg,
+              uct_pcie_ep_read_src((uct_pcie_rkey_t*)rkey, iface, remote_addr,
+                                   length),
               length);
     return UCS_OK;
 }
@@ -590,19 +526,13 @@ ucs_status_t uct_pcie_ep_get_zcopy(uct_ep_h tl_ep, const uct_iov_t *iov,
                                    size_t iovcnt, uint64_t remote_addr,
                                    uct_rkey_t rkey, uct_completion_t *comp)
 {
-    uct_pcie_ep_t *ep       = ucs_derived_of(tl_ep, uct_pcie_ep_t);
     uct_pcie_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_pcie_iface_t);
     uint64_t addr           = remote_addr;
-    ucs_status_t status;
     size_t i;
 
-    status = uct_pcie_ep_check_conn(ep);
-    if (ucs_unlikely(status != UCS_OK)) {
-        return status;
-    }
-
     for (i = 0; i < iovcnt; i++) {
-        uct_pcie_ep_read(ep, iface, addr, iov[i].length, iov[i].buffer);
+        uct_pcie_ep_read((uct_pcie_rkey_t*)rkey, iface, addr, iov[i].length,
+                         iov[i].buffer);
         addr += iov[i].length;
     }
 

@@ -17,6 +17,19 @@
 #include <ucs/sys/ptr_arith.h>
 #include <ucs/arch/cpu.h>
 
+#include <pthread.h>
+
+
+/* A SISCI descriptor holds at most 32 connected remote segments: the 33rd
+ * SCIConnectSegment on one fails with "Out of local resources" */
+#define UCT_PCIE_RKEY_DESC_MAX_SEGMENTS 32
+
+/* Peers' RMA segments mapped by rkey_unpack, and the descriptors they are
+ * connected through. Process-wide, since rkey_unpack has no MD or iface. */
+static pthread_mutex_t uct_pcie_rkey_lock = PTHREAD_MUTEX_INITIALIZER;
+static UCS_LIST_HEAD(uct_pcie_rkeys);
+static UCS_LIST_HEAD(uct_pcie_rkey_descs);
+
 static void uct_pcie_md_close(uct_md_h md)
 {
     uct_pcie_md_t *sci_md = ucs_derived_of(md, uct_pcie_md_t);
@@ -34,15 +47,14 @@ static void uct_pcie_md_close(uct_md_h md)
 
 static ucs_status_t uct_pcie_md_query(uct_md_h md, uct_md_attr_v2_t *attr)
 {
-    /* The RMA segment is identified through the iface address, no rkey */
-    attr->flags            = UCT_MD_FLAG_ALLOC;
+    attr->flags            = UCT_MD_FLAG_ALLOC | UCT_MD_FLAG_NEED_RKEY;
     attr->max_alloc        = 0;
     attr->reg_mem_types    = UCS_BIT(UCS_MEMORY_TYPE_HOST);
     attr->alloc_mem_types  = UCS_BIT(UCS_MEMORY_TYPE_HOST);
     attr->access_mem_types = UCS_BIT(UCS_MEMORY_TYPE_HOST);
     attr->detect_mem_types = 0;
     attr->max_reg          = ULONG_MAX;
-    attr->rkey_packed_size = 0;
+    attr->rkey_packed_size = sizeof(uct_pcie_packed_rkey_t);
     attr->reg_cost         = ucs_linear_func_make(0, 0);
     memset(&attr->local_cpus, 0xff, sizeof(attr->local_cpus));
 
@@ -94,30 +106,171 @@ static ucs_status_t uct_pcie_mem_free(uct_md_h md, uct_mem_h memh)
     return UCS_OK;
 }
 
-/* The RMA segment is identified through the iface address rather than the
- * rkey (see uct_pcie_iface_addr_t), so rkey_packed_size is 0 and the rkey
- * functions below have nothing to pack, unpack or free. */
+/* All memory from mem_alloc is in the MD's one RMA segment, so the rkey is the
+ * same for every memh */
 static ucs_status_t
 uct_pcie_md_mkey_pack(uct_md_h uct_md, uct_mem_h memh, void *address,
                       size_t length, const uct_md_mkey_pack_params_t *params,
                       void *rkey_buffer)
 {
+    uct_pcie_md_t *md                   = ucs_derived_of(uct_md, uct_pcie_md_t);
+    uct_pcie_packed_rkey_t *packed_rkey = rkey_buffer;
+
+    packed_rkey->node_id = md->node_id;
+    packed_rkey->seg_id  = md->rma_seg_id;
+    packed_rkey->base    = (uintptr_t)md->rma_buf;
     return UCS_OK;
 }
 
+/* Reserve room for one segment on a descriptor, opening a new descriptor if
+ * all are full. Called with uct_pcie_rkey_lock held. */
+static uct_pcie_rkey_desc_t *uct_pcie_rkey_desc_get(void)
+{
+    uct_pcie_rkey_desc_t *desc;
+    sci_error_t sci_error;
+
+    ucs_list_for_each(desc, &uct_pcie_rkey_descs, list) {
+        if (desc->segments < UCT_PCIE_RKEY_DESC_MAX_SEGMENTS) {
+            desc->segments++;
+            return desc;
+        }
+    }
+
+    desc = ucs_malloc(sizeof(*desc), "uct_pcie_rkey_desc_t");
+    if (desc == NULL) {
+        ucs_error("failed to allocate uct_pcie_rkey_desc_t");
+        return NULL;
+    }
+
+    SCIOpen(&desc->sd, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIOpen failed: %s", SCIGetErrorString(sci_error));
+        ucs_free(desc);
+        return NULL;
+    }
+
+    desc->segments = 1;
+    ucs_list_add_tail(&uct_pcie_rkey_descs, &desc->list);
+    ucs_debug("opened rkey descriptor %p", desc);
+    return desc;
+}
+
+/* Give back room reserved by uct_pcie_rkey_desc_get, closing the descriptor
+ * once nothing uses it. Called with uct_pcie_rkey_lock held. */
+static void uct_pcie_rkey_desc_put(uct_pcie_rkey_desc_t *desc)
+{
+    sci_error_t sci_error;
+
+    if (--desc->segments > 0) {
+        return;
+    }
+
+    ucs_debug("closing rkey descriptor %p", desc);
+    ucs_list_del(&desc->list);
+    SCIClose(desc->sd, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_warn("SCIClose failed: %s", SCIGetErrorString(sci_error));
+    }
+    ucs_free(desc);
+}
+
+/* Map the peer's RMA segment, or take another reference on it if this process
+ * has it mapped already. One connect attempt: the peer just packed the rkey,
+ * so its segment should be there. */
 static ucs_status_t
 uct_pcie_md_rkey_unpack(uct_component_t *component, const void *rkey_buffer,
                         const uct_rkey_unpack_params_t *params,
                         uct_rkey_t *rkey_p, void **handle_p)
 {
-    *rkey_p   = 0;
-    *handle_p = NULL;
-    return UCS_OK;
+    const uct_pcie_packed_rkey_t *packed_rkey = rkey_buffer;
+    uct_pcie_rkey_t *rkey;
+    ucs_status_t status;
+    sci_error_t sci_error;
+
+    pthread_mutex_lock(&uct_pcie_rkey_lock);
+
+    ucs_list_for_each(rkey, &uct_pcie_rkeys, list) {
+        if ((rkey->node_id == packed_rkey->node_id) &&
+            (rkey->seg_id == packed_rkey->seg_id) &&
+            (rkey->base == packed_rkey->base)) {
+            rkey->refcount++;
+            status = UCS_OK;
+            goto out;
+        }
+    }
+
+    rkey = ucs_malloc(sizeof(*rkey), "uct_pcie_rkey_t");
+    if (rkey == NULL) {
+        ucs_error("failed to allocate uct_pcie_rkey_t");
+        status = UCS_ERR_NO_MEMORY;
+        goto out_unlock;
+    }
+
+    rkey->desc = uct_pcie_rkey_desc_get();
+    if (rkey->desc == NULL) {
+        status = UCS_ERR_NO_RESOURCE;
+        goto err_free_rkey;
+    }
+
+    status = uct_pcie_segment_try_connect_full(rkey->desc->sd,
+                                               packed_rkey->node_id,
+                                               packed_rkey->seg_id,
+                                               &rkey->segment, &rkey->map,
+                                               (volatile void**)&rkey->va,
+                                               &sci_error);
+    if (status == UCS_ERR_BUSY) {
+        ucs_error("could not connect to rma segment %u on node %u: %s",
+                  packed_rkey->seg_id, packed_rkey->node_id,
+                  SCIGetErrorString(sci_error));
+        status = UCS_ERR_UNREACHABLE;
+        goto err_put_desc;
+    } else if (status != UCS_OK) {
+        ucs_error("failed to map rma segment %u on node %u",
+                  packed_rkey->seg_id, packed_rkey->node_id);
+        goto err_put_desc;
+    }
+
+    rkey->refcount = 1;
+    rkey->node_id  = packed_rkey->node_id;
+    rkey->seg_id   = packed_rkey->seg_id;
+    rkey->base     = packed_rkey->base;
+    ucs_list_add_tail(&uct_pcie_rkeys, &rkey->list);
+
+    ucs_debug("rma segment %u on node %u mapped at %p", rkey->seg_id,
+              rkey->node_id, rkey->va);
+
+out:
+    *rkey_p   = (uintptr_t)rkey;
+    *handle_p = rkey;
+out_unlock:
+    pthread_mutex_unlock(&uct_pcie_rkey_lock);
+    return status;
+
+err_put_desc:
+    uct_pcie_rkey_desc_put(rkey->desc);
+err_free_rkey:
+    ucs_free(rkey);
+    goto out_unlock;
 }
 
+/* Unmap the segment once its last rkey is released */
 static ucs_status_t uct_pcie_md_rkey_release(uct_component_t *component,
                                              uct_rkey_t rkey, void *handle)
 {
+    uct_pcie_rkey_t *pcie_rkey = handle;
+
+    pthread_mutex_lock(&uct_pcie_rkey_lock);
+
+    if (--pcie_rkey->refcount == 0) {
+        ucs_debug("rma segment %u on node %u unmapped", pcie_rkey->seg_id,
+                  pcie_rkey->node_id);
+        ucs_list_del(&pcie_rkey->list);
+        uct_pcie_segment_disconnect(pcie_rkey->segment, pcie_rkey->map);
+        uct_pcie_rkey_desc_put(pcie_rkey->desc);
+        ucs_free(pcie_rkey);
+    }
+
+    pthread_mutex_unlock(&uct_pcie_rkey_lock);
     return UCS_OK;
 }
 
@@ -148,6 +301,14 @@ uct_pcie_md_open(uct_component_t *component, const char *md_name,
     if (md == NULL) {
         ucs_error("failed to allocate uct_pcie_md_t");
         return UCS_ERR_NO_MEMORY;
+    }
+
+    SCIGetLocalNodeId(UCT_PCIE_LOCAL_ADAPTER_NO, &md->node_id,
+                      UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIGetLocalNodeId failed: %s", SCIGetErrorString(sci_error));
+        status = UCS_ERR_NO_RESOURCE;
+        goto err_free_md;
     }
 
     SCIOpen(&md->sci_virtual_device, UCT_PCIE_NO_FLAGS, &sci_error);

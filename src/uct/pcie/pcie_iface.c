@@ -444,20 +444,12 @@ static UCS_CLASS_INIT_FUNC(uct_pcie_iface_t, uct_md_h md, uct_worker_h worker,
         goto err_close_vdev_recv;
     }
 
-    SCIOpen(&self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
-    if (sci_error != SCI_ERR_OK) {
-        ucs_error("SCIOpen (vdev_rma) failed: %s",
-                  SCIGetErrorString(sci_error));
-        status = UCS_ERR_NO_RESOURCE;
-        goto err_close_vdev_ep;
-    }
-
     SCIOpen(&self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         ucs_error("SCIOpen (vdev_ctl) failed: %s",
                   SCIGetErrorString(sci_error));
         status = UCS_ERR_NO_RESOURCE;
-        goto err_close_vdev_rma;
+        goto err_close_vdev_ep;
     }
 
     SCIOpen(&self->vdev_setup, UCT_PCIE_NO_FLAGS, &sci_error);
@@ -580,8 +572,6 @@ err_close_vdev_setup:
     SCIClose(self->vdev_setup, UCT_PCIE_NO_FLAGS, &sci_error);
 err_close_vdev_ctl:
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
-err_close_vdev_rma:
-    SCIClose(self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
 err_close_vdev_ep:
     SCIClose(self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
 err_close_vdev_recv:
@@ -622,7 +612,6 @@ static UCS_CLASS_CLEANUP_FUNC(uct_pcie_iface_t)
     SCIClose(self->vdev_refuse, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_setup, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_ctl, UCT_PCIE_NO_FLAGS, &sci_error);
-    SCIClose(self->vdev_rma, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_ep, UCT_PCIE_NO_FLAGS, &sci_error);
     SCIClose(self->vdev_recv, UCT_PCIE_NO_FLAGS, &sci_error);
 
@@ -662,13 +651,10 @@ static ucs_status_t
 uct_pcie_iface_get_address(uct_iface_h tl_iface, uct_iface_addr_t *addr)
 {
     uct_pcie_iface_t *iface = ucs_derived_of(tl_iface, uct_pcie_iface_t);
-    uct_pcie_md_t *md       = ucs_derived_of(iface->super.md, uct_pcie_md_t);
     uct_pcie_iface_addr_t *iface_addr = (uct_pcie_iface_addr_t*)addr;
 
     iface_addr->interrupt_no = iface->interrupt_no;
     iface_addr->inbox_seg_id = iface->inbox_seg_id;
-    iface_addr->rma_seg_id   = md->rma_seg_id;
-    iface_addr->rma_base     = (uint64_t)(uintptr_t)md->rma_buf;
     return UCS_OK;
 }
 

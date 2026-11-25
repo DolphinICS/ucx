@@ -14,9 +14,7 @@
 /* How far a connecting EP is, see uct_pcie_ep_progress_connect */
 typedef enum {
     UCT_PCIE_EP_CONN_QUEUED,  /* Behind other EPs in connecting_eps */
-    UCT_PCIE_EP_CONN_RMA,     /* Trying to map the peer's RMA segment */
-    UCT_PCIE_EP_CONN_SENDING, /* RMA segment mapped, trying to send the
-                               * connection request */
+    UCT_PCIE_EP_CONN_SENDING, /* Trying to send the connection request */
     UCT_PCIE_EP_CONN_WAITING  /* Request in the peer's inbox, so the peer may
                                * write the ctl slot. Kept after the answer. */
 } uct_pcie_ep_conn_step_t;
@@ -35,9 +33,9 @@ typedef struct {
      * when the flow-control window is full and drained by iface progress. */
     ucs_arbiter_group_t  pending_q;
 
-    /* UCS_INPROGRESS until rma_seg is mapped, the peer has answered the
-     * connection request and remote_segment is mapped, then UCS_OK, or the
-     * error that failed it. Every send, put and get needs it. */
+    /* UCS_INPROGRESS until the peer answers the connection request and
+     * remote_segment is mapped, then UCS_OK, or the error that failed it. AM
+     * sends need it, put and get only need the rkey. */
     ucs_status_t         conn_status;
     /* Peer iface's connection interrupt and inbox, from
      * uct_pcie_iface_addr_t */
@@ -54,17 +52,6 @@ typedef struct {
      * on remote_segment. Read by ep_is_connected. volatile because the
      * callback runs on the SISCI callback thread. */
     volatile int         is_connected;
-
-    /* Peer's RMA segment, target of put and get. Mapped from progress, see
-     * uct_pcie_ep_progress_connect. */
-    unsigned int         remote_rma_seg_id;
-    sci_remote_segment_t rma_seg;
-    sci_map_t            rma_seg_map;
-    /* Local mapping of the peer's RMA segment; every access crosses PCIe */
-    void                 *remote_rma_va;
-    /* Peer's rma_base from uct_pcie_iface_addr_t, used to turn remote_addr
-     * into a segment offset */
-    uint64_t             remote_rma_base;
 } uct_pcie_ep_t;
 
 
