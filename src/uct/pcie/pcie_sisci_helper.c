@@ -83,15 +83,17 @@ ucs_status_t uct_pcie_segment_create_available(sci_desc_t sd, size_t size,
 
     status = uct_pcie_segment_create(sd, size, segment_p, segment_map_p,
                                      segment_id_p, buf_p);
-    if (status == UCS_OK) {
-        SCISetSegmentAvailable(*segment_p, UCT_PCIE_LOCAL_ADAPTER_NO,
-                               UCT_PCIE_NO_FLAGS, &sci_error);
-        if (sci_error != SCI_ERR_OK) {
-            ucs_error("SCISetSegmentAvailable failed: %s",
-                      SCIGetErrorString(sci_error));
-            uct_pcie_segment_remove(*segment_p, *segment_map_p);
-            return UCS_ERR_NO_RESOURCE;
-        }
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    SCISetSegmentAvailable(*segment_p, UCT_PCIE_LOCAL_ADAPTER_NO,
+                           UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCISetSegmentAvailable failed: %s",
+                  SCIGetErrorString(sci_error));
+        uct_pcie_segment_remove(*segment_p, *segment_map_p);
+        return UCS_ERR_NO_RESOURCE;
     }
 
     return UCS_OK;
@@ -123,14 +125,22 @@ uct_pcie_segment_connect(sci_desc_t sd, unsigned int node_id,
                                               UCT_PCIE_NO_FLAGS;
     sci_remote_segment_t segment;
     sci_map_t segment_map;
+    ucs_time_t deadline;
     sci_error_t sci_error;
     volatile void *buf;
 
+    deadline = uct_pcie_connect_deadline();
     do {
         SCIConnectSegment(sd, &segment, node_id, segment_id,
                           UCT_PCIE_LOCAL_ADAPTER_NO, callback, callback_arg, 0,
                           flags, &sci_error);
-    } while (sci_error != SCI_ERR_OK);
+    } while ((sci_error != SCI_ERR_OK) && (ucs_get_time() < deadline));
+
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIConnectSegment failed after %d ms: %s",
+                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
+        return UCS_ERR_TIMED_OUT;
+    }
 
     /* TODO: maybe keep the volatile qualifier? */
     buf = SCIMapRemoteSegment(segment, &segment_map, offset, size, NULL,
@@ -160,15 +170,23 @@ ucs_status_t uct_pcie_segment_connect_full(sci_desc_t sd, unsigned int node_id,
 {
     sci_remote_segment_t segment;
     sci_map_t segment_map;
+    ucs_time_t deadline;
     sci_error_t sci_error;
     volatile void *buf;
     size_t size;
 
+    deadline = uct_pcie_connect_deadline();
     do {
         SCIConnectSegment(sd, &segment, node_id, segment_id,
                           UCT_PCIE_LOCAL_ADAPTER_NO, NULL, NULL, 0,
                           UCT_PCIE_NO_FLAGS, &sci_error);
-    } while (sci_error != SCI_ERR_OK);
+    } while ((sci_error != SCI_ERR_OK) && (ucs_get_time() < deadline));
+
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIConnectSegment failed after %d ms: %s",
+                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
+        return UCS_ERR_TIMED_OUT;
+    }
 
     size = SCIGetRemoteSegmentSize(segment);
 

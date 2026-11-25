@@ -86,31 +86,44 @@ uct_pcie_iface_send_conn_answer(uct_pcie_iface_t *iface,
                                 uct_pcie_conn_req_t *request,
                                 uct_pcie_conn_desc_t *sci_cd)
 {
-    uct_pcie_md_t *md = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    uct_pcie_md_t *md   = ucs_derived_of(iface->super.md, uct_pcie_md_t);
+    ucs_status_t status = UCS_OK;
     uct_pcie_conn_ans_t answer;
     sci_remote_data_interrupt_t ans_interrupt;
+    ucs_time_t deadline;
     sci_error_t sci_error;
 
+    deadline = uct_pcie_connect_deadline();
     do {
         SCIConnectDataInterrupt(md->sci_virtual_device, &ans_interrupt,
                                 request->node_id, UCT_PCIE_LOCAL_ADAPTER_NO,
                                 request->interrupt, SCI_INFINITE_TIMEOUT,
                                 UCT_PCIE_NO_FLAGS, &sci_error);
-    } while (sci_error != SCI_ERR_OK);
+    } while ((sci_error != SCI_ERR_OK) && (ucs_get_time() < deadline));
+
+    if (sci_error != SCI_ERR_OK) {
+        ucs_error("SCIConnectDataInterrupt failed after %d ms: %s",
+                  UCT_PCIE_CONNECT_TIMEOUT_MS, SCIGetErrorString(sci_error));
+        return UCS_ERR_TIMED_OUT;
+    }
 
     answer.segment_id = sci_cd->recv_segment_id;
 
     SCITriggerDataInterrupt(ans_interrupt, (void*)&answer, sizeof(answer),
                             UCT_PCIE_NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
-        ucs_warn("SCITriggerDataInterrupt failed: %s",
-                 SCIGetErrorString(sci_error));
+        ucs_error("SCITriggerDataInterrupt failed: %s",
+                  SCIGetErrorString(sci_error));
+        status = UCS_ERR_NO_RESOURCE;
     }
 
     SCIDisconnectDataInterrupt(ans_interrupt, UCT_PCIE_NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        ucs_warn("SCIDisconnectDataInterrupt failed: %s",
+                 SCIGetErrorString(sci_error));
+    }
 
-    /* TODO: check for errors */
-    return UCS_OK;
+    return status;
 }
 
 /* SISCI callback for an incoming connection request: create a receive
